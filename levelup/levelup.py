@@ -215,14 +215,6 @@ class LevelUp(UserCommands, commands.Cog):
             return
 
         self.data[gid]["users"][str(receiver.id)]["stars"] += 1
-        if chan.permissions_for(guild.me).send_messages:
-            with contextlib.suppress(discord.HTTPException):
-                await chan.send(
-                    _(
-                        f"**{giver.name}** just gave a star to **{receiver.name}**!"
-                    ),
-                    delete_after=60
-                )
 
     @commands.Cog.listener("on_message")
     async def messages(self, message: discord.Message):
