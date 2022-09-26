@@ -415,54 +415,6 @@ class LevelUp(UserCommands, commands.Cog):
         except AttributeError:
             log.warning(f"Failed to get avatar url for {member.name} in {guild.name}. DPY2 = {DPY2}")
 
-        # Send levelup messages
-        if not usepics:
-            if dm:
-                await member.send(_(f"You have just reached level {new_level} in {guild.name}!"))
-            color = member.colour
-            embed = discord.Embed(
-                description=_(f"**Just reached level {new_level}!**"),
-                color=color
-            )
-            embed.set_author(name=name, icon_url=pfp)
-            if channel and can_send:
-                if mention:
-                    await channel.send(mentionuser, embed=embed)
-                else:
-                    await channel.send(embed=embed)
-
-        else:
-            # Generate LevelUP Image
-            banner = bg if bg else await self.get_banner(member)
-
-            color = str(member.colour)
-            if color == "#000000":  # Don't use default color
-                color = str(discord.Color.random())
-            color = hex_to_rgb(color)
-            args = {
-                'bg_image': banner,
-                'profile_image': pfp,
-                'level': new_level,
-                'color': color,
-            }
-            img = await self.gen_levelup_img(args)
-            temp = BytesIO()
-            temp.name = f"{member.id}.webp"
-            img.save(temp, format="WEBP")
-            temp.seek(0)
-            file = discord.File(temp)
-            if dm:
-                await member.send(f"You just leveled up in {guild.name}!", file=file)
-
-            else:
-                if channel and can_send and can_send_attachments:
-                    if mention:
-                        await channel.send(_(f"**{mentionuser} just leveled up!**"), file=file)
-                    else:
-                        await channel.send(_(f"**{name} just leveled up!**"), file=file)
-                else:
-                    log.warning(f"Bot cant send LevelUp alert to log channel in {guild.name}")
-
         if not roleperms:
             # log.warning(f"Bot can't manage roles in {guild.name}")
             return
