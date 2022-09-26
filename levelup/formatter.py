@@ -1,16 +1,12 @@
 import math
 import random
-import typing
+from typing import Union
 
 import discord
 from redbot.core.i18n import Translator
-from redbot.core.utils.chat_formatting import box
+from redbot.core.utils.chat_formatting import box, humanize_number
 
-if discord.__version__ > "1.7.3":
-    DPY2 = True
-else:
-    DPY2 = False
-
+DPY2 = True if discord.__version__ > "1.7.3" else False
 _ = Translator("LevelUp", __file__)
 
 
@@ -25,7 +21,7 @@ def get_xp(level: int, base: int, exp: int) -> int:
 
 
 # Estimate how much time it would take to reach a certain level based on curent algorithm
-def time_to_level(level: int, base: int, exp: typing.Union[int, float], cooldown: int, xp_range: list) -> int:
+def time_to_level(level: int, base: int, exp: Union[int, float], cooldown: int, xp_range: list) -> int:
     xp_needed = get_xp(level, base, exp)
     xp_obtained = 0
     time_to_reach_level = 0  # Seconds
@@ -53,6 +49,15 @@ def int_to_rgb(color: int) -> tuple:
     b = (color >> 16) & 255
     rgb = (r, g, b)
     return rgb
+
+
+def get_bar(progress, total, perc=None, width: int = 20) -> str:
+    if perc is not None:
+        ratio = perc / 100
+    else:
+        ratio = progress / total
+    bar = "█" * round(ratio * width) + "-" * round(width - (ratio * width))
+    return f"|{bar}| {round(100 * ratio, 1)}%"
 
 
 # Format time from total seconds and format into readable string
@@ -124,26 +129,11 @@ async def get_user_stats(conf: dict, user_id: str) -> dict:
     level = user["level"]
     prestige = user["prestige"]
     emoji = user["emoji"]
-    if "stars" in user:
-        stars = user["stars"]
-    else:
-        stars = 0
-    if "background" in user:
-        bg = user["background"]
-    else:
-        bg = None
+    stars = user["stars"]
+    bg = user["background"]
     next_level = level + 1
     xp_needed = get_xp(next_level, base, exp)
-    ratio = xp / xp_needed
-    lvlpercent = int(ratio * 100)
-    blocks = int(30 * ratio)
-    blanks = int(30 - blocks)
-    lvlbar = "〘"
-    for _ in range(blocks):
-        lvlbar += "█"
-    for _ in range(blanks):
-        lvlbar += "-"
-    lvlbar += "〙"
+    lvlbar = get_bar(xp, xp_needed, width=15)
     stats = {
         "l": level,
         "m": messages,
@@ -151,7 +141,6 @@ async def get_user_stats(conf: dict, user_id: str) -> dict:
         "xp": xp,
         "goal": xp_needed,
         "lb": lvlbar,
-        "lp": lvlpercent,
         "e": emoji,
         "pr": prestige,
         "stars": stars,
@@ -169,10 +158,12 @@ async def profile_embed(
         voice: str,
         progress: str,
         lvlbar: str,
-        lvlpercent: int,
         emoji: str,
         prestige: int,
-        stars: str
+        stars: str,
+        bal: int,
+        currency: str,
+        role_icon: Union[str, None]
 ) -> discord.Embed:
     msg = f"🎖｜Level {level}\n"
     if prestige:
@@ -180,13 +171,17 @@ async def profile_embed(
     msg += f"⭐｜{stars} stars\n" \
            f"💬｜{messages} messages sent\n" \
            f"🎙｜{voice} in voice\n" \
-           f"💡｜{progress} XP"
+           f"💡｜{progress} XP\n" \
+           f"💰｜{humanize_number(bal)} {currency}"
     embed = discord.Embed(
-        title=f"{user.name}'s {_('Profile')}",
         description=_(msg),
-        color=user.colour
+        color=user.color
     )
-    embed.add_field(name=_("Progress"), value=box(f"{lvlbar} {lvlpercent} %", lang="python"))
+    embed.add_field(name=_("Progress"), value=box(lvlbar, lang="python"))
+    if role_icon:
+        embed.set_author(name=f"{user.name}'s {_('Profile')}", icon_url=role_icon)
+    else:
+        embed.set_author(name=f"{user.name}'s {_('Profile')}")
     if DPY2:
         if user.avatar:
             embed.set_thumbnail(url=user.avatar.url)

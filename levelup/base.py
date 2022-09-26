@@ -1,13 +1,15 @@
 import asyncio
 import datetime
+import json
 import logging
 import math
+import traceback
 from io import BytesIO
 
 import discord
 import tabulate
 import validators
-from redbot.core import commands
+from redbot.core import commands, bank
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import box
 
@@ -27,7 +29,8 @@ if discord.__version__ > "1.7.3":
 
     DPY2 = True
 else:
-    from .dislashmenu import menu, DEFAULT_CONTROLS
+    # from .dislashmenu import menu, DEFAULT_CONTROLS
+    from .menus import menu, DEFAULT_CONTROLS
 
     DPY2 = False
 
@@ -41,22 +44,22 @@ class UserCommands(commands.Cog):
     async def gen_levelup_img(self, args: dict):
         task = self.bot.loop.run_in_executor(None, lambda: Generator().generate_levelup(**args))
         try:
-            img = await asyncio.wait_for(task, timeout=30)
+            img = await asyncio.wait_for(task, timeout=60)
         except asyncio.TimeoutError:
             return None
-        img.seek(0)
-        file = discord.File(img)
-        return file
+        return img
 
     # Generate profile image
-    async def gen_profile_img(self, args: dict):
-        task = self.bot.loop.run_in_executor(None, lambda: Generator().generate_profile(**args))
+    async def gen_profile_img(self, args: dict, full: bool = True):
+        if full:
+            task = self.bot.loop.run_in_executor(None, lambda: Generator().generate_profile(**args))
+        else:
+            task = self.bot.loop.run_in_executor(None, lambda: Generator().generate_slim_profile(**args))
+
         try:
-            img = await asyncio.wait_for(task, timeout=30)
+            img = await asyncio.wait_for(task, timeout=60)
         except asyncio.TimeoutError:
             return None
-        # img.seek(0)
-        # file = discord.File(img)
         return img
 
     # Function to test a given URL and see if it's valid
@@ -67,14 +70,15 @@ class UserCommands(commands.Cog):
             return
         try:
             # Try running it through profile generator blind to see if it errors
-            args = {'bg_image': image_url, 'profile_image': ctx.author.avatar_url}
+
+            args = {'bg_image': image_url}
             await self.bot.loop.run_in_executor(None, lambda: Generator().generate_profile(**args))
         except Exception as e:
             if "cannot identify image file" in str(e):
-                await ctx.send(_("Uh Oh, looks like that is not a valid image"))
+                await ctx.send(_("Uh Oh, looks like that is not a valid image, cannot identify the file"))
                 return
             else:
-                log.warning(f"background set failed: {e}")
+                log.warning(f"background set failed: {traceback.format_exc()}")
                 await ctx.send(_("Uh Oh, looks like that is not a valid image"))
                 return
         return True
@@ -98,6 +102,8 @@ class UserCommands(commands.Cog):
         user_id = str(user.id)
         star_giver = str(ctx.author.id)
         guild_id = ctx.guild.id
+        if guild_id not in self.data:
+            return await ctx.send(_("Cache not loaded yet, wait a few more seconds."))
         if ctx.author == user:
             return await ctx.send(_("You can't give stars to yourself!"))
         if user.bot:
@@ -137,26 +143,82 @@ class UserCommands(commands.Cog):
         banner = await self.get_banner(user)
         color = str(user.colour)
         color = hex_to_rgb(color)
+        if DPY2:
+            pfp = user.avatar.url if user.avatar else None
+        else:
+            pfp = user.avatar_url
         args = {
             'bg_image': banner,
-            'profile_image': user.avatar_url,
+            'profile_image': pfp,
             'level': 69,
             'color': color,
         }
-        task = self.bot.loop.run_in_executor(None, lambda: Generator().generate_levelup(**args))
-        try:
-            img = await asyncio.wait_for(task, timeout=30)
-        except asyncio.TimeoutError:
-            return await ctx.send("Image took too long to generate, try again in a few.")
-        img.seek(0)
-        file = discord.File(img)
+        img = await self.gen_levelup_img(args)
+        temp = BytesIO()
+        temp.name = f"{ctx.author.id}.webp"
+        img.save(temp, format="WEBP")
+        temp.seek(0)
+        file = discord.File(temp)
         await ctx.send(file=file)
 
     @commands.group(name="myprofile", aliases=["mypf", "pfset"])
     @commands.guild_only()
     async def set_profile(self, ctx: commands.Context):
-        """Customize your profile"""
-        pass
+        """
+        Customize your profile colors
+
+        Here is a link to google's color picker:
+        **[Hex Color Picker](https://htmlcolorcodes.com/)**
+        """
+        uid = str(ctx.author.id)
+        gid = ctx.guild.id
+        if ctx.invoked_subcommand is None and uid in self.data[gid]["users"]:
+            uid = str(ctx.author.id)
+            gid = ctx.guild.id
+            users = self.data[gid]["users"]
+            user = users[uid]
+            bg = user["background"]
+            full = "full" if user["full"] else "slim"
+            name = user["colors"]["name"]
+            stat = user["colors"]["stat"]
+            levelbar = user["colors"]["levelbar"]
+
+            desc = f"`Profile Size:    `{full}\n" \
+                   f"`Name Color:      `{name}\n" \
+                   f"`Stat Color:      `{stat}\n" \
+                   f"`Level Bar Color: `{levelbar}\n" \
+                   f"`Background URL:  `{bg}"
+
+            em = discord.Embed(
+                title="Your Profile Settings",
+                description=_(desc),
+                color=ctx.author.color
+            )
+            if bg and bg != "random":
+                em.set_image(url=bg)
+            await ctx.send(embed=em)
+
+    @set_profile.command(name="type")
+    async def toggle_profile_type(self, ctx: commands.Context):
+        """
+        Toggle your profile image type (full/slim)
+
+        Full size includes your balance, role icon and prestige icon
+        Slim is a smaller slimmed down version
+        """
+        if not self.data[ctx.guild.id]["usepics"]:
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+        users = self.data[ctx.guild.id]["users"]
+        user_id = str(ctx.author.id)
+        if user_id not in users:
+            return await ctx.send(_("You have no information stored about your account yet. Talk for a bit first"))
+        full = users[user_id]["full"]
+        if full:
+            self.data[ctx.guild.id]["users"][user_id]["full"] = False
+            await ctx.send(_("Your profile image has been set to **Slim**"))
+        else:
+            self.data[ctx.guild.id]["users"][user_id]["full"] = True
+            await ctx.send(_("Your profile image has been set to **Full**"))
 
     @set_profile.command(name="namecolor", aliases=["name"])
     async def set_name_color(self, ctx: commands.Context, hex_color: str):
@@ -164,13 +226,21 @@ class UserCommands(commands.Cog):
         Set a hex color for your username
 
         Here is a link to google's color picker:
-        https://g.co/kgs/V6jdXj
+        **[Hex Color Picker](https://htmlcolorcodes.com/)**
+
+        Set to `default` to randomize your name color each time you run the command
         """
+        if not self.data[ctx.guild.id]["usepics"]:
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
-            return await ctx.send(_("You have no information stored about your account yet. Talk for a bit first"))
-        user = users[user_id]
+            self.init_user(ctx.guild.id, user_id)
+
+        if hex_color == "default":
+            self.data[ctx.guild.id]["users"][user_id]["colors"]["name"] = None
+            return await ctx.send(_("Your name color has been reset to default"))
+
         try:
             rgb = hex_to_rgb(hex_color)
         except ValueError:
@@ -185,13 +255,7 @@ class UserCommands(commands.Cog):
         except Exception as e:
             await ctx.send(_(f"Failed to set color, the following error occurred:\n{box(str(e), lang='python')}"))
             return
-        if "colors" not in user:
-            self.data[ctx.guild.id]["users"][user_id]["colors"] = {
-                "name": hex_color,
-                "stat": None
-            }
-        else:
-            self.data[ctx.guild.id]["users"][user_id]["colors"]["name"] = hex_color
+        self.data[ctx.guild.id]["users"][user_id]["colors"]["name"] = hex_color
         await ctx.tick()
 
     @set_profile.command(name="statcolor", aliases=["stat"])
@@ -200,13 +264,21 @@ class UserCommands(commands.Cog):
         Set a hex color for your server stats
 
         Here is a link to google's color picker:
-        https://g.co/kgs/V6jdXj
+        **[Hex Color Picker](https://htmlcolorcodes.com/)**
+
+        Set to `default` to randomize your name color each time you run the command
         """
+        if not self.data[ctx.guild.id]["usepics"]:
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
-            return await ctx.send(_("You have no information stored about your account yet. Talk for a bit first"))
-        user = users[user_id]
+            self.init_user(ctx.guild.id, user_id)
+
+        if hex_color == "default":
+            self.data[ctx.guild.id]["users"][user_id]["colors"]["stat"] = None
+            return await ctx.send(_("Your stats color has been reset to default"))
+
         try:
             rgb = hex_to_rgb(hex_color)
         except ValueError:
@@ -222,13 +294,46 @@ class UserCommands(commands.Cog):
         except Exception as e:
             await ctx.send(_(f"Failed to set color, the following error occurred:\n{box(str(e), lang='python')}"))
             return
-        if "colors" not in user:
-            self.data[ctx.guild.id]["users"][user_id]["colors"] = {
-                "name": None,
-                "stat": hex_color
-            }
-        else:
-            self.data[ctx.guild.id]["users"][user_id]["colors"]["stat"] = hex_color
+        self.data[ctx.guild.id]["users"][user_id]["colors"]["stat"] = hex_color
+        await ctx.tick()
+
+    @set_profile.command(name="levelbar", aliases=["lvlbar", "bar"])
+    async def set_levelbar_color(self, ctx: commands.Context, hex_color: str):
+        """
+        Set a hex color for your level bar
+
+        Here is a link to google's color picker:
+        **[Hex Color Picker](https://htmlcolorcodes.com/)**
+
+        Set to `default` to randomize your name color each time you run the command
+        """
+        if not self.data[ctx.guild.id]["usepics"]:
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+        users = self.data[ctx.guild.id]["users"]
+        user_id = str(ctx.author.id)
+        if user_id not in users:
+            self.init_user(ctx.guild.id, user_id)
+
+        if hex_color == "default":
+            self.data[ctx.guild.id]["users"][user_id]["colors"]["levelbar"] = None
+            return await ctx.send(_("Your level bar color has been reset to default"))
+
+        try:
+            rgb = hex_to_rgb(hex_color)
+        except ValueError:
+            return await ctx.send(
+                _("That is an invalid color, please use a valid integer color code or hex color."))
+
+        try:
+            embed = discord.Embed(
+                description="This is the color you chose",
+                color=discord.Color.from_rgb(rgb[0], rgb[1], rgb[2])
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(_(f"Failed to set color, the following error occurred:\n{box(str(e), lang='python')}"))
+            return
+        self.data[ctx.guild.id]["users"][user_id]["colors"]["levelbar"] = hex_color
         await ctx.tick()
 
     @set_profile.command(name="background", aliases=["bg"])
@@ -239,7 +344,8 @@ class UserCommands(commands.Cog):
         This will override your profile banner as the background
 
         **WARNING**
-        Profile backgrounds are wide landscapes (900 by 240 pixels) and using a portrait image will be skewed
+        Profile backgrounds are wide landscapes (1050 by 450 pixels) with an aspect ratio of 21:9
+        Using portrait images will be cropped.
 
         Tip: Googling "dual monitor backgrounds" gives good results for the right images
 
@@ -248,9 +354,20 @@ class UserCommands(commands.Cog):
         [setaswall](https://www.setaswall.com/dual-monitor-wallpapers/)
         [pexels](https://www.pexels.com/photo/panoramic-photography-of-trees-and-lake-358482/)
         [teahub](https://www.teahub.io/searchw/dual-monitor/)
+
+        Leave image_url blank to reset back to randomized default profile backgrounds
+        Set image_url as `random` to have a randomized background each time
         """
+        if not self.data[ctx.guild.id]["usepics"]:
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+
+        users = self.data[ctx.guild.id]["users"]
+        user_id = str(ctx.author.id)
+        if user_id not in users:
+            self.init_user(ctx.guild.id, user_id)
+
         # If image url is given, run some checks
-        if image_url:
+        if image_url and image_url != "random":
             if not await self.valid_url(ctx, image_url):
                 return
         else:
@@ -259,25 +376,25 @@ class UserCommands(commands.Cog):
                 if not await self.valid_url(ctx, image_url):
                     return
 
-        users = self.data[ctx.guild.id]["users"]
-        user_id = str(ctx.author.id)
-        if user_id not in users:
-            return await ctx.send(_("You have no information stored about your account yet. Talk for a bit first"))
-
         if image_url:
             self.data[ctx.guild.id]["users"][user_id]["background"] = image_url
-            await ctx.send("Your image has been set!")
+            if image_url == "random":
+                await ctx.send("Your profile background will be randomized each time you run the profile command!")
+            else:
+                await ctx.send("Your image has been set!")
         else:
             self.data[ctx.guild.id]["users"][user_id]["background"] = None
             await ctx.send(_("Your background has been removed since you did not specify a url!"))
 
     @commands.command(name="pf")
-    @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.guild_only()
     async def get_profile(self, ctx: commands.Context, *, user: discord.Member = None):
         """View your profile"""
         can_send_attachments = ctx.channel.permissions_for(ctx.guild.me).attach_files
-        conf = self.data[ctx.guild.id]
+        gid = ctx.guild.id
+        if gid not in self.data:
+            await self.initialize()
+        conf = self.data[gid]
         usepics = conf["usepics"]
         if usepics and not can_send_attachments:
             return await ctx.send(_("I don't have permission to send attachments to this channel."))
@@ -290,13 +407,23 @@ class UserCommands(commands.Cog):
         user_id = str(user.id)
         if user_id not in users:
             return await ctx.send("No information available yet!")
+
+        bal = await bank.get_balance(ctx.author)
+        currency_name = await bank.get_currency_name(ctx.guild)
+
         if DPY2:
             pfp = user.avatar.url if user.avatar else None
         else:
             pfp = user.avatar_url
+
+        role_icon = user.top_role.display_icon if DPY2 else None
+
+        full = users[user_id]["full"]
+
         pos = await get_user_position(conf, user_id)
         position = "{:,}".format(pos["p"])  # int format
         percentage = pos["pr"]  # Float
+
         stats = await get_user_stats(conf, user_id)
         level = stats["l"]  # Int
         messages = "{:,}".format(stats["m"])  # Int format
@@ -305,14 +432,11 @@ class UserCommands(commands.Cog):
         goal = stats["goal"]  # Int
         progress = f'{"{:,}".format(xp)}/{"{:,}".format(goal)}'
         lvlbar = stats["lb"]  # Str
-        lvlpercent = stats["lp"]  # Int
         emoji = stats["e"]  # Str
         prestige = stats["pr"]  # Int
         bg = stats["bg"]  # Str
-        if "stars" in stats:
-            stars = "{:,}".format(stats["stars"])
-        else:
-            stars = 0
+        stars = "{:,}".format(stats["stars"]) if stats["stars"] else 0
+
         if not usepics:
             embed = await profile_embed(
                 user,
@@ -323,10 +447,12 @@ class UserCommands(commands.Cog):
                 voice,
                 progress,
                 lvlbar,
-                lvlpercent,
-                emoji,
+                emoji["str"] if emoji and isinstance(emoji, dict) else None,
                 prestige,
-                stars
+                stars,
+                bal,
+                currency_name,
+                role_icon
             )
             try:
                 await ctx.reply(embed=embed, mention_author=mention)
@@ -340,31 +466,22 @@ class UserCommands(commands.Cog):
                     banner = await self.get_banner(user)
 
                 if str(user.colour) == "#000000":  # Don't use default color for circle
-                    circlecolor = hex_to_rgb(str(discord.Color.random()))
+                    basecolor = hex_to_rgb(str(discord.Color.random()))
                 else:
-                    circlecolor = hex_to_rgb(str(user.colour))
+                    basecolor = hex_to_rgb(str(user.colour))
 
-                if "colors" in users[user_id]:
-                    namecolor = users[user_id]["colors"]["name"]
-                    if namecolor:
-                        namecolor = hex_to_rgb(namecolor)
-                    else:
-                        namecolor = circlecolor
-
-                    statcolor = users[user_id]["colors"]["stat"]
-                    if statcolor:
-                        statcolor = hex_to_rgb(statcolor)
-                    else:
-                        statcolor = circlecolor
-                else:
-                    namecolor = circlecolor
-                    statcolor = circlecolor
+                colors = users[user_id]["colors"]
+                namecolor = hex_to_rgb(colors["name"]) if colors["name"] else None
+                statcolor = hex_to_rgb(colors["stat"]) if colors["stat"] else None
+                barcolor = hex_to_rgb(colors["levelbar"]) if colors["levelbar"] else None
 
                 colors = {
+                    "base": basecolor,
                     "name": namecolor,
                     "stat": statcolor,
-                    "circle": circlecolor
+                    "levelbar": barcolor
                 }
+
                 args = {
                     'bg_image': banner,  # Background image link
                     'profile_image': pfp,  # User profile picture link
@@ -374,31 +491,45 @@ class UserCommands(commands.Cog):
                     'next_xp': goal,  # xp required for next level
                     'user_position': position,  # User position in leaderboard
                     'user_name': user.name,  # username with discriminator
-                    'user_status': user.status,  # User status eg. online, offline, idle, streaming, dnd
+                    'user_status': str(user.status).strip(),  # User status eg. online, offline, idle, streaming, dnd
                     'colors': colors,  # User's color
                     'messages': messages,
                     'voice': voice,
                     'prestige': prestige,
-                    'stars': stars
+                    'emoji': emoji["url"] if emoji and isinstance(emoji, dict) else None,
+                    'stars': stars,
+                    'balance': bal,
+                    'currency': currency_name,
+                    'role_icon': role_icon
                 }
 
                 now = datetime.datetime.now()
-                if user_id in self.profiles:
-                    last = self.profiles[user_id]["last"]
-                    td = (now - last).total_seconds()
-                    if td > 300:
-                        file_obj = await self.gen_profile_img(args)
-                        self.profiles[user_id]["file"] = file_obj
-                        self.profiles[user_id]["last"] = now
-                    else:
-                        file_obj = self.profiles[user_id]["file"]
+                if gid not in self.profiles:
+                    self.profiles[gid] = {}
+
+                if user_id not in self.profiles[gid]:
+                    file_obj = await self.gen_profile_img(args, full)
+                    self.profiles[gid][user_id] = {"file": file_obj, "last": now}
+
+                last = self.profiles[gid][user_id]["last"]
+                td = (now - last).total_seconds()
+                if td > self.cache_seconds:
+                    file_obj = await self.gen_profile_img(args, full)
+                    self.profiles[gid][user_id]["file"] = file_obj
+                    self.profiles[gid][user_id]["last"] = now
                 else:
-                    file_obj = await self.gen_profile_img(args)
-                    self.profiles[user_id] = {"file": file_obj, "last": now}
+                    file_obj = self.profiles[gid][user_id]["file"]
 
                 if not file_obj:
-                    file_obj = await self.gen_profile_img(args)
-                    self.profiles[user_id] = {"file": file_obj, "last": now}
+                    file_obj = await self.gen_profile_img(args, full)
+                    self.profiles[gid][user_id] = {"file": file_obj, "last": now}
+
+                # If file_obj is STILL None
+                if not file_obj:
+                    msg = f"Something went wrong while generating your profile image!\n" \
+                          f"Image may be returning `None` if it takes longer than 60 seconds to generate.\n" \
+                          f"**Debug Data**\n{box(json.dumps(args, indent=2))}"
+                    return await ctx.send(msg)
 
                 temp = BytesIO()
                 file_obj.save(temp, format="WEBP")
@@ -410,13 +541,21 @@ class UserCommands(commands.Cog):
                 try:
                     await ctx.reply(file=file, mention_author=mention)
                 except Exception as e:
-                    log.error(f"Failed to send profile pic: {e}")
-                    await asyncio.sleep(5)
+                    if "In message_reference: Unknown message" not in str(e):
+                        log.error(f"Failed to send profile pic: {e}")
                     try:
-                        await ctx.reply(file=file, mention_author=mention)
+                        temp = BytesIO()
+                        file_obj.save(temp, format="WEBP")
+                        temp.name = f"{ctx.author.id}.webp"
+                        temp.seek(0)
+                        file = discord.File(temp)
+                        if mention:
+                            await ctx.send(ctx.author.mention, file=file)
+                        else:
+                            await ctx.send(file=file)
                     except Exception as e:
-                        log.error(f"Failed again to send profile pic: {e}")
-                        await ctx.send(f"Failed to send profile pic to discord. Try again in a few minutes.")
+                        log.error(f"Failed AGAIN to send profile pic: {e}")
+                    await asyncio.sleep(5)
 
     @commands.command(name="prestige")
     @commands.guild_only()
@@ -425,6 +564,8 @@ class UserCommands(commands.Cog):
         Prestige your rank!
         Once you have reached this servers prestige level requirement, you can
         reset your level and experience to gain a prestige level and any perks associated with it
+
+        If you are over level and xp when you prestige, your xp and levels will carry over
         """
         conf = self.data[ctx.guild.id]
         perms = ctx.channel.permissions_for(ctx.guild.me).manage_roles
@@ -445,25 +586,7 @@ class UserCommands(commands.Cog):
         prestige = int(user["prestige"])
         pending_prestige = str(prestige + 1)
         # First add new prestige role
-        if current_level >= required_level:
-            if pending_prestige in prestige_data:
-                role_id = prestige_data[pending_prestige]["role"]
-                role = ctx.guild.get_role(role_id) if role_id else None
-                emoji = prestige_data[pending_prestige]["emoji"]
-                if perms and role:
-                    await ctx.author.add_roles(role)
-                self.data[ctx.guild.id]["users"][user_id]["prestige"] = int(pending_prestige)
-                self.data[ctx.guild.id]["users"][user_id]["emoji"] = emoji
-                self.data[ctx.guild.id]["users"][user_id]["level"] = 1
-                self.data[ctx.guild.id]["users"][user_id]["xp"] = 0
-                embed = discord.Embed(
-                    description=f"You have reached Prestige {pending_prestige}!",
-                    color=ctx.author.color
-                )
-                await ctx.send(embed=embed)
-            else:
-                return await ctx.send(_(f"Prestige level {pending_prestige} has not been set yet!"))
-        else:
+        if current_level < required_level:
             msg = f"**You are not eligible to prestige yet!**\n" \
                   f"`Your level:     `{current_level}\n" \
                   f"`Required Level: `{required_level}"
@@ -472,6 +595,33 @@ class UserCommands(commands.Cog):
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
+
+        if pending_prestige not in prestige_data:
+            return await ctx.send(_(f"Prestige level {pending_prestige} has not been set yet!"))
+
+        role_id = prestige_data[pending_prestige]["role"]
+        role = ctx.guild.get_role(role_id) if role_id else None
+        emoji = prestige_data[pending_prestige]["emoji"]
+        if perms and role:
+            try:
+                await ctx.author.add_roles(role)
+            except discord.Forbidden:
+                await ctx.send(_(f"I do not have the proper permissions to assign you the {role.mention} role"))
+
+        current_xp = user["xp"]
+        xp_at_prestige = get_xp(required_level, conf["base"], conf["exp"])
+        leftover_xp = current_xp - xp_at_prestige if current_xp > xp_at_prestige else 0
+        newlevel = get_level(leftover_xp, conf["base"], conf["exp"]) if leftover_xp > 0 else 1
+
+        self.data[ctx.guild.id]["users"][user_id]["prestige"] = int(pending_prestige)
+        self.data[ctx.guild.id]["users"][user_id]["emoji"] = emoji
+        self.data[ctx.guild.id]["users"][user_id]["level"] = newlevel
+        self.data[ctx.guild.id]["users"][user_id]["xp"] = leftover_xp
+        embed = discord.Embed(
+            description=f"You have reached Prestige {pending_prestige}!",
+            color=ctx.author.color
+        )
+        await ctx.send(embed=embed)
 
         # Then remove old prestige role if autoremove is toggled
         if prestige > 0 and not conf["stackprestigeroles"]:

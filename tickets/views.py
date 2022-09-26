@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Union
+import traceback
 
 import discord
 from redbot.core import commands, Config
@@ -122,7 +123,9 @@ class SupportButton(discord.ui.Button):
         try:
             await self.create_ticket(interaction)
         except Exception as e:
-            log.error(f"Failed to create ticket in {interaction.guild.name}: {e}")
+            log.error(f"Failed to create ticket in {interaction.guild.name}: {e}\n"
+                      f"TRACEBACK\n"
+                      f"{traceback.format_exc()}")
 
     async def create_ticket(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -143,7 +146,7 @@ class SupportButton(discord.ui.Button):
             em = discord.Embed(description=_(f"The category for this support panel cannot be found!\n"
                                              f"please contact an admin!"), color=discord.Color.red())
             return await interaction.response.send_message(embed=em, ephemeral=True)
-        can_read = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+        can_read_send = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         read_and_manage = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
         support = [
             guild.get_role(role_id) for role_id in conf["support_roles"] if guild.get_role(role_id)
@@ -151,10 +154,10 @@ class SupportButton(discord.ui.Button):
         overwrite = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             guild.me: read_and_manage,
-            user: can_read
+            user: can_read_send
         }
         for role in support:
-            overwrite[role] = can_read
+            overwrite[role] = can_read_send
         num = conf["panels"][self.panel_name]["ticket_num"]
         now = datetime.now()
         name_fmt = conf["panels"][self.panel_name]["ticket_name"]
