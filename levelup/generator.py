@@ -2,15 +2,18 @@ import logging
 import os
 import random
 from io import BytesIO
-from math import sqrt
+from math import sqrt, ceil
 from typing import Union
 
 import colorgram
 import requests
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+
 from redbot.core.data_manager import bundled_data_path
 from redbot.core.i18n import Translator
 from redbot.core.utils.chat_formatting import humanize_number
+
+from levelup.utils.core import Pilmoji
 
 log = logging.getLogger("red.vrt.levelup.generator")
 _ = Translator("LevelUp", __file__)
@@ -39,7 +42,6 @@ class Generator:
             bg_image: str = None,
             profile_image: str = "https://i.imgur.com/sUYWCve.png",
             level: int = 1,
-            current_xp: int = 0,
             user_xp: int = 0,
             next_xp: int = 100,
             user_position: str = "1",
@@ -56,27 +58,46 @@ class Generator:
             role_icon: str = None
     ):
         # Colors
+        base = self.rand_rgb()
+        namecolor = self.rand_rgb()
+        statcolor = self.rand_rgb()
+        lvlbarcolor = self.rand_rgb()
+        # Color distancing is more strict if user hasn't defined color
+        namedistance = 250
+        statdistance = 250
+        lvldistance = 250
         if colors:
+            # Relax distance for colors that are defined
             base = colors["base"]
-            namecolor = colors["name"] if colors["name"] else self.rand_rgb()
-            statcolor = colors["stat"] if colors["stat"] else self.rand_rgb()
-            lvlbarcolor = colors["levelbar"] if colors["levelbar"] else base
-        else:
-            base = self.rand_rgb()
-            namecolor = self.rand_rgb()
-            statcolor = self.rand_rgb()
-            lvlbarcolor = self.rand_rgb()
+            if colors["name"]:
+                namecolor = colors["name"]
+                namedistance = 100
+            if colors["stat"]:
+                statcolor = colors["stat"]
+                statdistance = 100
+            if colors["levelbar"]:
+                lvlbarcolor = colors["levelbar"]
+                lvldistance = 100
+            else:
+                lvlbarcolor = base
+
         default_fill = (0, 0, 0)
 
         # Set canvas
         if bg_image and bg_image != "random":
-            bg_bytes = self.get_image_content_from_url(bg_image)
-            try:
-                card = Image.open(BytesIO(bg_bytes))
-            except UnidentifiedImageError:
-                card = self.get_random_background()
+            bgpath = os.path.join(bundled_data_path(self), "backgrounds")
+            defaults = [i for i in os.listdir(bgpath)]
+            if bg_image in defaults:
+                card = Image.open(os.path.join(bgpath, bg_image))
+            else:
+                bg_bytes = self.get_image_content_from_url(bg_image)
+                try:
+                    card = Image.open(BytesIO(bg_bytes))
+                except UnidentifiedImageError:
+                    card = self.get_random_background()
         else:
             card = self.get_random_background()
+
         card = self.force_aspect_ratio(card).convert("RGBA").resize((1050, 450), Image.Resampling.LANCZOS)
 
         # Coord setup
@@ -97,20 +118,26 @@ class Generator:
         namesection = self.get_sample_section(card, namebox)
         namebg = self.get_img_color(namesection)
         namefill = default_fill
-        while self.distance(namecolor, namebg) < 240:
+        while self.distance(namecolor, namebg) < namedistance:
             namecolor = self.rand_rgb()
-        if self.distance(namefill, namecolor) < 230:
+        if self.distance(namefill, namecolor) < namedistance - 50:
             namefill = self.inv_rgb(namefill)
 
         # Sample stat box colors and make sure they're not too similar with the background
         statbox = (bar_start, stats_y, bar_start + 400, bar_top)
         statsection = self.get_sample_section(card, statbox)
         statbg = self.get_img_color(statsection)
-        statstxtfil = default_fill
-        while self.distance(statcolor, statbg) < 240:
+        statstxtfill = default_fill
+        while self.distance(statcolor, statbg) < statdistance:
             statcolor = self.rand_rgb()
-        if self.distance(statstxtfil, statcolor) < 230:
-            statstxtfil = self.inv_rgb(statstxtfil)
+        if self.distance(statstxtfill, statcolor) < statdistance - 50:
+            statstxtfill = self.inv_rgb(statstxtfill)
+
+        lvlbox = (bar_start, bar_top, bar_end, bar_bottom)
+        lvlsection = self.get_sample_section(card, lvlbox)
+        lvlbg = self.get_img_color(lvlsection)
+        while self.distance(lvlbarcolor, lvlbg) < lvldistance:
+            lvlbarcolor = self.rand_rgb()
 
         # get profile pic
         pfp_image = self.get_image_content_from_url(str(profile_image))
@@ -158,23 +185,22 @@ class Generator:
         progress_bar = Image.new("RGBA", (card.size[0] * 4, card.size[1] * 4), (255, 255, 255, 0))
         progress_bar_draw = ImageDraw.Draw(progress_bar)
         # Calculate data for level bar
-        xpneed = next_xp - current_xp
-        xphave = user_xp - current_xp
-        xp_ratio = xphave / xpneed
-        end_of_inner_bar = ((bar_end - bar_start) * xp_ratio) + 400
+        xp_ratio = user_xp / next_xp
+        end_of_inner_bar = ((bar_end - bar_start) * xp_ratio) + bar_start
         # Rectangle 0:left x, 1:top y, 2:right x, 3:bottom y
         # Draw level bar outline
+        thickness = 8
         progress_bar_draw.rounded_rectangle(
             (bar_start * 4, bar_top * 4, bar_end * 4, bar_bottom * 4),
             fill=(255, 255, 255, 0),
             outline=lvlbarcolor,
-            width=8,
+            width=thickness,
             radius=90
         )
         # Draw inner level bar 1 pixel smaller on each side
         if end_of_inner_bar > bar_start + 10:
             progress_bar_draw.rounded_rectangle(
-                (bar_start * 4 + 1, bar_top * 4 + 2, end_of_inner_bar * 4 - 1, bar_bottom * 4 - 2),
+                (bar_start * 4 + thickness, bar_top * 4 + thickness, end_of_inner_bar * 4 - thickness, bar_bottom * 4 - thickness),
                 fill=lvlbarcolor,
                 radius=89
             )
@@ -206,19 +232,10 @@ class Generator:
 
         # Paste star and status to profile
         blank.paste(status, (circle_x + 230, circle_y + 240))
-        blank.paste(star, (900, 50))
+        blank.paste(star, (900, name_y + 5))
 
         # New final
         final = Image.alpha_composite(final, blank)
-
-        # Add stats text
-        draw = ImageDraw.Draw(final)
-        name_size = 50
-        name_font = ImageFont.truetype(self.font, name_size)
-
-        stats_size = 35
-        stat_offset = stats_size + 5
-        stats_font = ImageFont.truetype(self.font, stats_size)
 
         # Stat strings
         rank = _(f"Rank: #") + str(user_position)
@@ -226,14 +243,61 @@ class Generator:
         exp = _("Exp: ") + f"{humanize_number(user_xp)}/{humanize_number(next_xp)}"
         message_count = _(f"Messages: ") + messages
         voice = _(f"Voice: ") + voice
-        name = f"{user_name}"
         stars = str(stars)
         bal = _("Balance: ") + f"{humanize_number(balance)} {currency}"
         prestige_str = _(f"Prestige ") + str(prestige)
 
-        # Name text
-        draw.text((bar_start + 10, name_y), name, namecolor,
-                  font=name_font, stroke_width=stroke_width, stroke_fill=namefill)
+        # Setup font sizes
+        draw = ImageDraw.Draw(final)
+
+        name_size = 50
+        name_font = ImageFont.truetype(self.font, name_size)
+        while (name_font.getlength(user_name) + bar_start + 20) > 900:
+            name_size -= 1
+            name_font = ImageFont.truetype(self.font, name_size)
+
+        stats_size = 35
+        stat_offset = stats_size + 5
+        stats_font = ImageFont.truetype(self.font, stats_size)
+
+        star_font = name_font
+        star_fontsize = 50
+        startop = name_y
+        decrement = True
+        while (star_font.getlength(stars) + 960) > final.width - 10:
+            star_fontsize -= 1
+            if decrement:
+                startop += 1
+                decrement = False
+            else:
+                decrement = True
+            star_font = ImageFont.truetype(self.font, star_fontsize)
+
+        # Add stats text
+        # Render name and credits text through pilmoji in case there are emojis
+        with Pilmoji(final) as pilmoji:
+            # Name text
+            pilmoji.text((bar_start + 10, name_y), user_name, namecolor,
+                         font=name_font,
+                         stroke_width=stroke_width,
+                         stroke_fill=namefill,
+                         emoji_scale_factor=1.2,
+                         emoji_position_offset=(0, 5))
+            # Balance
+            pilmoji.text((bar_start + 10, bar_top - 110), bal, statcolor,
+                         font=stats_font,
+                         stroke_width=stroke_width,
+                         stroke_fill=statstxtfill,
+                         emoji_scale_factor=1.2,
+                         emoji_position_offset=(0, 5))
+
+        # # Name text
+        # draw.text((bar_start + 10, name_y), name, namecolor,
+        #           font=name_font, stroke_width=stroke_width, stroke_fill=namefill)
+        # # Balance
+        # draw.text((bar_start + 10, bar_top - 110), bal, statcolor,
+        #           font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfil)
+
         # Prestige
         if prestige:
             draw.text((bar_start + 10, name_y + 55), prestige_str, statcolor,
@@ -241,28 +305,24 @@ class Generator:
         # Stats text
         # Rank
         draw.text((bar_start + 10, stats_y), rank, statcolor,
-                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfil)
+                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
         # Level
         draw.text((bar_start + 10, stats_y + stat_offset), leveltxt, statcolor,
-                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfil)
+                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
         # Messages
         draw.text((bar_start + 210 + 10, stats_y), message_count, statcolor,
-                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfil)
+                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
         # Voice
         draw.text((bar_start + 210 + 10, stats_y + stat_offset), voice, statcolor,
-                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfil)
-        # Balance
-        draw.text((bar_start + 10, bar_top - 110), bal, statcolor,
-                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfil)
+                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
+
         # Exp
         draw.text((bar_start + 10, bar_top - 60), exp, statcolor,
-                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfil)
+                  font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
 
         # Stars
-        starfont = name_font if len(stars) < 3 else stats_font
-        startop = 42 if len(stars) < 3 else 52
         draw.text((960, startop), stars, namecolor,
-                  font=starfont, stroke_width=stroke_width, stroke_fill=namefill)
+                  font=star_font, stroke_width=stroke_width, stroke_fill=namefill)
 
         return final
 
@@ -271,7 +331,6 @@ class Generator:
             bg_image: str = None,
             profile_image: str = "https://i.imgur.com/sUYWCve.png",
             level: int = 1,
-            current_xp: int = 0,
             user_xp: int = 0,
             next_xp: int = 100,
             user_position: str = "1",
@@ -288,49 +347,71 @@ class Generator:
             role_icon: str = None
     ):
         # Colors
+        base = self.rand_rgb()
+        namecolor = self.rand_rgb()
+        statcolor = self.rand_rgb()
+        lvlbarcolor = self.rand_rgb()
+        # Color distancing is more strict if user hasn't defined color
+        namedistance = 250
+        statdistance = 250
+        lvldistance = 250
         if colors:
+            # Relax distance for colors that are defined
             base = colors["base"]
-            namecolor = colors["name"] if colors["name"] else self.rand_rgb()
-            statcolor = colors["stat"] if colors["stat"] else self.rand_rgb()
-            lvlbarcolor = colors["levelbar"] if colors["levelbar"] else base
-        else:
-            base = self.rand_rgb()
-            namecolor = self.rand_rgb()
-            statcolor = self.rand_rgb()
-            lvlbarcolor = self.rand_rgb()
+            if colors["name"]:
+                namecolor = colors["name"]
+                namedistance = 100
+            if colors["stat"]:
+                statcolor = colors["stat"]
+                statdistance = 100
+            if colors["levelbar"]:
+                lvlbarcolor = colors["levelbar"]
+                lvldistance = 100
+            else:
+                lvlbarcolor = base
+
         outlinecolor = (0, 0, 0)
         text_bg = (0, 0, 0)
 
         # Set canvas
+        aspect_ratio = (27, 7)
         if bg_image and bg_image != "random":
-            bg_bytes = self.get_image_content_from_url(bg_image)
-            try:
-                card = Image.open(BytesIO(bg_bytes)).convert("RGBA").resize((900, 240), Image.Resampling.LANCZOS)
-            except UnidentifiedImageError:
-                card = Image.open(self.default_bg).convert("RGBA").resize((900, 240), Image.Resampling.LANCZOS)
-            bg_bytes = BytesIO(self.get_image_content_from_url(bg_image))
-            try:
-                bgcolor = self.get_img_color(bg_bytes)
-            except Exception as e:
-                log.warning(f"Failed to get profile image color: {e}")
-                bgcolor = base
+            bgpath = os.path.join(bundled_data_path(self), "backgrounds")
+            defaults = [i for i in os.listdir(bgpath)]
+            if bg_image in defaults:
+                card = Image.open(os.path.join(bgpath, bg_image))
+            else:
+                bg_bytes = self.get_image_content_from_url(bg_image)
+                try:
+                    card = Image.open(BytesIO(bg_bytes))
+                except UnidentifiedImageError:
+                    card = self.get_random_background()
         else:
-            card = Image.open(self.default_bg).convert("RGBA").resize((900, 240), Image.Resampling.LANCZOS)
-            try:
-                bgcolor = self.get_img_color(self.default_bg)
-            except Exception as e:
-                log.warning(f"Failed to get default image color: {e}")
-                bgcolor = base
+            card = self.get_random_background()
+
+        card = self.force_aspect_ratio(card, aspect_ratio)
+        card = card.convert("RGBA").resize((900, 240), Image.Resampling.LANCZOS)
+        try:
+            bgcolor = self.get_img_color(card)
+        except Exception as e:
+            log.error(f"Failed to get slim profile BG color: {e}")
+            bgcolor = base
 
         # Compare text colors to BG
-        while self.distance(namecolor, bgcolor) < 45:
+        while self.distance(namecolor, bgcolor) < namedistance:
             namecolor = self.rand_rgb()
-        while self.distance(statcolor, bgcolor) < 45:
+        while self.distance(statcolor, bgcolor) < statdistance:
             statcolor = self.rand_rgb()
-        while self.distance(lvlbarcolor, bgcolor) < 45:
+        while self.distance(lvlbarcolor, bgcolor) < lvldistance:
             lvlbarcolor = self.rand_rgb()
         while self.distance(outlinecolor, bgcolor) < 50:
             outlinecolor = self.rand_rgb()
+
+        # Place semi-transparent box over right side
+        blank = Image.new("RGBA", card.size, (255, 255, 255, 0))
+        transparent_box = Image.new("RGBA", card.size, (0, 0, 0, 100))
+        blank.paste(transparent_box, (240, 0))
+        card = Image.alpha_composite(card, blank)
 
         # Draw
         draw = ImageDraw.Draw(card)
@@ -354,12 +435,12 @@ class Generator:
         stars = str(stars)
 
         # stat text
-        draw.text((245, 22), name, namecolor, font=font_normal, stroke_width=1, stroke_fill=text_bg)
-        draw.text((245, 95), rank, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
-        draw.text((245, 125), level, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
-        draw.text((245, 160), exp, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
-        draw.text((450, 95), messages, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
-        draw.text((450, 125), voice, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
+        draw.text((260, 20), name, namecolor, font=font_normal, stroke_width=1, stroke_fill=text_bg)
+        draw.text((260, 95), rank, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
+        draw.text((260, 125), level, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
+        draw.text((260, 160), exp, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
+        draw.text((465, 95), messages, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
+        draw.text((465, 125), voice, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
 
         # STAR TEXT
         if len(str(stars)) < 3:
@@ -372,16 +453,15 @@ class Generator:
         # Adding another blank layer for the progress bar
         progress_bar = Image.new("RGBA", card.size, (255, 255, 255, 0))
         progress_bar_draw = ImageDraw.Draw(progress_bar)
+        bar_start = 260
+        bar_end = 740
         # rectangle 0:x, 1:top y, 2:length, 3:bottom y
-        progress_bar_draw.rectangle((246, 200, 741, 215), fill=(255, 255, 255, 0), outline=lvlbarcolor)
+        progress_bar_draw.rectangle((bar_start, 200, bar_end, 215), fill=(255, 255, 255, 0), outline=lvlbarcolor)
 
-        xpneed = next_xp - current_xp
-        xphave = user_xp - current_xp
+        xp_ratio = user_xp / next_xp
+        end_of_inner_bar = ((bar_end - bar_start) * xp_ratio) + bar_start
 
-        current_percentage = (xphave / xpneed) * 100
-        length_of_bar = (current_percentage * 4.9) + 248
-
-        progress_bar_draw.rectangle((248, 203, length_of_bar, 212), fill=statcolor)
+        progress_bar_draw.rectangle((bar_start + 2, 203, end_of_inner_bar - 2, 212), fill=statcolor)
 
         # pfp border - draw at 4x and resample down to 1x for nice smooth circles
         circle_img = Image.new("RGBA", (800, 800))
@@ -449,20 +529,26 @@ class Generator:
             color: tuple = (0, 0, 0),
     ):
         if bg_image and bg_image != "random":
-            bg_bytes = self.get_image_content_from_url(bg_image)
-            try:
-                card = Image.open(BytesIO(bg_bytes))
-            except UnidentifiedImageError:
-                card = self.get_random_background()
+            bgpath = os.path.join(bundled_data_path(self), "backgrounds")
+            defaults = [i for i in os.listdir(bgpath)]
+            if bg_image in defaults:
+                card = Image.open(os.path.join(bgpath, bg_image))
+            else:
+                bg_bytes = self.get_image_content_from_url(bg_image)
+                try:
+                    card = Image.open(BytesIO(bg_bytes))
+                except UnidentifiedImageError:
+                    card = self.get_random_background()
         else:
             card = self.get_random_background()
-        fillcolor = (0, 0, 0)
-        txtcolor = color
 
         card_size = (180, 60)
         aspect_ratio = (18, 6)
-        card = self.force_aspect_ratio(card, aspect_ratio).convert("RGBA").resize(card_size, Image.Resampling.LANCZOS)
+        card = self.force_aspect_ratio(card, aspect_ratio).convert("RGBA")
+        card = card.resize(card_size, Image.Resampling.LANCZOS)
 
+        fillcolor = (0, 0, 0)
+        txtcolor = color
         # Draw rounded rectangle at 4x size and scale down to crop card to
         mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
         mask_draw = ImageDraw.Draw(mask)
@@ -520,6 +606,82 @@ class Generator:
         text_y = int((card.size[1] / 2) - (fontsize / 1.4))
         draw.text((text_x, text_y), string, txtcolor, font=font, stroke_width=1, stroke_fill=fillcolor)
         return final
+
+    def get_all_backgrounds(self):
+        backgrounds = os.path.join(bundled_data_path(self), "backgrounds")
+        choices = os.listdir(backgrounds)
+        if not choices:
+            return None
+        imgs = []
+        for filename in choices:
+            filepath = os.path.join(backgrounds, filename)
+            img = self.force_aspect_ratio(Image.open(filepath))
+            img = img.convert("RGBA").resize((1050, 450), Image.Resampling.LANCZOS)
+            draw = ImageDraw.Draw(img)
+            ext_replace = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+            txt = filename
+            for ext in ext_replace:
+                txt = txt.replace(ext, "")
+            draw.text((10, 10), txt, font=ImageFont.truetype(self.font, 100))
+            if not img:
+                log.error(f"Failed to load image for default background '{filename}`")
+                continue
+            imgs.append((img, filename))
+
+        # Sort by name
+        imgs = sorted(imgs, key=lambda key: key[1])
+
+        # Make grid 4 wide by however many tall
+        rowcount = ceil(len(imgs) / 4)
+        # Make a bunch of rows of 4
+        rows = []
+        index = 0
+        for i in range(rowcount):
+            first = None
+            final = None
+            for x in range(4):
+                if index >= len(imgs):
+                    continue
+                img_obj = imgs[index][0]
+                index += 1
+                if first is None:
+                    first = img_obj
+                    continue
+                if final is None:
+                    final = self.concat_img_h(first, img_obj)
+                else:
+                    final = self.concat_img_h(final, img_obj)
+            rows.append(final)
+
+        # Now concat the rows vertically
+        first = None
+        final = None
+        for row_img_obj in rows:
+            if row_img_obj is None:
+                continue
+            if first is None:
+                first = row_img_obj
+                continue
+            if final is None:
+                final = self.concat_img_v(first, row_img_obj)
+            else:
+                final = self.concat_img_v(final, row_img_obj)
+
+        return final
+
+    @staticmethod
+    def concat_img_v(im1: Image, im2: Image) -> Image:
+        new = Image.new("RGBA", (im1.width, im1.height + im2.height))
+        new.paste(im1, (0, 0))
+        new.paste(im2, (0, im1.height))
+        return new
+
+    @staticmethod
+    def concat_img_h(im1: Image, im2: Image) -> Image:
+        new = Image.new("RGBA", (im1.width + im2.width, im1.height))
+        new.paste(im1, (0, 0))
+        new.paste(im2, (im1.width, 0))
+        return new
 
     @staticmethod
     def get_image_content_from_url(url: str) -> Union[bytes, None]:
@@ -599,3 +761,12 @@ class Generator:
         choice = random.choice(os.listdir(bg_dir))
         bg_file = os.path.join(bg_dir, choice)
         return Image.open(bg_file)
+
+    @staticmethod
+    def has_emoji(text: str) -> Union[str, bool]:
+        if text.count(":") < 2:
+            return False
+        if "<" in text:
+            return "custom"
+        else:
+            return "unicode"

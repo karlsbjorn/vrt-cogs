@@ -21,7 +21,7 @@ from redbot.core.utils.chat_formatting import box, humanize_number
 from redbot.core.utils.predicates import MessagePredicate
 
 from .base import UserCommands
-from .formatter import (
+from levelup.utils.formatter import (
     time_formatter,
     hex_to_rgb,
     get_level,
@@ -56,7 +56,7 @@ async def confirm(ctx: commands.Context):
 class LevelUp(UserCommands, commands.Cog):
     """Local Discord Leveling System"""
     __author__ = "Vertyco#0117"
-    __version__ = "1.10.35"
+    __version__ = "1.12.35"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -97,6 +97,7 @@ class LevelUp(UserCommands, commands.Cog):
             "length": 0,  # Minimum length of message to be considered eligible for XP gain
             "starcooldown": 3600,  # Cooldown in seconds for users to give each other stars
             "starmention": True,  # Mention when users add a star
+            "starmentionautodelete": 30,  # Auto delete star mention reactions (0 to disable)
             "usepics": False,  # Use Pics instead of embeds for leveling, Embeds are default
             "autoremove": False,  # Remove previous role on level up
             "stackprestigeroles": True,  # Toggle whether to stack prestige roles
@@ -107,6 +108,7 @@ class LevelUp(UserCommands, commands.Cog):
             "notifydm": False,  # Toggle notify member of level up in DMs
             "mention": False,  # Toggle whether to mention the user
             "notifylog": None,  # Notify member of level up in a set channel
+            "notify": True,  # Toggle whether to notify member of levelups if notify log channel is not set
         }
         default_global = {"ignored_guilds": [], "cache_seconds": 15}
         self.config.register_guild(**default_guild)
@@ -388,18 +390,19 @@ class LevelUp(UserCommands, commands.Cog):
         dm = conf["notifydm"]
         mention = conf["mention"]
         channel = conf["notifylog"]
+        notify = conf["notify"]
 
         channel = guild.get_channel(channel) if channel else None
         if message and not channel:
             channel = message.channel
 
-        perms = channel.permissions_for(guild.me).send_messages if channel else False
-        can_send = True if perms else False
+        perms = [
+            channel.permissions_for(guild.me).send_messages if channel else False,
+            channel.permissions_for(guild.me).attach_files if channel else False,
+            channel.permissions_for(guild.me).embed_links if channel else False
+        ]
 
         usepics = conf["usepics"]
-        can_send_attachments = False
-        if channel:
-            can_send_attachments = channel.permissions_for(guild.me).attach_files
         member = guild.get_member(int(user))
         if not member:
             return
@@ -657,9 +660,11 @@ class LevelUp(UserCommands, commands.Cog):
         deafended = conf["deafened"]
         invisible = conf["invisible"]
         notifydm = conf["notifydm"]
+        lvlmessage = conf["notify"]
         mention = conf["mention"]
         starcooldown = conf["starcooldown"]
         starmention = conf["starmention"]
+        stardelete = conf["starmentionautodelete"] if conf["starmentionautodelete"] else "Disabled"
         sc = time_formatter(starcooldown)
         notifylog = ctx.guild.get_channel(conf["notifylog"])
         if not notifylog:
@@ -668,26 +673,28 @@ class LevelUp(UserCommands, commands.Cog):
             notifylog = notifylog.mention
 
         msg = f"**Messages**\n" \
-              f"`Message XP:       `{xp[0]}-{xp[1]}\n" \
-              f"`Min Msg Length:   `{length}\n" \
-              f"`Cooldown:         `{cooldown} seconds\n" \
+              f"`Message XP:        `{xp[0]}-{xp[1]}\n" \
+              f"`Min Msg Length:    `{length}\n" \
+              f"`Cooldown:          `{cooldown} seconds\n" \
               f"**Voice**\n" \
-              f"`Voice XP:         `{voicexp} per minute\n" \
-              f"`Ignore Muted:     `{muted}\n" \
-              f"`Ignore Solo:      `{solo}\n" \
-              f"`Ignore Deafened:  `{deafended}\n" \
-              f"`Ignore Invisible: `{invisible}\n" \
+              f"`Voice XP:          `{voicexp} per minute\n" \
+              f"`Ignore Muted:      `{muted}\n" \
+              f"`Ignore Solo:       `{solo}\n" \
+              f"`Ignore Deafened:   `{deafended}\n" \
+              f"`Ignore Invisible:  `{invisible}\n" \
               f"**Level Algorithm**\n" \
-              f"`Base Multiplier:  `{base}\n" \
-              f"`Exp Multiplier:   `{exp}\n" \
+              f"`Base Multiplier:   `{base}\n" \
+              f"`Exp Multiplier:    `{exp}\n" \
               f"**LevelUps**\n" \
-              f"`Notify in DMs:    `{notifydm}\n" \
-              f"`Mention User:     `{mention}\n" \
-              f"`AutoRemove Roles: `{autoremove}\n" \
-              f"`LevelUp Channel:  `{notifylog}\n" \
+              f"`LevelUp Notify:    `{lvlmessage}\n" \
+              f"`Notify in DMs:     `{notifydm}\n" \
+              f"`Mention User:      `{mention}\n" \
+              f"`AutoRemove Roles:  `{autoremove}\n" \
+              f"`LevelUp Channel:   `{notifylog}\n" \
               f"**Stars**\n" \
-              f"`Cooldown:         `{sc}\n" \
-              f"`React Mention:    `{starmention}\n"
+              f"`Cooldown:          `{sc}\n" \
+              f"`React Mention:     `{starmention}\n" \
+              f"`MentionAutoDelete: `{stardelete}\n"
         if levelroles:
             msg += "**Levels**\n"
             for level, role_id in levelroles.items():
@@ -849,20 +856,30 @@ class LevelUp(UserCommands, commands.Cog):
         await ctx.tick()
         await self.save_cache(ctx.guild)
 
-    @admin_group.command(name="looptimes")
-    async def get_looptimes(self, ctx: commands.Context):
-        """View current looptimes"""
+    @admin_group.command(name="view")
+    async def admin_view(self, ctx: commands.Context):
+        """View current loop times and cached data"""
+        cache = [
+            self.data.copy(),
+            self.voice.copy(),
+            self.stars.copy(),
+            self.profiles.copy()
+        ]
+        cachesize = self.get_size(sum(sys.getsizeof(i) for i in cache))
         lt = self.looptimes
-        text = f"`Voice Checker: `{lt['checkvoice']}ms\n" \
-               f"`Cache Dumper:  `{lt['cachedump']}ms\n" \
-               f"`Lvl Assignment: `{lt['lvlassignavg']}ms"
-        embed = discord.Embed(
-            title="Task Loop Times",
-            description=_(text),
-            color=discord.Color.random()
-        )
-        embed.set_footer(text=_("Units are the average times in milliseconds"))
-        await ctx.send(embed=embed)
+        ct = self.cache_seconds
+
+        em = discord.Embed(description=_("Cog Stats"), color=ctx.author.color)
+
+        looptimes = _("`Voice Checker: `") + humanize_number(lt["checkvoice"]) + "ms\n"
+        looptimes += _("`Cache Dumping: `") + humanize_number(lt["cachedump"]) + "ms\n"
+        looptimes += _("`Lvl Assign:    `") + humanize_number(lt["lvlassignavg"]) + "ms\n"
+        em.add_field(name=_("Loop Times"), value=looptimes, inline=False)
+
+        cachetxt = _("`Profile Cache Time: `") + (_("Disabled\n") if not ct else f"{humanize_number(ct)} seconds\n")
+        cachetxt += _("`Cache Size:         `") + cachesize
+        em.add_field(name=_("Cache"), value=cachetxt, inline=False)
+        await ctx.send(embed=em)
 
     @admin_group.command(name="globalbackup")
     @commands.is_owner()
@@ -1081,7 +1098,7 @@ class LevelUp(UserCommands, commands.Cog):
                         self.data[guild.id]["users"][user_id]["xp"] = xp
 
                     # Import rep
-                    self.data[guild.id]["users"][user_id]["stars"] = int(userinfo["rep"])
+                    self.data[guild.id]["users"][user_id]["stars"] = int(userinfo["rep"]) if userinfo["rep"] else 0
                     users_imported += 1
 
             embed = discord.Embed(
@@ -1478,6 +1495,19 @@ class LevelUp(UserCommands, commands.Cog):
             await ctx.send(_("Star reaction mention **Enabled**"))
         await self.save_cache(ctx.guild)
 
+    @lvl_group.command(name="starmentiondelete")
+    async def toggle_starmention_autodelete(self, ctx: commands.Context, deleted_after: int):
+        """
+        Toggle whether the bot auto-deletes the star mentions
+        Set to 0 to disable auto-delete
+        """
+        self.data[ctx.guild.id]["starmentionautodelete"] = int(deleted_after)
+        if deleted_after:
+            await ctx.send(_("Star reaction mentions will auto-delete after ") + str(deleted_after) + _(" seconds"))
+        else:
+            await ctx.send(_("Star reaction mentions will not be deleted"))
+        await self.save_cache(ctx.guild)
+
     @lvl_group.command(name="levelchannel")
     async def set_level_channel(self, ctx: commands.Context, levelup_channel: discord.TextChannel = None):
         """
@@ -1496,6 +1526,18 @@ class LevelUp(UserCommands, commands.Cog):
                 return await ctx.send(_(f"I do not have permission to send messages to that channel."))
             self.data[ctx.guild.id]["notifylog"] = levelup_channel.id
             await ctx.send(_(f"LevelUp channel has been set to {levelup_channel.mention}"))
+        await self.save_cache(ctx.guild)
+
+    @lvl_group.command(name="levelnotify")
+    async def toggle_levelup_notifications(self, ctx: commands.Context):
+        """Toggle the level up message when a user levels up"""
+        notify = self.data[ctx.guild.id]["notify"]
+        if notify:
+            self.data[ctx.guild.id]["notify"] = False
+            await ctx.send("LevelUp notifications have been **Disabled**")
+        else:
+            self.data[ctx.guild.id]["notify"] = True
+            await ctx.send("LevelUp notifications have been **Enabled**")
         await self.save_cache(ctx.guild)
 
     @lvl_group.command(name="starcooldown")
