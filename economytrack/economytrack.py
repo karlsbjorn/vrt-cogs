@@ -3,10 +3,10 @@ import logging
 from datetime import datetime
 from time import monotonic
 
+import discord
 from discord.ext import tasks
 from redbot.core import commands, Config, bank
 from redbot.core.bot import Red
-from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils import AsyncIter
 
 from economytrack.abc import CompositeMetaClass
@@ -14,25 +14,23 @@ from economytrack.commands import EconomyTrackCommands
 from economytrack.graph import PlotGraph
 
 log = logging.getLogger("red.vrt.economytrack")
-_ = Translator("EconomyTrack", __file__)
 
 
 # Credits to Vexed01 for having a great reference cog for some of the logic that went into this!
 # Vex-Cogs - https://github.com/Vexed01/Vex-Cogs - (StatTrack)
 
 
-@cog_i18n(_)
 class EconomyTrack(commands.Cog, EconomyTrackCommands, PlotGraph, metaclass=CompositeMetaClass):
     """Track your economy's total balance over time"""
     __author__ = "Vertyco"
-    __version__ = "0.0.3"
+    __version__ = "0.1.5"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
         info = f"{helpcmd}\n" \
                f"Cog Version: {self.__version__}\n" \
                f"Author: {self.__author__}\n"
-        return _(info)
+        return info
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
         """No data to delete"""
@@ -59,8 +57,7 @@ class EconomyTrack(commands.Cog, EconomyTrackCommands, PlotGraph, metaclass=Comp
             max_points = 52560000  # 100 years is plenty
         now = datetime.now().replace(microsecond=0, second=0).timestamp()
         if is_global:
-            members = await bank._config.all_users()
-            total = sum(value["balance"] for value in members.values())
+            total = await self.get_total_bal()
             async with self.config.data() as data:
                 data.append((now, total))
                 if len(data) > max_points:
@@ -69,8 +66,7 @@ class EconomyTrack(commands.Cog, EconomyTrackCommands, PlotGraph, metaclass=Comp
             async for guild in AsyncIter(self.bot.guilds):
                 if not await self.config.guild(guild).enabled():
                     continue
-                members = await bank._config.all_members(guild)
-                total = sum(value["balance"] for value in members.values())
+                total = await self.get_total_bal(guild)
                 async with self.config.guild(guild).data() as data:
                     data.append((now, total))
                     if len(data) > max_points:
@@ -82,8 +78,18 @@ class EconomyTrack(commands.Cog, EconomyTrackCommands, PlotGraph, metaclass=Comp
         else:
             self.looptime = round((avg_iter + iter_time) / 2)
 
+    @staticmethod
+    async def get_total_bal(guild: discord.guild = None) -> int:
+        is_global = await bank.is_global()
+        if is_global:
+            members = await bank._config.all_users()
+        else:
+            members = await bank._config.all_members(guild)
+        total = sum(value["balance"] for value in members.values())
+        return int(total)
+
     @bank_loop.before_loop
     async def before_bank_loop(self):
         await self.bot.wait_until_red_ready()
         await asyncio.sleep(60)
-        log.info(_("EconomyTrack Ready"))
+        log.info("EconomyTrack Ready")

@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import BytesIO
 from time import monotonic
@@ -17,10 +18,10 @@ import tabulate
 from discord.ext import tasks
 from redbot.core import commands, Config
 from redbot.core.i18n import Translator, cog_i18n
-from redbot.core.utils.chat_formatting import box, humanize_number
+from redbot.core.utils import AsyncIter
+from redbot.core.utils.chat_formatting import box, humanize_number, humanize_list
 from redbot.core.utils.predicates import MessagePredicate
 
-from .base import UserCommands
 from levelup.utils.formatter import (
     time_formatter,
     hex_to_rgb,
@@ -28,6 +29,7 @@ from levelup.utils.formatter import (
     get_xp,
     time_to_level
 )
+from .base import UserCommands
 
 matplotlib.use("agg")
 plt.switch_backend("agg")
@@ -50,13 +52,13 @@ async def confirm(ctx: commands.Context):
 # CREDITS
 # Thanks aikaterna#1393 and epic guy#0715 for the caching advice :)
 # Thanks Fixator10#7133 for having a Leveler cog to get a reference for what kinda settings a leveler cog might need!
-# Thanks Zephyrkul#1089 for the help with leaderboard formatting!
+# Thanks Zephyrkul#1089 for the leaderboard formatting ideas!
 
 @cog_i18n(_)
 class LevelUp(UserCommands, commands.Cog):
     """Local Discord Leveling System"""
     __author__ = "Vertyco#0117"
-    __version__ = "1.12.35"
+    __version__ = "2.16.43"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -64,7 +66,7 @@ class LevelUp(UserCommands, commands.Cog):
                f"Cog Version: {self.__version__}\n" \
                f"Author: {self.__author__}\n" \
                f"Contributors: aikaterna#1393"
-        return _(info)
+        return info
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
         deleted = False
@@ -91,6 +93,7 @@ class LevelUp(UserCommands, commands.Cog):
             "xp": [3, 6],  # Min/Max XP per message
             "voicexp": 2,  # XP per minute in voice
             "rolebonuses": {"msg": {}, "voice": {}},  # Roles that give a bonus range of XP
+            "channelbonuses": {"msg": {}, "voice": {}},  # ChannelID keys, list values for bonus xp range
             "cooldown": 60,  # Only gives XP every 30 seconds
             "base": 100,  # Base denominator for level algorithm, higher takes longer to level
             "exp": 2,  # Exponent for level algorithm, higher is a more exponential/steeper curve
@@ -99,6 +102,7 @@ class LevelUp(UserCommands, commands.Cog):
             "starmention": True,  # Mention when users add a star
             "starmentionautodelete": 30,  # Auto delete star mention reactions (0 to disable)
             "usepics": False,  # Use Pics instead of embeds for leveling, Embeds are default
+            "barlength": 15,  # Progress bar length for embed profiles
             "autoremove": False,  # Remove previous role on level up
             "stackprestigeroles": True,  # Toggle whether to stack prestige roles
             "muted": True,  # Ignore XP while being muted in voice
@@ -108,11 +112,14 @@ class LevelUp(UserCommands, commands.Cog):
             "notifydm": False,  # Toggle notify member of level up in DMs
             "mention": False,  # Toggle whether to mention the user
             "notifylog": None,  # Notify member of level up in a set channel
-            "notify": True,  # Toggle whether to notify member of levelups if notify log channel is not set
+            "notify": True,  # Toggle whether to notify member of levelups if notify log channel is not set,
+            "showbal": True,  # Show economy balance
         }
-        default_global = {"ignored_guilds": [], "cache_seconds": 15}
+        default_global = {"ignored_guilds": [], "cache_seconds": 15, "render_gifs": False}
         self.config.register_guild(**default_guild)
         self.config.register_global(**default_global)
+
+        self.threadpool = ThreadPoolExecutor(thread_name_prefix="levelup")
 
         # Main cache
         self.data = {}
@@ -120,6 +127,15 @@ class LevelUp(UserCommands, commands.Cog):
         # Global conf cache
         self.ignored_guilds = []
         self.cache_seconds = 15
+        self.render_gifs = False
+        self.bgdata = {
+            "img": None,
+            "names": []
+        }
+        self.fdata = {
+            "img": None,
+            "names": []
+        }
 
         # Guild id's as strings, user id's as strings
         self.lastmsg = {}  # Last sent message for users
@@ -186,6 +202,8 @@ class LevelUp(UserCommands, commands.Cog):
         guild = self.bot.get_guild(payload.guild_id)
         if not guild:
             return
+        if str(guild.id) in self.ignored_guilds:
+            return
         chan = guild.get_channel(payload.channel_id)
         if not chan:
             return
@@ -201,12 +219,14 @@ class LevelUp(UserCommands, commands.Cog):
         # Ignore people adding reactions to their own messages
         if msg.author.id == payload.user_id:
             return
-
         now = datetime.now()
         gid = payload.guild_id
         giver_id = str(payload.user_id)
         giver = payload.member
         receiver = msg.author
+
+        if guild.id not in self.data:
+            await self.initialize()
 
         can_give = False
         if giver_id not in self.stars[gid]:
@@ -246,11 +266,21 @@ class LevelUp(UserCommands, commands.Cog):
         # Check whether the message author isn't on allowlist/blocklist
         if not await self.bot.allowed_by_whitelist_blacklist(message.author):
             return
+        gid = message.guild.id
+        uid = message.author.id
+        cid = message.channel.id
+        if gid not in self.data:
+            await self.initialize()
+        if uid in self.data[gid]["ignoredusers"]:
+            return
+        if cid in self.data[gid]["ignoredchannels"]:
+            return
         await self.message_handler(message)
 
     async def initialize(self):
         self.ignored_guilds = await self.config.ignored_guilds()
         self.cache_seconds = await self.config.cache_seconds()
+        self.render_gifs = await self.config.render_gifs()
         allclean = []
         for guild in self.bot.guilds:
             gid = guild.id
@@ -270,11 +300,17 @@ class LevelUp(UserCommands, commands.Cog):
         if allclean and self.first_run:
             log.info(allclean)
             await self.save_cache()
+        if self.first_run:
+            log.info("Config initialized")
         self.first_run = False
 
     @staticmethod
     def cleanup(data: dict) -> tuple:
         conf = data.copy()
+        if isinstance(conf["channelbonuses"]["msg"], list):
+            conf["channelbonuses"]["msg"] = {}
+        if isinstance(conf["channelbonuses"]["voice"], list):
+            conf["channelbonuses"]["voice"] = {}
         cleaned = []
         # Check prestige data
         if conf["prestigedata"]:
@@ -306,10 +342,13 @@ class LevelUp(UserCommands, commands.Cog):
             if "levelbar" not in conf["users"][uid]["colors"]:
                 conf["users"][uid]["colors"]["levelbar"] = None
                 cleaned.append("levelbar not in colors")
+            if "font" not in user:
+                conf["users"][uid]["font"] = None
+                cleaned.append("font not in user")
 
             # Make sure all related stats are not strings
             for k, v in user.items():
-                skip = ["background", "emoji", "full", "colors"]
+                skip = ["background", "emoji", "full", "colors", "font"]
                 if k in skip:
                     continue
                 if isinstance(v, int) or isinstance(v, float):
@@ -339,6 +378,7 @@ class LevelUp(UserCommands, commands.Cog):
         if not target_guild:
             await self.config.ignored_guilds.set(self.ignored_guilds)
             await self.config.cache_seconds.set(self.cache_seconds)
+            await self.config.render_gifs.set(self.render_gifs)
 
         cache = self.data.copy()
         for gid, data in cache.items():
@@ -360,7 +400,8 @@ class LevelUp(UserCommands, commands.Cog):
             "stars": 0,
             "background": None,
             "full": True,
-            "colors": {"name": None, "stat": None, "levelbar": None}
+            "colors": {"name": None, "stat": None, "levelbar": None},
+            "font": None
         }
 
     async def check_levelups(self, guild_id: int, user_id: str, message: discord.Message = None):
@@ -469,6 +510,7 @@ class LevelUp(UserCommands, commands.Cog):
         xpmax = int(conf["xp"][1]) + 1
         xp = random.choice(range(xpmin, xpmax))
         bonuses = conf["rolebonuses"]["msg"]
+        channel_bonuses = conf["channelbonuses"]["msg"]
         bonusrole = None
 
         users = self.data[gid]["users"]
@@ -502,14 +544,23 @@ class LevelUp(UserCommands, commands.Cog):
                 addxp = False
 
         if addxp:  # Give XP
-            self.lastmsg[gid][uid] = now
-            self.data[gid]["users"][uid]["xp"] += xp
+            xp_to_give = xp
             if bonusrole:
                 bonusrange = bonuses[bonusrole]
                 bmin = int(bonusrange[0])
                 bmax = int(bonusrange[1]) + 1
                 bxp = random.choice(range(bmin, bmax))
-                self.data[gid]["users"][uid]["xp"] += bxp
+                xp_to_give += bxp
+            cid = str(message.channel.id)
+            if cid in channel_bonuses:
+                bonuschannelrange = channel_bonuses[cid]
+                bmin = int(bonuschannelrange[0])
+                bmax = int(bonuschannelrange[1]) + 1
+                bxp = random.choice(range(bmin, bmax))
+                xp_to_give += bxp
+            self.lastmsg[gid][uid] = now
+            self.data[gid]["users"][uid]["xp"] += xp_to_give
+
         self.data[gid]["users"][uid]["messages"] += 1
         await self.check_levelups(gid, uid, message)
 
@@ -524,8 +575,9 @@ class LevelUp(UserCommands, commands.Cog):
         conf = self.data[gid]
         xp_per_minute = conf["voicexp"]
         bonuses = conf["rolebonuses"]["voice"]
+        channel_bonuses = conf["channelbonuses"]["voice"]
         bonusrole = None
-        for member in guild.members:
+        async for member in AsyncIter(guild.members):
             if member.bot:
                 continue
             now = datetime.now()
@@ -576,13 +628,20 @@ class LevelUp(UserCommands, commands.Cog):
             if voice_state.channel.id in conf["ignoredchannels"]:
                 addxp = False
             if addxp:
-                self.data[gid]["users"][uid]["xp"] += xp_to_give
                 if bonusrole:
                     bonusrange = bonuses[bonusrole]
                     bmin = int(bonusrange[0])
                     bmax = int(bonusrange[1]) + 1
                     bxp = random.choice(range(bmin, bmax))
-                    self.data[gid]["users"][uid]["xp"] += bxp
+                    xp_to_give += bxp
+                cid = str(voice_state.channel.id)
+                if cid in channel_bonuses:
+                    bonuschannelrange = channel_bonuses[cid]
+                    bmin = int(bonuschannelrange[0])
+                    bmax = int(bonuschannelrange[1]) + 1
+                    bxp = random.choice(range(bmin, bmax))
+                    xp_to_give += bxp
+                self.data[gid]["users"][uid]["xp"] += xp_to_give
             self.data[gid]["users"][uid]["voice"] += td
             self.voice[gid][uid] = now
             jobs.append(self.check_levelups(gid, uid))
@@ -606,8 +665,6 @@ class LevelUp(UserCommands, commands.Cog):
     async def before_voice_checker(self):
         await self.bot.wait_until_red_ready()
         await asyncio.sleep(60)
-        # if self.first_run:
-        #     await self.initialize()
         log.info("Voice checker running")
 
     @tasks.loop(minutes=3)
@@ -638,7 +695,7 @@ class LevelUp(UserCommands, commands.Cog):
     async def view_settings(self, ctx: commands.Context):
         """View all LevelUP settings"""
         conf = self.data[ctx.guild.id]
-
+        usepics = conf["usepics"]
         levelroles = conf["levelroles"]
         igchannels = conf["ignoredchannels"]
         igroles = conf["ignoredroles"]
@@ -648,8 +705,10 @@ class LevelUp(UserCommands, commands.Cog):
         stacking = conf["stackprestigeroles"]
         xp = conf["xp"]
         xpbonus = conf["rolebonuses"]["msg"]
+        xpchanbonus = conf["channelbonuses"]["msg"]
         voicexp = conf["voicexp"]
         voicexpbonus = conf["rolebonuses"]["voice"]
+        voicechanbonus = conf["channelbonuses"]["voice"]
         cooldown = conf["cooldown"]
         base = conf["base"]
         exp = conf["exp"]
@@ -665,76 +724,55 @@ class LevelUp(UserCommands, commands.Cog):
         starcooldown = conf["starcooldown"]
         starmention = conf["starmention"]
         stardelete = conf["starmentionautodelete"] if conf["starmentionautodelete"] else "Disabled"
+        showbal = conf["showbal"]
+        barlength = conf["barlength"]
         sc = time_formatter(starcooldown)
         notifylog = ctx.guild.get_channel(conf["notifylog"])
         if not notifylog:
             notifylog = conf["notifylog"]
         else:
             notifylog = notifylog.mention
+        ptype = _("Image") if usepics else _("Embed")
 
-        msg = f"**Messages**\n" \
-              f"`Message XP:        `{xp[0]}-{xp[1]}\n" \
-              f"`Min Msg Length:    `{length}\n" \
-              f"`Cooldown:          `{cooldown} seconds\n" \
-              f"**Voice**\n" \
-              f"`Voice XP:          `{voicexp} per minute\n" \
-              f"`Ignore Muted:      `{muted}\n" \
-              f"`Ignore Solo:       `{solo}\n" \
-              f"`Ignore Deafened:   `{deafended}\n" \
-              f"`Ignore Invisible:  `{invisible}\n" \
-              f"**Level Algorithm**\n" \
-              f"`Base Multiplier:   `{base}\n" \
-              f"`Exp Multiplier:    `{exp}\n" \
-              f"**LevelUps**\n" \
-              f"`LevelUp Notify:    `{lvlmessage}\n" \
-              f"`Notify in DMs:     `{notifydm}\n" \
-              f"`Mention User:      `{mention}\n" \
-              f"`AutoRemove Roles:  `{autoremove}\n" \
-              f"`LevelUp Channel:   `{notifylog}\n" \
-              f"**Stars**\n" \
-              f"`Cooldown:          `{sc}\n" \
-              f"`React Mention:     `{starmention}\n" \
-              f"`MentionAutoDelete: `{stardelete}\n"
+        msg = _("**Cog**\n")
+        msg += _("`Profile Type:      `") + f"{ptype}\n"
+        msg += _("`Include Balance:   `") + f"{showbal}\n"
+        msg += _("`Progress Bar:      `") + f"{barlength} chars long\n"
+        msg += _("**Messages**\n")
+        msg += _("`Message XP:        `") + f"{xp[0]}-{xp[1]}\n"
+        msg += _("`Min Msg Length:    `") + f"{length}\n"
+        msg += _("`Cooldown:          `") + f"{cooldown} seconds\n"
+        msg += _("**Voice**\n")
+        msg += _("`Voice XP:          `") + f"{voicexp} per minute\n"
+        msg += _("`Ignore Muted:      `") + f"{muted}\n"
+        msg += _("`Ignore Solo:       `") + f"{solo}\n"
+        msg += _("`Ignore Deafened:   `") + f"{deafended}\n"
+        msg += _("`Ignore Invisible:  `") + f"{invisible}\n"
+        msg += _("**Level Algorithm**\n")
+        msg += _("`Base Multiplier:   `") + f"{base}\n"
+        msg += _("`Exp Multiplier:    `") + f"{exp}\n"
+        msg += _("**LevelUps**\n")
+        msg += _("`LevelUp Notify:    `") + f"{lvlmessage}\n"
+        msg += _("`Notify in DMs:     `") + f"{notifydm}\n"
+        msg += _("`Mention User:      `") + f"{mention}\n"
+        msg += _("`AutoRemove Roles:  `") + f"{autoremove}\n"
+        msg += _("`LevelUp Channel:   `") + f"{notifylog}\n"
+        msg += _("**Stars**\n")
+        msg += _("`Cooldown:          `") + f"{sc}\n"
+        msg += _("`React Mention:     `") + f"{starmention}\n"
+        msg += _("`MentionAutoDelete: `") + f"{stardelete}\n"
         if levelroles:
-            msg += "**Levels**\n"
+            msg += _("**Levels**\n")
             for level, role_id in levelroles.items():
                 role = ctx.guild.get_role(role_id)
                 if role:
                     role = role.mention
                 else:
                     role = role_id
-                msg += f"`Level {level}: `{role}\n"
-        if igchannels:
-            msg += "**Ignored Channels**\n"
-            for channel_id in igchannels:
-                channel = ctx.guild.get_channel(channel_id)
-                if channel:
-                    channel = channel.mention
-                else:
-                    channel = channel_id
-                msg += f"{channel}\n"
-        if igroles:
-            msg += "**Ignored Roles**\n"
-            for role_id in igroles:
-                role = ctx.guild.get_role(role_id)
-                if role:
-                    role = role.mention
-                else:
-                    role = role_id
-                msg += f"{role}\n"
-        if igusers:
-            msg += "**Ignored Users**\n"
-            for user_id in igusers:
-                user = ctx.guild.get_member(user_id)
-                if user:
-                    user = user.mention
-                else:
-                    user = user_id
-                msg += f"{user}\n"
+                msg += _("`Level ") + f"{level}: `{role}\n"
         if prestige and pdata:
-            msg += "**Prestige**\n" \
-                   f"`Stack Roles: `{stacking}\n" \
-                   f"`Level Req:  `{prestige}\n"
+            msg += _("**Prestige**\n`Stack Roles: `") + f"{stacking}\n"
+            msg += _("`Level Req:  `") + f"{prestige}\n"
             for level, data in pdata.items():
                 role_id = data["role"]
                 role = ctx.guild.get_role(role_id)
@@ -743,10 +781,10 @@ class LevelUp(UserCommands, commands.Cog):
                 else:
                     role = role_id
                 emoji = data["emoji"]
-                msg += f"`Prestige {level}: `{role} - {emoji['str']}\n"
+                msg += _("`Prestige ") + f"{level}: `{role} - {emoji['str']}\n"
         embed = discord.Embed(
-            title="LevelUp Settings",
-            description=_(msg),
+            title=_("LevelUp Settings"),
+            description=msg,
             color=discord.Color.random()
         )
         if voicexpbonus:
@@ -755,10 +793,22 @@ class LevelUp(UserCommands, commands.Cog):
                 role = ctx.guild.get_role(int(rid))
                 if not role:
                     continue
-                text += f"{role.name} - {bonusrange}\n"
+                text += f"{role.mention} - {bonusrange}\n"
             if text:
                 embed.add_field(
                     name=_("Voice XP Bonus Roles"),
+                    value=text
+                )
+        if voicechanbonus:
+            text = ""
+            for cid, bonusrange in voicechanbonus.items():
+                chan = ctx.guild.get_channel(int(cid))
+                if not chan:
+                    continue
+                text += f"{chan.mention} - {bonusrange}"
+            if text:
+                embed.add_field(
+                    name=_("Voice XP Bonus Channels"),
                     value=text
                 )
         if xpbonus:
@@ -767,12 +817,52 @@ class LevelUp(UserCommands, commands.Cog):
                 role = ctx.guild.get_role(int(rid))
                 if not role:
                     continue
-                text += f"{role.name} - {bonusrange}\n"
+                text += f"{role.mention} - {bonusrange}\n"
             if text:
                 embed.add_field(
                     name=_("Message XP Bonus Roles"),
                     value=text
                 )
+        if xpchanbonus:
+            text = ""
+            for cid, bonusrange in xpchanbonus.items():
+                chan = ctx.guild.get_channel(int(cid))
+                if not chan:
+                    continue
+                text += f"{chan.mention} - {bonusrange}"
+            if text:
+                embed.add_field(
+                    name=_("Message XP Bonus Channels"),
+                    value=text
+                )
+        if igroles:
+            ignored = [ctx.guild.get_role(rid).mention for rid in igroles if ctx.guild.get_role(rid)]
+            text = humanize_list(ignored)
+            if ignored:
+                embed.add_field(
+                    name=_("Ignored Roles"),
+                    value=text,
+                    inline=False
+                )
+        if igchannels:
+            ignored = [ctx.guild.get_channel(cid).mention for cid in igchannels if ctx.guild.get_channel(cid)]
+            text = humanize_list(ignored)
+            if ignored:
+                embed.add_field(
+                    name=_("Ignored Channels"),
+                    value=text,
+                    inline=False
+                )
+        if igusers:
+            ignored = [ctx.guild.get_member(uid).mention for uid in igusers if ctx.guild.get_member(uid)]
+            text = humanize_list(ignored)
+            if ignored:
+                embed.add_field(
+                    name=_("Ignored Users"),
+                    value=text,
+                    inline=False
+                )
+
         await ctx.send(embed=embed)
 
     @lvl_group.group(name="admin")
@@ -793,9 +883,23 @@ class LevelUp(UserCommands, commands.Cog):
         When a user runs the profile command their generated image will be stored in cache to be reused for X seconds
 
         If profile embeds are enabled this setting will have no effect
-        Set to 0 to effectively disable the cache
+        Anything less than 5 seconds will effectively disable the cache
         """
         self.cache_seconds = int(seconds)
+        await ctx.tick()
+        await self.save_cache()
+
+    @admin_group.command(name="rendergifs")
+    @commands.is_owner()
+    async def toggle_gif_render(self, ctx: commands.Context):
+        """Toggle whether to render profiles as gifs if the user's discord profile is animated"""
+        r = self.render_gifs
+        if r:
+            self.render_gifs = False
+            await ctx.send(_("I will no longer render profiles with GIFs"))
+        else:
+            self.render_gifs = True
+            await ctx.send(_("I will now render GIFs with user profiles"))
         await ctx.tick()
         await self.save_cache()
 
@@ -879,6 +983,15 @@ class LevelUp(UserCommands, commands.Cog):
         cachetxt = _("`Profile Cache Time: `") + (_("Disabled\n") if not ct else f"{humanize_number(ct)} seconds\n")
         cachetxt += _("`Cache Size:         `") + cachesize
         em.add_field(name=_("Cache"), value=cachetxt, inline=False)
+
+        render = _("(Disabled)")
+        txt = _("Profiles will be static regardless of if the user has an animated profile")
+        if self.render_gifs:
+            render = _("(Enabled)")
+            txt = _("Users with animated profiles will render as a gif")
+
+        em.add_field(name=_("GIF Rendering ") + render, value=txt, inline=False)
+
         await ctx.send(embed=em)
 
     @admin_group.command(name="globalbackup")
@@ -962,37 +1075,6 @@ class LevelUp(UserCommands, commands.Cog):
         await self.save_cache()
         await ctx.send(_("Config restored from backup file!"))
 
-    @admin_group.command(name="cache")
-    @commands.is_owner()
-    async def get_cache_size(self, ctx: commands.Context):
-        """See how much RAM this cog's cache is using"""
-        main = sys.getsizeof(self.data)
-        msize = 0
-        for conf in self.data.copy().values():
-            msize += len(conf["users"].keys())
-        voice = sys.getsizeof(self.voice)
-        stars = sys.getsizeof(self.stars)
-        profile = sys.getsizeof(self.profiles)
-
-        cache_sec = self.cache_seconds
-
-        total = sum([main, voice, stars, profile])
-
-        text = f"`Main:      `{self.get_size(main)} ({humanize_number(msize)} users)\n" \
-               f"`Voice:     `{self.get_size(voice)}\n" \
-               f"`Stars:     `{self.get_size(stars)}\n" \
-               f"`Profiles:  `{self.get_size(profile)}\n" \
-               f"`Total:     `{self.get_size(total)}"
-
-        em = discord.Embed(title=f"LevelUp {_('Cache')}", description=_(text), color=ctx.author.color)
-        em.add_field(
-            name=_("Profile Cache Time"),
-            value=_(f"Generated profile images will stay in cache to be reused for {cache_sec} "
-                    f"{'second' if cache_sec == 1 else 'seconds'} "
-                    f"before being re-generated when a user runs the profile command")
-        )
-        await ctx.send(embed=em)
-
     @admin_group.command(name="importleveler")
     @commands.is_owner()
     async def import_from_leveler(self, ctx: commands.Context, yes_or_no: str):
@@ -1044,7 +1126,7 @@ class LevelUp(UserCommands, commands.Cog):
 
         # If everything is okay so far let the user know its working
         embed = discord.Embed(
-            description=_(f"Importing users from Leveler..."),
+            description=_("Importing users from Leveler..."),
             color=discord.Color.orange()
         )
         embed.set_thumbnail(url=LOADING)
@@ -1102,8 +1184,7 @@ class LevelUp(UserCommands, commands.Cog):
                     users_imported += 1
 
             embed = discord.Embed(
-                description=_(f"Importing Complete!\n"
-                              f"{users_imported} users imported"),
+                description=_("Importing Complete!\n") + f"{users_imported}" + _(" users imported"),
                 color=discord.Color.green()
             )
             embed.set_thumbnail(url=LOADING)
@@ -1136,15 +1217,9 @@ class LevelUp(UserCommands, commands.Cog):
         cleaned_data, newdat = self.cleanup(self.data[ctx.guild.id].copy())
         if not cleanup and not cleaned:
             return await ctx.send(_("Nothing to clean"))
-        if cleaned:
-            await ctx.send(
-                _(
-                    f"Deleted {cleaned} user IDs from the config that are no longer in the server.\n"
-                    f"Also cleaned {len(cleaned_data)} config discrepancies in the process."
-                )
-            )
-        else:
-            await ctx.send(_(f"Deleted {cleaned} user IDs from the config that are no longer in the server"))
+
+        txt = _("Deleted ") + str(cleaned) + _("user IDs from the config that are no longer in the server.")
+        await ctx.send(txt)
         await self.save_cache(ctx.guild)
 
     @lvl_group.group(name="messages")
@@ -1159,7 +1234,7 @@ class LevelUp(UserCommands, commands.Cog):
         """
         xp = [min_xp, max_xp]
         self.data[ctx.guild.id]["xp"] = xp
-        await ctx.send(_(f"Message XP range has been set to {min_xp} - {max_xp} per valid message"))
+        await ctx.send(_("Message XP range has been set to ") + f"{min_xp} - {max_xp}" + _(" per valid message"))
         await self.save_cache(ctx.guild)
 
     @message_group.command(name="rolebonus")
@@ -1167,7 +1242,7 @@ class LevelUp(UserCommands, commands.Cog):
         """
         Add a range of bonus XP to apply to certain roles
 
-        This bonus applies to both messages and voice time
+        This bonus applies to message xp
 
         Set both min and max to 0 to remove the role bonus
         """
@@ -1178,15 +1253,40 @@ class LevelUp(UserCommands, commands.Cog):
         rid = str(role.id)
         xp = [min_xp, max_xp]
         rb = self.data[ctx.guild.id]["rolebonuses"]["msg"]
-
         if not min_xp and not max_xp:
             if rid not in rb:
                 return await ctx.send(_("That role has no bonus xp associated with it"))
             del self.data[ctx.guild.id]["rolebonuses"]["msg"][rid]
-            await ctx.send(_(f"Bonus xp for {role.name} has been removed"))
+            await ctx.send(_("Bonus xp for ") + role.mention + _(" has been removed"))
         else:
             self.data[ctx.guild.id]["rolebonuses"]["msg"][rid] = xp
-            await ctx.send(_(f"Bonus xp for {role.name} has been set to {min_xp} - {max_xp}"))
+            await ctx.send(_("Bonus xp for ") + role.mention + _(" has been set to ") + str(xp))
+        await self.save_cache(ctx.guild)
+
+    @message_group.command(name="channelbonus")
+    async def msg_chan_bonus(self, ctx: commands.Context, channel: discord.TextChannel, min_xp: int, max_xp: int):
+        """
+        Add a range of bonus XP to apply to certain channels
+
+        This bonus applies to message xp
+
+        Set both min and max to 0 to remove the role bonus
+        """
+        if not channel:
+            return await ctx.send(_("I cannot find that channel"))
+        if min_xp > max_xp:
+            return await ctx.send(_("Max xp needs to be higher than min xp"))
+        cid = str(channel.id)
+        xp = [min_xp, max_xp]
+        cb = self.data[ctx.guild.id]["channelbonuses"]["msg"]
+        if not min_xp and not max_xp:
+            if cid not in cb:
+                return await ctx.send(_("That channel has no bonus xp associated with it"))
+            del self.data[ctx.guild.id]["channelbonuses"]["msg"][cid]
+            await ctx.send(_("Bonus xp for ") + channel.mention + _(" has been removed"))
+        else:
+            self.data[ctx.guild.id]["channelbonuses"]["msg"][cid] = xp
+            await ctx.send(_("Bonus xp for ") + channel.mention + _(" has been set to ") + str(xp))
         await self.save_cache(ctx.guild)
 
     @message_group.command(name="cooldown")
@@ -1243,16 +1343,41 @@ class LevelUp(UserCommands, commands.Cog):
             return await ctx.send(_("Max xp needs to be higher than min xp"))
         rid = str(role.id)
         xp = [min_xp, max_xp]
-
         rb = self.data[ctx.guild.id]["rolebonuses"]["voice"]
         if not min_xp and not max_xp:
             if rid not in rb:
                 return await ctx.send(_("That role has no bonus xp associated with it"))
             del self.data[ctx.guild.id]["rolebonuses"]["voice"][rid]
-            await ctx.send(_(f"Bonus xp for {role.name} has been removed"))
+            await ctx.send(_("Bonus xp for ") + role.mention + _(" has been removed"))
         else:
             self.data[ctx.guild.id]["rolebonuses"]["voice"][rid] = xp
-            await ctx.send(_(f"Bonus xp for {role.name} has been set to {min_xp} - {max_xp}"))
+            await ctx.send(_("Bonus xp for ") + role.mention + _(" has been set to ") + str(xp))
+        await self.save_cache(ctx.guild)
+
+    @voice_group.command(name="channelbonus")
+    async def voice_chan_bonus(self, ctx: commands.Context, channel: discord.VoiceChannel, min_xp: int, max_xp: int):
+        """
+        Add a range of bonus XP to apply to certain channels
+
+        This bonus applies to voice time xp
+
+        Set both min and max to 0 to remove the role bonus
+        """
+        if not channel:
+            return await ctx.send(_("I cannot find that role"))
+        if min_xp > max_xp:
+            return await ctx.send(_("Max xp needs to be higher than min xp"))
+        cid = str(channel.id)
+        xp = [min_xp, max_xp]
+        cb = self.data[ctx.guild.id]["channelbonuses"]["voice"]
+        if not min_xp and not max_xp:
+            if cid not in cb:
+                return await ctx.send(_("That channel has no bonus xp associated with it"))
+            del self.data[ctx.guild.id]["channelbonuses"]["voice"][cid]
+            await ctx.send(_("Bonus xp for ") + channel.mention + _(" has been removed"))
+        else:
+            self.data[ctx.guild.id]["channelbonuses"]["voice"][cid] = xp
+            await ctx.send(_("Bonus xp for ") + channel.mention + _(" has been set to ") + str(xp))
         await self.save_cache(ctx.guild)
 
     @voice_group.command(name="muted")
@@ -1326,7 +1451,8 @@ class LevelUp(UserCommands, commands.Cog):
             if uid not in self.data[gid]["users"]:
                 self.init_user(gid, uid)
             self.data[gid]["users"][uid]["xp"] += xp
-            await ctx.send(_(f"{xp} xp has been added to {user_or_role.name}"))
+            txt = str(xp) + _("xp has been added to ") + user_or_role.name
+            await ctx.send(txt)
         else:
             users = []
             for user in ctx.guild.members:
@@ -1338,7 +1464,9 @@ class LevelUp(UserCommands, commands.Cog):
                 if uid not in self.data[gid]["users"]:
                     self.init_user(gid, uid)
                 self.data[gid]["users"][uid]["xp"] += xp
-            await ctx.send(_(f"Added {xp} xp to {len(users)} users that had the {user_or_role.name} role"))
+            txt = _("Added ") + str(xp) + _(" xp to ") + humanize_number(len(users)) + _(" users that had the ")
+            txt += user_or_role.name + _("role")
+            await ctx.send(txt)
         await self.save_cache(ctx.guild)
 
     @lvl_group.command(name="setlevel")
@@ -1354,7 +1482,8 @@ class LevelUp(UserCommands, commands.Cog):
         xp = get_xp(int(level), base, exp)
         conf["users"][uid]["level"] = int(level)
         conf["users"][uid]["xp"] = xp
-        await ctx.send(_(f"User {user.name} is now level {level}"))
+        txt = _("User ") + user.name + _(" is now level ") + str(level)
+        await ctx.send(txt)
 
     @lvl_group.group(name="algorithm")
     async def algo_edit(self, ctx: commands.Context):
@@ -1395,6 +1524,20 @@ class LevelUp(UserCommands, commands.Cog):
             await ctx.send(_("LevelUp will now use **generated images** instead of embeds"))
         await self.save_cache(ctx.guild)
 
+    @lvl_group.command(name="barlength")
+    async def set_bar_length(self, ctx: commands.Context, bar_length: int):
+        """Set the progress bar length for embed profiles"""
+        conf = self.data[ctx.guild.id]
+        if conf["usepics"]:
+            text = _("Embed profiles are disabled. Enable them to set the progress bar length with ")
+            text += f"`{ctx.prefix}levelset barlength`"
+            return await ctx.send(text)
+        if bar_length < 15 or bar_length > 50:
+            return await ctx.send(_("Progress bar length must be a minimum of 15 and maximum of 40"))
+        self.data[ctx.guild.id]["barlength"] = bar_length
+        await ctx.send(_("Progress bar length has been set to ") + str(bar_length))
+        await self.save_cache(ctx.guild)
+
     @lvl_group.command(name="seelevels")
     async def see_levels(self, ctx: commands.Context):
         """
@@ -1423,7 +1566,7 @@ class LevelUp(UserCommands, commands.Cog):
         with plt.style.context("dark_background"):
             plt.plot(x, y, color="xkcd:green", label="Total", linewidth=0.7)
             plt.xlabel(f"Level", fontsize=10)
-            plt.ylabel(f"Experience", fontsize=10)
+            plt.ylabel(f"Experience Required", fontsize=10)
             plt.title("XP Curve")
             plt.grid(axis="y")
             plt.grid(axis="x")
@@ -1433,18 +1576,17 @@ class LevelUp(UserCommands, commands.Cog):
             result.seek(0)
             file = discord.File(result, filename="lvlexample.png")
             img = "attachment://lvlexample.png"
-        example = "XP required for a level = Base * Level^Exp\n\n" \
-                  "Approx time is the time it would take for a user to reach a level if they " \
-                  "typed every time the cooldown expired non stop without sleeping or taking " \
-                  "potty breaks."
+        example = _("XP required for a level = Base * Level^Exp\n\n"
+                    "Approx time is the time it would take for a user to reach a level if they "
+                    "typed every time the cooldown expired non stop without sleeping or taking "
+                    "potty breaks.")
+        desc = _("`Base Multiplier:  `") + f"{base}\n"
+        desc += _("`Exp Multiplier:   `") + f"{exp}\n"
+        desc += _("`Experience Range: `") + f"{xp_range}\n"
+        desc += _("`Message Cooldown: `") + f"{cd}\n" + f"{box(example)}\n" + f"{box(data, lang='python')}"
         embed = discord.Embed(
             title="Level Example",
-            description=_(f"`Base Multiplier:  `{base}\n"
-                          f"`Exp Multiplier:   `{exp}\n"
-                          f"`Experience Range: `{xp_range}\n"
-                          f"`Message Cooldown: `{cd}\n"
-                          f"{box(example)}\n"
-                          f"{box(data, lang='python')}"),
+            description=desc,
             color=discord.Color.random()
         )
         embed.set_image(url=img)
@@ -1523,9 +1665,21 @@ class LevelUp(UserCommands, commands.Cog):
         else:
             perms = levelup_channel.permissions_for(ctx.guild.me).send_messages
             if not perms:
-                return await ctx.send(_(f"I do not have permission to send messages to that channel."))
+                return await ctx.send(_("I do not have permission to send messages to that channel."))
             self.data[ctx.guild.id]["notifylog"] = levelup_channel.id
-            await ctx.send(_(f"LevelUp channel has been set to {levelup_channel.mention}"))
+            await ctx.send(_("LevelUp channel has been set to ") + levelup_channel.mention)
+        await self.save_cache(ctx.guild)
+
+    @lvl_group.command(name="showbalance")
+    async def toggle_profile_balance(self, ctx: commands.Context):
+        """Toggle whether to show user's economy credit balance in their profile"""
+        showbal = self.data[ctx.guild.id]["showbal"]
+        if showbal:
+            self.data[ctx.guild.id]["showbal"] = False
+            await ctx.send(_("I will no longer include economy balance in user profiles"))
+        else:
+            self.data[ctx.guild.id]["showbal"] = True
+            await ctx.send(_("I will now include economy balance in user profiles"))
         await self.save_cache(ctx.guild)
 
     @lvl_group.command(name="levelnotify")
@@ -1623,8 +1777,9 @@ class LevelUp(UserCommands, commands.Cog):
                         if role and int(lvl) <= int(prestige_level):
                             await user.add_roles(role)
                             roles_added += 1
+        desc = _("Initialization complete! Added ") + str(roles_added) + _(" roles and removed ") + str(roles_removed)
         embed = discord.Embed(
-            description=_(f"Initialization complete! Added {roles_added} roles and removed {roles_removed}."),
+            description=desc,
             color=discord.Color.green()
         )
         await msg.edit(embed=embed)
@@ -1648,11 +1803,12 @@ class LevelUp(UserCommands, commands.Cog):
         if not perms:
             return await ctx.send(_("I do not have permission to manage roles"))
         if level in self.data[ctx.guild.id]["levelroles"]:
-            overwrite = "Overwritten"
+            overwrite = _("Overwritten")
         else:
-            overwrite = "Set"
+            overwrite = _("Set")
         self.data[ctx.guild.id]["levelroles"][level] = role.id
-        await ctx.send(_(f"Level {level} has been {overwrite} as {role.mention}"))
+        txt = _("Level ") + str(level) + _("has been ") + overwrite + _(" as ") + role.mention
+        await ctx.send(txt)
         await self.save_cache(ctx.guild)
 
     @level_roles.command(name="del")
@@ -1774,7 +1930,7 @@ class LevelUp(UserCommands, commands.Cog):
         await self.save_cache()
 
     @ignore_group.command(name="channel")
-    async def ignore_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+    async def ignore_channel(self, ctx: commands.Context, channel: Union[discord.TextChannel, discord.VoiceChannel]):
         """
         Add/Remove a channel in the ignore list
         Channels in the ignore list don't gain XP
@@ -1846,7 +2002,8 @@ class LevelUp(UserCommands, commands.Cog):
         xp = get_xp(level, base, exp)
         self.data[gid]["users"][uid]["xp"] = xp
         await asyncio.sleep(2)
-        await ctx.send(_(f"Forced {person.name} to level up!"))
+        txt = _("Forced ") + person.name + _(" to level up!")
+        await ctx.send(txt)
         await self.save_cache(ctx.guild)
 
     # For testing purposes
@@ -1871,7 +2028,8 @@ class LevelUp(UserCommands, commands.Cog):
         xp = get_xp(level, base, exp)
         self.data[gid]["users"][uid]["xp"] = xp
         await asyncio.sleep(2)
-        await ctx.send(_(f"Forced {person.name} to level down!"))
+        txt = _("Forced ") + person.name + _(" to level down!")
+        await ctx.send(txt)
         await self.save_cache(ctx.guild)
 
     # For testing purposes

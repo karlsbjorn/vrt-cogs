@@ -23,7 +23,10 @@
     "validators",
     "tabulate",
     "colorgram.py",
-    "emoji"
+    "emoji",
+    "aiocache",
+    "ujson",
+    "msgpack"
   ],
   "short": "Leveling System",
   "tags": [

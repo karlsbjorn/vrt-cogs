@@ -1,8 +1,8 @@
 import asyncio
 import logging
+import traceback
 from datetime import datetime
 from typing import Union
-import traceback
 
 import discord
 from redbot.core import commands, Config
@@ -143,8 +143,8 @@ class SupportButton(discord.ui.Button):
             return await interaction.response.send_message(embed=em, ephemeral=True)
         category = guild.get_channel(panel["category_id"]) if panel["category_id"] else None
         if not category:
-            em = discord.Embed(description=_(f"The category for this support panel cannot be found!\n"
-                                             f"please contact an admin!"), color=discord.Color.red())
+            em = discord.Embed(description=_("The category for this support panel cannot be found!\n"
+                                             "please contact an admin!"), color=discord.Color.red())
             return await interaction.response.send_message(embed=em, ephemeral=True)
         can_read_send = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         read_and_manage = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
@@ -172,9 +172,9 @@ class SupportButton(discord.ui.Button):
         channel_name = name_fmt.format(**params) if name_fmt else user.name
         channel = await category.create_text_channel(channel_name, overwrites=overwrite)
 
-        default_message = _(f"Welcome to your ticket channel {user.display_name}!")
+        default_message = _("Welcome to your ticket channel ") + f"{user.display_name}!"
         if user_can_close:
-            default_message += _(f"\nYou or an admin can close this with the `close` command")
+            default_message += _("\nYou or an admin can close this with the `close` command")
 
         messages = conf["panels"][self.panel_name]["ticket_messages"]
         params = {
@@ -204,17 +204,18 @@ class SupportButton(discord.ui.Button):
                 em.set_thumbnail(url=user.avatar.url)
             msg = await channel.send(user.mention, embed=em)
 
-        em = discord.Embed(description=_(f"Your ticket channel has been created!\n"
-                                         f"**[Click Here]({msg.jump_url})** to jump to it."),
+        desc = _("Your ticket channel has been created, **[CLICK HERE]") + f"({msg.jump_url})**"
+        em = discord.Embed(description=desc,
                            color=user.color)
         await interaction.response.send_message(embed=em, ephemeral=True)
 
         if logchannel:
             ts = int(now.timestamp())
+            desc = _("Ticket created by ") + f"**{user.name}-{user.id}**" + _(" was opened ") + f"<t:{ts}:R>\n"
+            desc += _("To view this ticket, **[Click Here]") + f"({msg.jump_url})**"
             em = discord.Embed(
                 title=_("Ticket opened"),
-                description=_(f"Ticket created by **{user.name}-{user.id}** was opened <t:{ts}:R>\n"
-                              f"To view this ticket, **[Click Here]({msg.jump_url})**"),
+                description=desc,
                 color=discord.Color.red()
             )
             if user.avatar:

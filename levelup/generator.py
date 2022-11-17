@@ -8,7 +8,6 @@ from typing import Union
 import colorgram
 import requests
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
-
 from redbot.core.data_manager import bundled_data_path
 from redbot.core.i18n import Translator
 from redbot.core.utils.chat_formatting import humanize_number
@@ -23,10 +22,7 @@ ASPECT_RATIO = (21, 9)
 class Generator:
     def __init__(self):
         self.star = os.path.join(bundled_data_path(self), 'star.png')
-        self.default_lvlup = os.path.join(bundled_data_path(self), 'lvlup.png')
-        self.default_bg = os.path.join(bundled_data_path(self), 'card.png')
         self.default_pfp = os.path.join(bundled_data_path(self), 'defaultpfp.png')
-
         self.status = {
             "online": os.path.join(bundled_data_path(self), 'online.png'),
             "offline": os.path.join(bundled_data_path(self), 'offline.png'),
@@ -34,8 +30,9 @@ class Generator:
             "dnd": os.path.join(bundled_data_path(self), 'dnd.png'),
             "streaming": os.path.join(bundled_data_path(self), 'streaming.png')
         }
-
         self.font = os.path.join(bundled_data_path(self), 'font.ttf')
+
+        self.fonts = os.path.join(bundled_data_path(self), 'fonts')
 
     def generate_profile(
             self,
@@ -55,35 +52,19 @@ class Generator:
             stars: str = "0",
             balance: int = 0,
             currency: str = "credits",
-            role_icon: str = None
+            role_icon: str = None,
+            font_name: str = None,
+            render_gifs: bool = False
     ):
-        # Colors
-        base = self.rand_rgb()
-        namecolor = self.rand_rgb()
-        statcolor = self.rand_rgb()
-        lvlbarcolor = self.rand_rgb()
-        # Color distancing is more strict if user hasn't defined color
-        namedistance = 250
-        statdistance = 250
-        lvldistance = 250
-        if colors:
-            # Relax distance for colors that are defined
-            base = colors["base"]
-            if colors["name"]:
-                namecolor = colors["name"]
-                namedistance = 100
-            if colors["stat"]:
-                statcolor = colors["stat"]
-                statdistance = 100
-            if colors["levelbar"]:
-                lvlbarcolor = colors["levelbar"]
-                lvldistance = 100
-            else:
-                lvlbarcolor = base
+        # get profile pic
+        if profile_image:
+            pfp_image = self.get_image_content_from_url(str(profile_image))
+            profile_bytes = BytesIO(pfp_image)
+            profile = Image.open(profile_bytes)
+        else:
+            profile = Image.open(self.default_pfp)
 
-        default_fill = (0, 0, 0)
-
-        # Set canvas
+        # Get background
         if bg_image and bg_image != "random":
             bgpath = os.path.join(bundled_data_path(self), "backgrounds")
             defaults = [i for i in os.listdir(bgpath)]
@@ -100,8 +81,38 @@ class Generator:
 
         card = self.force_aspect_ratio(card).convert("RGBA").resize((1050, 450), Image.Resampling.LANCZOS)
 
+        # Colors
+        # Sample colors from profile pic to use for default colors
+        rgbs = self.get_img_colors(profile, 8)
+        base = random.choice(rgbs)
+        namecolor = random.choice(rgbs)
+        statcolor = random.choice(rgbs)
+        lvlbarcolor = random.choice(rgbs)
+        # Color distancing is more strict if user hasn't defined color
+        namedistance = 200
+        statdistance = 200
+        lvldistance = 100
+        # Will always have colors dict unless testing
+        if colors:
+            # Relax distance for colors that are defined
+            if colors["base"] != (0, 0, 0):
+                base = colors["base"]
+            if colors["name"]:
+                namecolor = colors["name"]
+                namedistance = 100
+            if colors["stat"]:
+                statcolor = colors["stat"]
+                statdistance = 100
+            if colors["levelbar"]:
+                lvlbarcolor = colors["levelbar"]
+                lvldistance = 100
+            else:
+                lvlbarcolor = base
+
+        default_fill = (0, 0, 0)
+
         # Coord setup
-        name_y = 40
+        name_y = 35
         stats_y = 160
         bar_start = 450
         bar_end = 1030
@@ -110,7 +121,14 @@ class Generator:
         circle_x = 60
         circle_y = 75
 
+        star_text_x = 960
+        star_text_y = 35
+        star_icon_x = 900
+        star_icon_y = 30
+
         stroke_width = 2
+
+        iters = 0
 
         # x1, y1, x2, y2
         # Sample name box colors and make sure they're not too similar with the background
@@ -120,6 +138,10 @@ class Generator:
         namefill = default_fill
         while self.distance(namecolor, namebg) < namedistance:
             namecolor = self.rand_rgb()
+            iters += 1
+            if iters > 20:
+                iters = 0
+                break
         if self.distance(namefill, namecolor) < namedistance - 50:
             namefill = self.inv_rgb(namefill)
 
@@ -130,6 +152,10 @@ class Generator:
         statstxtfill = default_fill
         while self.distance(statcolor, statbg) < statdistance:
             statcolor = self.rand_rgb()
+            iters += 1
+            if iters > 20:
+                iters = 0
+                break
         if self.distance(statstxtfill, statcolor) < statdistance - 50:
             statstxtfill = self.inv_rgb(statstxtfill)
 
@@ -138,48 +164,16 @@ class Generator:
         lvlbg = self.get_img_color(lvlsection)
         while self.distance(lvlbarcolor, lvlbg) < lvldistance:
             lvlbarcolor = self.rand_rgb()
-
-        # get profile pic
-        pfp_image = self.get_image_content_from_url(str(profile_image))
-        if pfp_image:
-            profile_bytes = BytesIO(pfp_image)
-            profile = Image.open(profile_bytes)
-        else:
-            profile = Image.open(self.default_pfp)
-        profile = profile.convert('RGBA').resize((300, 300), Image.Resampling.LANCZOS)
-
-        # pfp border - draw at 4x and resample down to 1x for nice smooth circles
-        circle_img = Image.new("RGBA", (1600, 1600))
-        pfp_border = ImageDraw.Draw(circle_img)
-        pfp_border.ellipse([4, 4, 1596, 1596], fill=(255, 255, 255, 0), outline=base, width=20)
-        circle_img = circle_img.resize((330, 330), Image.Resampling.LANCZOS)
-        card.paste(circle_img, (circle_x - 15, circle_y - 15), circle_img)
-
-        # Mask to crop profile pic image to a circle
-        # draw at 4x size and resample down to 1x for a nice smooth circle
-        mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
-        mask_draw = ImageDraw.Draw(mask)
-        mask_draw.ellipse(
-            [circle_x * 4, circle_y * 4, (300 + circle_x) * 4, (300 + circle_y) * 4], fill=(255, 255, 255, 255)
-        )
-        mask = mask.resize(card.size, Image.Resampling.LANCZOS)
-
-        # make a new Image to set up card-sized image for pfp layer and the circle mask for it
-        profile_pic_holder = Image.new("RGBA", card.size, (255, 255, 255, 0))
-        # paste on square profile pic in appropriate spot
-        profile_pic_holder.paste(profile, (circle_x, circle_y))
-        # make a new Image at card size to crop pfp with transparency to the circle mask
-        pfp_composite_holder = Image.new("RGBA", card.size, (0, 0, 0, 0))
-        pfp_composite_holder = Image.composite(profile_pic_holder, pfp_composite_holder, mask)
-
-        # Profile image is on the background tile now
-        final = Image.alpha_composite(card, pfp_composite_holder)
+            iters += 1
+            if iters > 20:
+                iters = 0
+                break
 
         # Place semi-transparent box over right side
         blank = Image.new("RGBA", card.size, (255, 255, 255, 0))
         transparent_box = Image.new("RGBA", card.size, (0, 0, 0, 100))
         blank.paste(transparent_box, (bar_start - 20, 0))
-        final = Image.alpha_composite(final, blank)
+        final = Image.alpha_composite(card, blank)
 
         # Make the level progress bar
         progress_bar = Image.new("RGBA", (card.size[0] * 4, card.size[1] * 4), (255, 255, 255, 0))
@@ -200,7 +194,8 @@ class Generator:
         # Draw inner level bar 1 pixel smaller on each side
         if end_of_inner_bar > bar_start + 10:
             progress_bar_draw.rounded_rectangle(
-                (bar_start * 4 + thickness, bar_top * 4 + thickness, end_of_inner_bar * 4 - thickness, bar_bottom * 4 - thickness),
+                (bar_start * 4 + thickness, bar_top * 4 + thickness, end_of_inner_bar * 4 - thickness,
+                 bar_bottom * 4 - thickness),
                 fill=lvlbarcolor,
                 radius=89
             )
@@ -208,9 +203,61 @@ class Generator:
         # Image with level bar and pfp on background
         final = Image.alpha_composite(final, progress_bar)
 
+        # Stat strings
+        rank = _("Rank: #") + str(user_position)
+        leveltxt = _("Level: ") + str(level)
+        exp = _("Exp: ") + f"{humanize_number(user_xp)}/{humanize_number(next_xp)}"
+        message_count = _("Messages: ") + messages
+        voice = _("Voice: ") + voice
+        stars = str(stars)
+        bal = _("Balance: ") + f"{humanize_number(balance)} {currency}"
+        prestige_str = _("Prestige ") + str(prestige)
+
+        # Get base font
+        base_font = self.font
+        if font_name:
+            fontfile = os.path.join(self.fonts, font_name)
+            if os.path.exists(fontfile):
+                base_font = fontfile
+        # base_font = self.get_random_font()
+        # Setup font sizes
+        name_size = 60
+        name_font = ImageFont.truetype(base_font, name_size)
+        while (name_font.getlength(user_name) + bar_start + 20) > 900:
+            name_size -= 1
+            name_font = ImageFont.truetype(base_font, name_size)
+            name_y += 0.1
+        name_y = round(name_y)
+        nameht = name_font.getbbox(user_name)
+        name_y = name_y - int(nameht[1] * 0.6)
+
+        emoji_scale = 1.2
+        stats_size = 35
+        stat_offset = stats_size + 5
+        stats_font = ImageFont.truetype(base_font, stats_size)
+        while (stats_font.getlength(leveltxt) + bar_start + 10) > bar_start + 210:
+            stats_size -= 1
+            emoji_scale += 0.1
+            stats_font = ImageFont.truetype(base_font, stats_size)
+        # Also check message box
+        while (stats_font.getlength(message_count) + bar_start + 220) > final.width - 10:
+            stats_size -= 1
+            emoji_scale += 0.1
+            stats_font = ImageFont.truetype(base_font, stats_size)
+        # And rank box
+        while (stats_font.getlength(rank) + bar_start + 10) > bar_start + 210:
+            stats_size -= 1
+            emoji_scale += 0.1
+            stats_font = ImageFont.truetype(base_font, stats_size)
+
+        star_fontsize = 60
+        star_font = ImageFont.truetype(base_font, star_fontsize)
+        while (star_font.getlength(stars) + star_text_x) > final.width - 10:
+            star_fontsize -= 1
+            star_font = ImageFont.truetype(base_font, star_fontsize)
+
         # Get status and star image and paste to profile
         blank = Image.new("RGBA", card.size, (255, 255, 255, 0))
-
         status = self.status[user_status] if user_status in self.status else self.status["offline"]
         status_img = Image.open(status)
         status = status_img.convert("RGBA").resize((60, 60), Image.Resampling.LANCZOS)
@@ -219,89 +266,58 @@ class Generator:
         role_bytes = self.get_image_content_from_url(role_icon) if role_icon else None
         if role_bytes:
             role_bytes = BytesIO(role_bytes)
-            role_icon_img = Image.open(role_bytes).resize((40, 40), Image.Resampling.LANCZOS)
+            role_icon_img = Image.open(role_bytes).resize((50, 50), Image.Resampling.LANCZOS)
             blank.paste(
-                role_icon_img, (bar_start - 50, name_y + 10)
+                role_icon_img, (5, 5)
             )
         # Prestige icon
         prestige_bytes = self.get_image_content_from_url(emoji) if prestige else None
         if prestige_bytes:
             prestige_bytes = BytesIO(prestige_bytes)
-            prestige_img = Image.open(prestige_bytes).resize((40, 40), Image.Resampling.LANCZOS)
-            blank.paste(prestige_img, (bar_start - 50, bar_top))
+            prestige_img = Image.open(prestige_bytes).resize((stats_size, stats_size), Image.Resampling.LANCZOS)
+            # Adjust prestige icon placement
+            p_bbox = stats_font.getbbox(prestige_str)
+            # Middle of stat text
+            pmiddle = stats_y - stats_size - 10 + int(p_bbox[3] / 2)
+            # Paste prestige image appropriately
+            pr_x = p_bbox[2] + bar_start + 20
+            pr_y = pmiddle - int(stats_size / 2)
+            blank.paste(prestige_img, (pr_x, pr_y))
 
-        # Paste star and status to profile
-        blank.paste(status, (circle_x + 230, circle_y + 240))
-        blank.paste(star, (900, name_y + 5))
-
+        # Paste star icon
+        blank.paste(star, (star_icon_x, star_icon_y))
         # New final
         final = Image.alpha_composite(final, blank)
-
-        # Stat strings
-        rank = _(f"Rank: #") + str(user_position)
-        leveltxt = _(f"Level: ") + str(level)
-        exp = _("Exp: ") + f"{humanize_number(user_xp)}/{humanize_number(next_xp)}"
-        message_count = _(f"Messages: ") + messages
-        voice = _(f"Voice: ") + voice
-        stars = str(stars)
-        bal = _("Balance: ") + f"{humanize_number(balance)} {currency}"
-        prestige_str = _(f"Prestige ") + str(prestige)
-
-        # Setup font sizes
-        draw = ImageDraw.Draw(final)
-
-        name_size = 50
-        name_font = ImageFont.truetype(self.font, name_size)
-        while (name_font.getlength(user_name) + bar_start + 20) > 900:
-            name_size -= 1
-            name_font = ImageFont.truetype(self.font, name_size)
-
-        stats_size = 35
-        stat_offset = stats_size + 5
-        stats_font = ImageFont.truetype(self.font, stats_size)
-
-        star_font = name_font
-        star_fontsize = 50
-        startop = name_y
-        decrement = True
-        while (star_font.getlength(stars) + 960) > final.width - 10:
-            star_fontsize -= 1
-            if decrement:
-                startop += 1
-                decrement = False
-            else:
-                decrement = True
-            star_font = ImageFont.truetype(self.font, star_fontsize)
 
         # Add stats text
         # Render name and credits text through pilmoji in case there are emojis
         with Pilmoji(final) as pilmoji:
             # Name text
+            name_bbox = name_font.getbbox(user_name)
+            name_emoji_y = name_bbox[3] - name_size
             pilmoji.text((bar_start + 10, name_y), user_name, namecolor,
                          font=name_font,
+                         # anchor="lt",
                          stroke_width=stroke_width,
                          stroke_fill=namefill,
-                         emoji_scale_factor=1.2,
-                         emoji_position_offset=(0, 5))
+                         emoji_scale_factor=emoji_scale,
+                         emoji_position_offset=(0, name_emoji_y))
             # Balance
-            pilmoji.text((bar_start + 10, bar_top - 110), bal, statcolor,
-                         font=stats_font,
-                         stroke_width=stroke_width,
-                         stroke_fill=statstxtfill,
-                         emoji_scale_factor=1.2,
-                         emoji_position_offset=(0, 5))
+            if balance:
+                bal_bbox = stats_font.getbbox(bal)
+                bal_emoji_y = bal_bbox[3] - int(stats_size * emoji_scale)
+                pilmoji.text((bar_start + 10, bar_top - 110), bal, statcolor,
+                             font=stats_font,
+                             stroke_width=stroke_width,
+                             stroke_fill=statstxtfill,
+                             emoji_scale_factor=emoji_scale,
+                             emoji_position_offset=(0, bal_emoji_y))
 
-        # # Name text
-        # draw.text((bar_start + 10, name_y), name, namecolor,
-        #           font=name_font, stroke_width=stroke_width, stroke_fill=namefill)
-        # # Balance
-        # draw.text((bar_start + 10, bar_top - 110), bal, statcolor,
-        #           font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfil)
-
+        draw = ImageDraw.Draw(final)
         # Prestige
         if prestige:
-            draw.text((bar_start + 10, name_y + 55), prestige_str, statcolor,
-                      font=stats_font, stroke_width=stroke_width, stroke_fill=namefill)
+            draw.text((bar_start + 10, stats_y - stats_size - 10), prestige_str, statcolor,
+                      font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
         # Stats text
         # Rank
         draw.text((bar_start + 10, stats_y), rank, statcolor,
@@ -310,10 +326,10 @@ class Generator:
         draw.text((bar_start + 10, stats_y + stat_offset), leveltxt, statcolor,
                   font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
         # Messages
-        draw.text((bar_start + 210 + 10, stats_y), message_count, statcolor,
+        draw.text((bar_start + 220, stats_y), message_count, statcolor,
                   font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
         # Voice
-        draw.text((bar_start + 210 + 10, stats_y + stat_offset), voice, statcolor,
+        draw.text((bar_start + 220, stats_y + stat_offset), voice, statcolor,
                   font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
 
         # Exp
@@ -321,8 +337,77 @@ class Generator:
                   font=stats_font, stroke_width=stroke_width, stroke_fill=statstxtfill)
 
         # Stars
-        draw.text((960, startop), stars, namecolor,
-                  font=star_font, stroke_width=stroke_width, stroke_fill=namefill)
+        draw.text((star_text_x, star_text_y), stars, namecolor,
+                  font=star_font, anchor="lt", stroke_width=stroke_width, stroke_fill=namefill)
+
+        # pfp border - draw at 4x and resample down to 1x for nice smooth circles then paste to the image
+        circle_img = Image.new("RGBA", (1600, 1600))
+        pfp_border = ImageDraw.Draw(circle_img)
+        pfp_border.ellipse([4, 4, 1596, 1596], fill=(255, 255, 255, 0), outline=base, width=20)
+        circle_img = circle_img.resize((330, 330), Image.Resampling.LANCZOS)
+        final.paste(circle_img, (circle_x - 15, circle_y - 15), circle_img)
+
+        # Handle profile pic image to paste to card
+        # If animated and render gifs enabled, render as a gif
+        is_animated = getattr(profile, "is_animated", False)
+        if is_animated and render_gifs:
+            duration = self.get_avg_duration(profile)
+            frames = []
+            for i in range(profile.n_frames):
+                profile.seek(i)
+                prof_img = profile.convert('RGBA').resize((300, 300), Image.Resampling.LANCZOS)
+                # Mask to crop profile pic image to a circle
+                # draw at 4x size and resample down to 1x for a nice smooth circle
+                mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.ellipse(
+                    [circle_x * 4, circle_y * 4, (300 + circle_x) * 4, (300 + circle_y) * 4], fill=(255, 255, 255, 255)
+                )
+                mask = mask.resize(card.size, Image.Resampling.LANCZOS)
+                # make a new Image to set up card-sized image for pfp layer and the circle mask for it
+                profile_pic_holder = Image.new("RGBA", card.size, (255, 255, 255, 0))
+                # paste on square profile pic in appropriate spot
+                profile_pic_holder.paste(prof_img, (circle_x, circle_y))
+                # make a new Image at card size to crop pfp with transparency to the circle mask
+                pfp_composite_holder = Image.new("RGBA", card.size, (0, 0, 0, 0))
+                pfp_composite_holder = Image.composite(profile_pic_holder, pfp_composite_holder, mask)
+                # Profile image is on the background tile now
+                pre = Image.alpha_composite(final, pfp_composite_holder)
+                # Paste status over profile ring
+                blank = Image.new("RGBA", card.size, (255, 255, 255, 0))
+                blank.paste(status, (circle_x + 230, circle_y + 240))
+                pre = Image.alpha_composite(pre, blank)
+                frames.append(pre)
+
+            tmp = BytesIO()
+            frames[0].save(tmp, save_all=True, append_images=frames[1:], duration=duration,
+                           format="GIF", loop=0, quality=25)
+            tmp.seek(0)
+            final = Image.open(tmp)
+
+        else:
+            profile = profile.convert('RGBA').resize((300, 300), Image.Resampling.LANCZOS)
+            # Mask to crop profile pic image to a circle
+            # draw at 4x size and resample down to 1x for a nice smooth circle
+            mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.ellipse(
+                [circle_x * 4, circle_y * 4, (300 + circle_x) * 4, (300 + circle_y) * 4], fill=(255, 255, 255, 255)
+            )
+            mask = mask.resize(card.size, Image.Resampling.LANCZOS)
+            # make a new Image to set up card-sized image for pfp layer and the circle mask for it
+            profile_pic_holder = Image.new("RGBA", card.size, (255, 255, 255, 0))
+            # paste on square profile pic in appropriate spot
+            profile_pic_holder.paste(profile, (circle_x, circle_y))
+            # make a new Image at card size to crop pfp with transparency to the circle mask
+            pfp_composite_holder = Image.new("RGBA", card.size, (0, 0, 0, 0))
+            pfp_composite_holder = Image.composite(profile_pic_holder, pfp_composite_holder, mask)
+            # Profile image is on the background tile now
+            final = Image.alpha_composite(final, pfp_composite_holder)
+            # Paste status over profile ring
+            blank = Image.new("RGBA", card.size, (255, 255, 255, 0))
+            blank.paste(status, (circle_x + 230, circle_y + 240))
+            final = Image.alpha_composite(final, blank)
 
         return final
 
@@ -344,7 +429,9 @@ class Generator:
             stars: str = "0",
             balance: int = 0,
             currency: str = "credits",
-            role_icon: str = None
+            role_icon: str = None,
+            font_name: str = None,
+            render_gifs: bool = False
     ):
         # Colors
         base = self.rand_rgb()
@@ -352,9 +439,9 @@ class Generator:
         statcolor = self.rand_rgb()
         lvlbarcolor = self.rand_rgb()
         # Color distancing is more strict if user hasn't defined color
-        namedistance = 250
-        statdistance = 250
-        lvldistance = 250
+        namedistance = 240
+        statdistance = 240
+        lvldistance = 240
         if colors:
             # Relax distance for colors that are defined
             base = colors["base"]
@@ -398,14 +485,31 @@ class Generator:
             bgcolor = base
 
         # Compare text colors to BG
+        iters = 0
         while self.distance(namecolor, bgcolor) < namedistance:
             namecolor = self.rand_rgb()
+            iters += 1
+            if iters > 20:
+                iters = 0
+                break
         while self.distance(statcolor, bgcolor) < statdistance:
             statcolor = self.rand_rgb()
+            iters += 1
+            if iters > 20:
+                iters = 0
+                break
         while self.distance(lvlbarcolor, bgcolor) < lvldistance:
             lvlbarcolor = self.rand_rgb()
+            iters += 1
+            if iters > 20:
+                iters = 0
+                break
         while self.distance(outlinecolor, bgcolor) < 50:
             outlinecolor = self.rand_rgb()
+            iters += 1
+            if iters > 20:
+                iters = 0
+                break
 
         # Place semi-transparent box over right side
         blank = Image.new("RGBA", card.size, (255, 255, 255, 0))
@@ -418,37 +522,52 @@ class Generator:
 
         # Editing stuff here
         # ======== Fonts to use =============
-        font_normal = ImageFont.truetype(self.font, 40)
-        font_small = ImageFont.truetype(self.font, 25)
-
         def get_str(xp):
             return "{:,}".format(xp)
 
-        rank = _(f"Rank: #{user_position}")
-        level = _(f"Level: {level}")
+        rank = _("Rank: #") + str(user_position)
+        level = _("Level: ") + str(level)
         exp = f"Exp: {get_str(user_xp)}/{get_str(next_xp)}"
-        messages = _(f"Messages: {messages}")
-        voice = _(f"Voice Time: {voice}")
-        name = f"{user_name}"
+        messages = _("Messages: ") + str(messages)
+        voice = _("Voice Time: ") + str(voice)
+        name = user_name
         if prestige:
-            name += _(f" - Prestige {prestige}")
+            name += _(" - Prestige ") + str(prestige)
         stars = str(stars)
 
-        # stat text
-        draw.text((260, 20), name, namecolor, font=font_normal, stroke_width=1, stroke_fill=text_bg)
-        draw.text((260, 95), rank, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
-        draw.text((260, 125), level, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
-        draw.text((260, 160), exp, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
-        draw.text((465, 95), messages, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
-        draw.text((465, 125), voice, statcolor, font=font_small, stroke_width=1, stroke_fill=text_bg)
+        base_font = self.font
+        if font_name:
+            fontfile = os.path.join(self.fonts, font_name)
+            if os.path.exists(fontfile):
+                base_font = fontfile
+        namesize = 45
+        statsize = 30
+        starsize = 45
+        namefont = ImageFont.truetype(base_font, namesize)
+        statfont = ImageFont.truetype(base_font, statsize)
+        starfont = ImageFont.truetype(base_font, starsize)
 
-        # STAR TEXT
-        if len(str(stars)) < 3:
-            star_font = ImageFont.truetype(self.font, 35)
-            draw.text((825, 25), stars, statcolor, font=star_font, stroke_width=1, stroke_fill=text_bg)
-        else:
-            star_font = ImageFont.truetype(self.font, 30)
-            draw.text((825, 28), stars, statcolor, font=star_font, stroke_width=1, stroke_fill=text_bg)
+        while (namefont.getlength(name) + 260) > 770:
+            namesize -= 1
+            namefont = ImageFont.truetype(base_font, namesize)
+        while (statfont.getlength(messages) + 465) > 890:
+            statsize -= 1
+            statfont = ImageFont.truetype(base_font, statsize)
+        while (statfont.getlength(level) + 260) > 455:
+            statsize -= 1
+            statfont = ImageFont.truetype(base_font, statsize)
+        while (starfont.getlength(stars) + 825) > 890:
+            starsize -= 1
+            starfont = ImageFont.truetype(base_font, starsize)
+
+        # Stat text
+        draw.text((260, 20), name, namecolor, font=namefont, stroke_width=1, stroke_fill=text_bg)
+        draw.text((260, 95), rank, statcolor, font=statfont, stroke_width=1, stroke_fill=text_bg)
+        draw.text((260, 125), level, statcolor, font=statfont, stroke_width=1, stroke_fill=text_bg)
+        draw.text((260, 160), exp, statcolor, font=statfont, stroke_width=1, stroke_fill=text_bg)
+        draw.text((465, 95), messages, statcolor, font=statfont, stroke_width=1, stroke_fill=text_bg)
+        draw.text((465, 125), voice, statcolor, font=statfont, stroke_width=1, stroke_fill=text_bg)
+        draw.text((825, 28), stars, statcolor, font=starfont, stroke_width=1, stroke_fill=text_bg)
 
         # Adding another blank layer for the progress bar
         progress_bar = Image.new("RGBA", card.size, (255, 255, 255, 0))
@@ -471,8 +590,8 @@ class Generator:
         card.paste(circle_img, (19, 19), circle_img)
 
         # get profile pic
-        pfp_image = self.get_image_content_from_url(str(profile_image))
-        if pfp_image:
+        if profile_image:
+            pfp_image = self.get_image_content_from_url(str(profile_image))
             profile_bytes = BytesIO(pfp_image)
             profile = Image.open(profile_bytes)
         else:
@@ -508,9 +627,6 @@ class Generator:
         rep_icon = Image.open(self.star)
         rep_icon = rep_icon.convert("RGBA").resize((40, 40), Image.Resampling.LANCZOS)
 
-        blank = Image.new("RGBA", pre.size, (255, 255, 255, 0))
-        blank.paste(status, (500, 50))
-
         # Status badge
         # Another blank
         blank = Image.new("RGBA", pre.size, (255, 255, 255, 0))
@@ -527,6 +643,7 @@ class Generator:
             profile_image: str = None,
             level: int = 1,
             color: tuple = (0, 0, 0),
+            font_name: str = None
     ):
         if bg_image and bg_image != "random":
             bgpath = os.path.join(bundled_data_path(self), "backgrounds")
@@ -542,27 +659,40 @@ class Generator:
         else:
             card = self.get_random_background()
 
+        # Get coords and fonts setup
         card_size = (180, 60)
         aspect_ratio = (18, 6)
-        card = self.force_aspect_ratio(card, aspect_ratio).convert("RGBA")
-        card = card.resize(card_size, Image.Resampling.LANCZOS)
-
+        card: Image = self.force_aspect_ratio(card, aspect_ratio).convert("RGBA")
         fillcolor = (0, 0, 0)
         txtcolor = color
+
+        pfpsize = (card.height, card.height)
+        fontsize = int(card.height / 2.5)
+        string = _("Level ") + str(level)
+        base_font = self.font
+        if font_name:
+            fontfile = os.path.join(self.fonts, font_name)
+            if os.path.exists(fontfile):
+                base_font = fontfile
+        # base_font = self.get_random_font()
+        font = ImageFont.truetype(base_font, fontsize)
+        while font.getlength(string) + int(card.height * 1.2) > card.width - (int(card.height * 1.2) - card.height):
+            fontsize -= 1
+            font = ImageFont.truetype(base_font, fontsize)
+
         # Draw rounded rectangle at 4x size and scale down to crop card to
-        mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
+        mask = Image.new("RGBA", ((card.size[0]), (card.size[1])), 0)
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.rounded_rectangle(
-            (0, 0, card.size[0] * 4, card.size[1] * 4),
+            (10, 0, card.width, card.height),
             fill=fillcolor,
-            width=2,
-            radius=120
+            width=5,
+            radius=card.height
         )
-        mask = mask.resize(card.size, Image.Resampling.LANCZOS)
 
         # Make new Image to create composite
         composite_holder = Image.new("RGBA", card.size, (0, 0, 0, 0))
-        card = Image.composite(card, composite_holder, mask)
+        final = Image.composite(card, composite_holder, mask)
 
         # Prep profile to paste
         pfp_image = self.get_image_content_from_url(str(profile_image))
@@ -571,41 +701,51 @@ class Generator:
             profile = Image.open(profile_bytes)
         else:
             profile = Image.open(self.default_pfp)
-        profile = profile.convert('RGBA').resize((60, 60), Image.Resampling.LANCZOS)
+        profile = profile.convert('RGBA').resize(pfpsize, Image.Resampling.LANCZOS)
 
         # Create mask for profile image crop
-        mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
+        mask = Image.new("RGBA", ((card.size[0]), (card.size[1])), 0)
         mask_draw = ImageDraw.Draw(mask)
-        mask_draw.ellipse((0, 0, 60 * 4, 60 * 4), fill=fillcolor)
-        mask = mask.resize(card.size, Image.Resampling.LANCZOS)
+        mask_draw.ellipse((0, 0, pfpsize[0], pfpsize[1]), fill=(255, 255, 255, 255))
+        # mask = mask.resize(card.size, Image.Resampling.LANCZOS)
 
         pfp_holder = Image.new("RGBA", card.size, (255, 255, 255, 0))
         pfp_holder.paste(profile, (0, 0))
-
         pfp_composite_holder = Image.new("RGBA", card.size, (0, 0, 0, 0))
         pfp_composite_holder = Image.composite(pfp_holder, pfp_composite_holder, mask)
 
-        final = Image.alpha_composite(card, pfp_composite_holder)
-
-        string = _("Level ") + str(level)
-        fontsize = 24
-        if len(str(level)) > 2:
-            fontsize = 19
+        final = Image.alpha_composite(final, pfp_composite_holder)
 
         # Draw
         draw = ImageDraw.Draw(final)
-
-        if len(str(level)) > 2:
-            size = 19
-        else:
-            size = 24
-        font = ImageFont.truetype(self.font, size)
-
         # Filling text
-        text_x = 65
-        text_y = int((card.size[1] / 2) - (fontsize / 1.4))
-        draw.text((text_x, text_y), string, txtcolor, font=font, stroke_width=1, stroke_fill=fillcolor)
+        text_x = int(final.height * 1.2)
+        text_y = int(final.height / 2)
+        textpos = (text_x, text_y)
+        draw.text(textpos, string, txtcolor, font=font, anchor="lm", stroke_width=3, stroke_fill=fillcolor)
+        # Finally resize the image
+        final = final.resize(card_size, Image.Resampling.LANCZOS)
         return final
+
+    def get_all_fonts(self):
+        fonts = [i for i in os.listdir(self.fonts)]
+        count = len(fonts)
+        fontsize = 50
+        res = (650, fontsize * count + (count * 15))
+        img = Image.new("RGBA", res, 0)
+        color = (255, 255, 255)
+        draw = ImageDraw.Draw(img)
+        for index, i in enumerate(fonts):
+            fontname = i.replace(".ttf", "")
+            font = ImageFont.truetype(
+                os.path.join(self.fonts, i),
+                fontsize
+            )
+            draw.text(
+                (5, index * (fontsize + 15)), fontname, color,
+                font=font, stroke_width=1, stroke_fill=(0, 0, 0)
+            )
+        return img
 
     def get_all_backgrounds(self):
         backgrounds = os.path.join(bundled_data_path(self), "backgrounds")
@@ -702,6 +842,17 @@ class Generator:
             return 0, 0, 0
 
     @staticmethod
+    def get_img_colors(img: Union[Image.Image, str, bytes, BytesIO], amount: int) -> list:
+        try:
+            colors = colorgram.extract(img, amount)
+            extracted = [color.rgb for color in colors]
+            return extracted
+        except Exception as e:
+            log.warning(f"Failed to extract image colors: {e}")
+            extracted = [(0, 0, 0) for _ in range(amount)]
+            return extracted
+
+    @staticmethod
     def distance(color: tuple, background_color: tuple) -> float:
         # Values
         x1, y1, z1 = color
@@ -762,6 +913,12 @@ class Generator:
         bg_file = os.path.join(bg_dir, choice)
         return Image.open(bg_file)
 
+    def get_random_font(self) -> str:
+        fdir = os.path.join(bundled_data_path(self), "fonts")
+        choice = random.choice(os.listdir(fdir))
+        f_file = os.path.join(fdir, choice)
+        return f_file
+
     @staticmethod
     def has_emoji(text: str) -> Union[str, bool]:
         if text.count(":") < 2:
@@ -770,3 +927,28 @@ class Generator:
             return "custom"
         else:
             return "unicode"
+
+    @staticmethod
+    def get_avg_duration(image: Image) -> Union[int, None]:
+        """Get average duration sequence of gif frames"""
+        if not getattr(image, "is_animated"):
+            return None
+        times = []
+        for i in range(1, image.n_frames):
+            image.seek(i)
+            times.append(image.info["duration"])
+        if not times:
+            return None
+        return int(sum(times) / len(times))
+
+    @staticmethod
+    def get_durations(image: Image) -> Union[tuple, None]:
+        if not image.is_animated:
+            return None
+        times = []
+        for i in range(image.n_frames):
+            image.seek(i)
+            times.append(image.info["duration"])
+        if not times:
+            return None
+        return tuple(times)

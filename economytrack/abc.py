@@ -21,3 +21,4 @@ class MixinMeta(ABC):
     @abstractmethod
     async def get_plot(self, df: pd.DataFrame) -> discord.File:
         raise NotImplementedError
+

@@ -1,4 +1,5 @@
 import datetime
+from abc import ABC
 
 import discord
 import pandas as pd
@@ -6,10 +7,8 @@ import pytz
 from discord.ext.commands.cooldowns import BucketType
 from redbot.core import commands, bank
 from redbot.core.commands import parse_timedelta
-from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import (
     box,
-    humanize_list,
     humanize_number,
     humanize_timedelta,
     pagify,
@@ -18,27 +17,26 @@ from redbot.core.utils.menus import menu, DEFAULT_CONTROLS
 
 from economytrack.abc import MixinMeta
 
-_ = Translator("EconomyTrackCommands", __file__)
 
-
-@cog_i18n(_)
 class EconomyTrackCommands(MixinMeta):
     @commands.group(aliases=["ecotrack"])
     @commands.admin()
+    @commands.guild_only()
     async def economytrack(self, ctx: commands.Context):
         """Configure EconomyTrack"""
 
     @economytrack.command()
     @commands.guildowner()
+    @commands.guild_only()
     async def toggle(self, ctx: commands.Context):
         """Enable/Disable economy tracking for this server"""
         async with self.config.guild(ctx.guild).all() as conf:
             if conf["enabled"]:
                 conf["enabled"] = False
-                await ctx.send(_("Economy tracking has been **Disabled**"))
+                await ctx.send("Economy tracking has been **Disabled**")
             else:
                 conf["enabled"] = True
-                await ctx.send(_("Economy tracking has been **Enabled**"))
+                await ctx.send("Economy tracking has been **Enabled**")
 
     @economytrack.command()
     @commands.is_owner()
@@ -67,30 +65,26 @@ class EconomyTrackCommands(MixinMeta):
         Use this command without the argument to get a huge list of valid timezones.
         """
         tzs = pytz.common_timezones
-        timezones = humanize_list(tzs)
+        timezones = "\n".join([t for t in tzs])
         command = f"`{ctx.prefix}ecotrack timezone US/Eastern`"
-        text = _(f"Use one of these timezones with this command\n") + _("Example: ") + command
+        text = f"Use one of these timezones with this command\nExample: {command}"
         embeds = []
-        if not timezone:
-            embed = discord.Embed(
-                title=_("Valid Timezones"),
-                description=text,
-                color=ctx.author.color
-            )
-            await ctx.send(embed=embed)
-            for p in pagify(timezones):
-                embeds.append(discord.Embed(description=box(p)))
-        elif timezone not in tzs:
-            embed = discord.Embed(
-                title=_("Invalid Timezone!"),
-                description=text,
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-            for p in pagify(timezones):
-                embeds.append(discord.Embed(description=box(p)))
+        if not timezone or timezone not in tzs:
+            if not timezone:
+                title = "Valid Timezones"
+            else:
+                title = "Invalid Arg, Here are Valid Timezones"
+            for p in pagify(timezones, page_length=500):
+                em = discord.Embed(
+                    title=title,
+                    description=f"{text}\n{box(p)}",
+                    color=ctx.author.color
+                )
+                embeds.append(em)
 
         if embeds:
+            for i, em in enumerate(embeds):
+                em.set_footer(text=f"Page {i + 1}/{len(embeds)}")
             return await menu(ctx, embeds, DEFAULT_CONTROLS)
 
         await self.config.guild(ctx.guild).timezone.set(timezone)
@@ -113,21 +107,49 @@ class EconomyTrackCommands(MixinMeta):
         avg_iter = self.looptime if self.looptime else "(N/A)"
         ptime = humanize_timedelta(seconds=int(points * 60))
         mptime = humanize_timedelta(seconds=int(max_points * 60))
-        desc = _(f"`Enabled:    `{enabled}\n"
-                 f"`Timezone:   `{timezone}\n"
-                 f"`Max Points: `{humanize_number(max_points)} ({mptime})\n"
-                 f"`Collected:  `{humanize_number(points)} ({ptime if ptime else 'None'})\n"
-                 f"`Timezone:   `{timezone}\n"
-                 f"`LoopTime:   `{avg_iter}ms")
+        desc = f"`Enabled:    `{enabled}\n" \
+               f"`Timezone:   `{timezone}\n" \
+               f"`Max Points: `{humanize_number(max_points)} ({mptime})\n" \
+               f"`Collected:  `{humanize_number(points)} ({ptime if ptime else 'None'})\n" \
+               f"`LoopTime:   `{avg_iter}ms"
         embed = discord.Embed(
-            title=_("EconomyTrack Settings"),
+            title="EconomyTrack Settings",
             description=desc,
             color=ctx.author.color
         )
         await ctx.send(embed=embed)
 
+    @commands.command()
+    @commands.guildowner()
+    @commands.guild_only()
+    async def remoutliers(self, ctx: commands.Context, max_value: int):
+        """Cleanup data above a certain total economy balance"""
+        is_global = await bank.is_global()
+        if is_global:
+            data = await self.config.data()
+        else:
+            data = await self.config.guild(ctx.guild).data()
+        if len(data) < 10:
+            embed = discord.Embed(
+                description="There is not enough data collected. Try again later.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+
+        newrows = [i for i in data if i[1] <= max_value]
+        deleted = len(data) - len(newrows)
+        if not deleted:
+            return await ctx.send("No data to delete")
+        async with ctx.typing():
+            if is_global:
+                await self.config.data.set(newrows)
+            else:
+                await self.config.guild(ctx.guild).data.set(newrows)
+            await ctx.send("Deleted all data points above " + str(max_value))
+
     @commands.command(aliases=["bgraph"])
     @commands.cooldown(5, 60.0, BucketType.user)
+    @commands.guild_only()
     async def bankgraph(self, ctx: commands.Context, timespan: str = "1d"):
         """
         View bank status over a period of time.
@@ -154,7 +176,7 @@ class EconomyTrackCommands(MixinMeta):
             data = await self.config.guild(ctx.guild).data()
         if len(data) < 10:
             embed = discord.Embed(
-                description=_("There is not enough data collected to generate a graph right now. Try again later."),
+                description="There is not enough data collected to generate a graph right now. Try again later.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
@@ -174,7 +196,7 @@ class EconomyTrackCommands(MixinMeta):
 
         if df.empty or len(df.values) < 10:  # In case there is data but it is old
             embed = discord.Embed(
-                description=_("There is not enough data collected to generate a graph right now. Try again later."),
+                description="There is not enough data collected to generate a graph right now. Try again later.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
@@ -183,25 +205,38 @@ class EconomyTrackCommands(MixinMeta):
             alltime = humanize_timedelta(seconds=len(data) * 60)
             title = f"Total economy balance for all time ({alltime})"
         else:
+            delta: datetime.timedelta = df.index[-1] - df.index[0]
             title = f"Total economy balance over the last {humanize_timedelta(timedelta=delta)}"
 
         lowest = df.min().total
         highest = df.max().total
         avg = df.mean().total
+        current = df.values[-1][0]
 
-        desc = f"`DataPoints: `{humanize_number(len(data))}\n" \
+        desc = f"`DataPoints: `{humanize_number(len(df.values))}\n" \
                f"`BankName:   `{bank_name}\n" \
-               f"`Lowest:     `{humanize_number(lowest)} {currency_name}\n" \
-               f"`Highest:    `{humanize_number(highest)} {currency_name}\n" \
-               f"`Average:    `{humanize_number(round(avg))} {currency_name}\n"
+               f"`Currency:   `{currency_name}"
+
+        field = f"`Current: `{humanize_number(current)}\n" \
+                f"`Average: `{humanize_number(round(avg))}\n" \
+                f"`Highest: `{humanize_number(highest)}\n" \
+                f"`Lowest:  `{humanize_number(lowest)}\n" \
+                f"`Diff:    `{humanize_number(highest - lowest)}"
+
+        first = df.values[0][0]
+        diff = '+' if current > first else '-'
+        field2 = f"{diff} {humanize_number(abs(current - first))}"
 
         embed = discord.Embed(
-            title=_(title),
-            description=_(desc),
+            title=title,
+            description=desc,
             color=ctx.author.color
         )
+        embed.add_field(name="Statistics", value=field)
+        embed.add_field(name="Change", value=f"Since <t:{int(df.index[0].timestamp())}:D>\n{box(field2, 'diff')}")
+
         embed.set_image(url="attachment://plot.png")
-        embed.set_footer(text=_(f"Timezone: {timezone}"))
+        embed.set_footer(text=f"Timezone: {timezone}")
         async with ctx.typing():
             file = await self.get_plot(df)
         await ctx.send(embed=embed, file=file)
