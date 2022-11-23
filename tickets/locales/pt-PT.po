@@ -1,15 +1,21 @@
-#
 msgid ""
 msgstr ""
-"Project-Id-Version: PACKAGE VERSION\n"
+"Project-Id-Version: vrt-cogs\n"
 "POT-Creation-Date: 2022-11-20 10:42-0500\n"
-"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
-"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
-"Language-Team: LANGUAGE <LL@li.org>\n"
+"PO-Revision-Date: 2022-11-20 16:01\n"
+"Last-Translator: \n"
+"Language-Team: Portuguese\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: redgettext 3.4.2\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Crowdin-Project: vrt-cogs\n"
+"X-Crowdin-Project-ID: 550681\n"
+"X-Crowdin-Language: pt-PT\n"
+"X-Crowdin-File: /main/tickets/locales/messages.pot\n"
+"X-Crowdin-File-ID: 13\n"
+"Language: pt_PT\n"
 
 #: base.py:20
 #, docstring
@@ -141,15 +147,11 @@ msgid "<panel_name> <message_id>`\n"
 msgstr ""
 
 #: commands.py:48
-msgid ""
-"At this point the ticket panel will be activated, all following steps are "
-"for extra customization.\n"
+msgid "At this point the ticket panel will be activated, all following steps are for extra customization.\n"
 msgstr ""
 
 #: commands.py:50
-msgid ""
-"If the bot is having trouble finding the message, run the command in the "
-"same channel as it."
+msgid "If the bot is having trouble finding the message, run the command in the same channel as it."
 msgstr ""
 
 #: commands.py:52
@@ -299,8 +301,7 @@ msgstr ""
 
 #: commands.py:157
 #, docstring
-msgid ""
-"\n"
+msgid "\n"
 "        Set the message ID of a ticket panel\n"
 "        Run this command in the same channel as the ticket panel message\n"
 "        "
@@ -367,18 +368,15 @@ msgstr ""
 
 #: commands.py:233
 #, docstring
-msgid ""
-"\n"
-"        Set the default ticket channel name for a panel\n"
-"\n"
+msgid "\n"
+"        Set the default ticket channel name for a panel\n\n"
 "        You can include the following in the name\n"
 "        `{num}` - Ticket number\n"
 "        `{user}` - user's name\n"
 "        `{id}` - user's ID\n"
 "        `{shortdate}` - mm-dd\n"
 "        `{longdate}` - mm-dd-yyyy\n"
-"        `{time}` - hh-mm AM/PM according to bot host system time\n"
-"\n"
+"        `{time}` - hh-mm AM/PM according to bot host system time\n\n"
 "        You can set this to {default} to use default \"Ticket-Username\n"
 "        "
 msgstr ""
@@ -398,15 +396,12 @@ msgstr ""
 
 #: commands.py:276
 #, docstring
-msgid ""
-"\n"
-"        Add a message embed to be sent when a ticket is opened\n"
-"\n"
+msgid "\n"
+"        Add a message embed to be sent when a ticket is opened\n\n"
 "        You can include any of these in the embed to be replaced by their value when the message is sent\n"
 "        `{username}` - Person's Discord username\n"
 "        `{mention}` - This will mention the user\n"
-"        `{id}` - This is the ID of the user that created the ticket\n"
-"\n"
+"        `{id}` - This is the ID of the user that created the ticket\n\n"
 "        The bot will walk you through a few steps to set up the embed\n"
 "        "
 msgstr ""
@@ -486,8 +481,7 @@ msgid "View/Delete currently configured support ticket panels"
 msgstr ""
 
 #: commands.py:393
-msgid ""
-"There are no panels available!\n"
+msgid "There are no panels available!\n"
 "Use "
 msgstr ""
 
@@ -635,10 +629,8 @@ msgstr ""
 
 #: commands.py:508
 #, docstring
-msgid ""
-"\n"
-"        Add/Remove ticket support roles (one at a time)\n"
-"\n"
+msgid "\n"
+"        Add/Remove ticket support roles (one at a time)\n\n"
 "        To remove a role, simply run this command with it again to remove it\n"
 "        "
 msgstr ""
@@ -653,10 +645,8 @@ msgstr ""
 
 #: commands.py:523
 #, docstring
-msgid ""
-"\n"
-"        Add/Remove users from the blacklist\n"
-"\n"
+msgid "\n"
+"        Add/Remove users from the blacklist\n\n"
 "        Users in the blacklist will not be able to create a ticket\n"
 "        "
 msgstr ""
@@ -671,10 +661,8 @@ msgstr ""
 
 #: commands.py:538
 #, docstring
-msgid ""
-"\n"
-"        Auto-close ticket if opener doesn't say anything after X hours of opening\n"
-"\n"
+msgid "\n"
+"        Auto-close ticket if opener doesn't say anything after X hours of opening\n\n"
 "        Set to 0 to disable this\n"
 "        "
 msgstr ""
@@ -749,10 +737,8 @@ msgstr ""
 
 #: commands.py:605
 #, docstring
-msgid ""
-"\n"
-"        (Toggle) If users can manage their own tickets\n"
-"\n"
+msgid "\n"
+"        (Toggle) If users can manage their own tickets\n\n"
 "        Users will be able to add/remove others to their support ticket\n"
 "        "
 msgstr ""
@@ -767,10 +753,8 @@ msgstr ""
 
 #: commands.py:620
 #, docstring
-msgid ""
-"\n"
-"        (Toggle) Ticket transcripts\n"
-"\n"
+msgid "\n"
+"        (Toggle) Ticket transcripts\n\n"
 "        Closed tickets will have their transcripts uploaded to the log channel\n"
 "        "
 msgstr ""
@@ -785,8 +769,7 @@ msgstr ""
 
 #: tickets.py:21
 #, docstring
-msgid ""
-"\n"
+msgid "\n"
 "    Support ticket system with multi-panel functionality\n"
 "    "
 msgstr ""
@@ -808,8 +791,7 @@ msgid "You have the maximum amount of tickets opened already!"
 msgstr ""
 
 #: views.py:146
-msgid ""
-"The category for this support panel cannot be found!\n"
+msgid "The category for this support panel cannot be found!\n"
 "please contact an admin!"
 msgstr ""
 
@@ -818,8 +800,7 @@ msgid "Welcome to your ticket channel "
 msgstr ""
 
 #: views.py:177
-msgid ""
-"\n"
+msgid "\n"
 "You or an admin can close this with the `close` command"
 msgstr ""
 
@@ -838,3 +819,4 @@ msgstr ""
 #: views.py:217
 msgid "Ticket opened"
 msgstr ""
+
