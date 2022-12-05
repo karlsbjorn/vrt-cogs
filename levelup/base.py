@@ -1165,8 +1165,8 @@ class UserCommands(commands.Cog):
             table = []
             for i in range(start, stop, 1):
                 uid = sorted_users[i][0]
-                user = ctx.guild.get_member(int(uid))
-                user = user.name if user else uid
+                user: discord.Member = ctx.guild.get_member(int(uid))
+                user = user.display_name if user else uid
                 data = sorted_users[i][1]
 
                 place = i + 1
