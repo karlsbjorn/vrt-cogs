@@ -1,13 +1,13 @@
+import logging
 import math
 import random
-import logging
-from typing import Union
 from datetime import datetime, timedelta
+from typing import Union
 
 import discord
-from redbot.core.i18n import Translator
-from aiohttp import ClientSession
 from aiocache import cached, SimpleMemoryCache
+from aiohttp import ClientSession
+from redbot.core.i18n import Translator
 
 DPY2 = True if discord.__version__ > "1.7.3" else False
 _ = Translator("LevelUp", __file__)
@@ -75,14 +75,14 @@ def time_formatter(time_in_seconds) -> str:
         tstring = _("None")
     elif not any([minutes, hours, days, years]):
         if seconds == 1:
-            tstring = _(f"{seconds} second")
+            tstring = str(seconds) + _(" second")
         else:
-            tstring = _(f"{seconds} seconds")
+            tstring = str(seconds) + _(" seconds")
     elif not any([hours, days, years]):
         if minutes == 1:
-            tstring = _(f"{minutes} minute")
+            tstring = str(minutes) + _(" minute")
         else:
-            tstring = _(f"{minutes} minutes")
+            tstring = str(minutes) + _(" minutes")
     elif hours and not days and not years:
         tstring = f"{hours}h {minutes}m"
     elif days and not years:
