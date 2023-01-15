@@ -4,31 +4,35 @@ import logging
 
 import discord
 from discord.ext import tasks
-from redbot.core import commands, Config
+from redbot.core import Config, commands
 from redbot.core.i18n import Translator, cog_i18n
 
+from .abc import CompositeMetaClass
+from .admin import AdminCommands
 from .base import BaseCommands
-from .commands import TicketCommands
 from .views import PanelView
 
 log = logging.getLogger("red.vrt.tickets")
 _ = Translator("Tickets", __file__)
 
 
-# redgettext tickets.py base.py commands.py views.py --command-docstring
+# redgettext -D tickets.py base.py admin.py views.py menu.py
 @cog_i18n(_)
-class Tickets(BaseCommands, TicketCommands, commands.Cog):
+class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMetaClass):
     """
     Support ticket system with multi-panel functionality
     """
+
     __author__ = "Vertyco"
-    __version__ = "1.1.10"
+    __version__ = "1.5.15"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
-        info = f"{helpcmd}\n" \
-               f"Cog Version: {self.__version__}\n" \
-               f"Author: {self.__author__}\n"
+        info = (
+            f"{helpcmd}\n"
+            f"Cog Version: {self.__version__}\n"
+            f"Author: {self.__author__}\n"
+        )
         return info
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
@@ -52,23 +56,37 @@ class Tickets(BaseCommands, TicketCommands, commands.Cog):
             "user_can_rename": False,
             "user_can_close": True,
             "user_can_manage": False,
-            "transcript": False
+            "transcript": False,
         }
         self.config.register_guild(**default_guild)
 
         self.ticket_panel_schema = {  # "panel_name" will be the key for the schema
             # Panel settings
-            "category_id": 0,
-            "channel_id": 0,
-            "message_id": 0,
-            "button_text": "Open a Ticket",
-            "button_color": "blue",
-            "button_emoji": None,  # either None or an emoji for the button
+            "category_id": 0,  # <Required>
+            "channel_id": 0,  # <Required>
+            "message_id": 0,  # <Required>
+            # Button settings
+            "button_text": "Open a Ticket",  # (Optional)
+            "button_color": "blue",  # (Optional)
+            "button_emoji": None,  # (Optional) Either None or an emoji for the button
             # Ticket settings
+            "ticket_messages": [],  # (Optional) A list of messages to be sent
+            "ticket_name": None,  # (Optional) Name format for the ticket channel
+            "log_channel": 0,  # (Optional) Log open/closed tickets
+            "modal": {},  # (Optional) Modal fields to fill out before ticket is opened
+            # Ticker
             "ticket_num": 1,
-            "ticket_messages": [],  # A list of messages to be sent
-            "ticket_name": None,  # Name format for the ticket channel
-            "log_channel": 0
+        }
+        # v1.3.10 schema update (Modals)
+        self.modal_schema = {
+            "label": "",  # <Required>
+            "style": "short",  # <Required>
+            "placeholder": None,  # (Optional
+            "default": None,  # (Optional
+            "required": True,  # (Optional
+            "min_length": None,  # (Optional
+            "max_length": None,  # (Optional
+            "answer": None,  # (Optional
         }
 
         self.valid = []  # Valid ticket channels
@@ -90,9 +108,9 @@ class Tickets(BaseCommands, TicketCommands, commands.Cog):
         for gid, data in conf.items():
             if not data:
                 continue
-            if target_guild and target_guild.id != int(gid):
+            if target_guild and target_guild.id != gid:
                 continue
-            guild = self.bot.get_guild(int(gid))
+            guild = self.bot.get_guild(gid)
             if not guild:
                 continue
             panels = data["panels"]
@@ -113,6 +131,10 @@ class Tickets(BaseCommands, TicketCommands, commands.Cog):
                     await chan.fetch_message(mid)
                 except discord.NotFound:
                     continue
+
+                # v1.3.10 schema update (Modals)
+                if "modals" not in panel:
+                    panel["modals"] = {}
 
                 panel["name"] = panel_name
                 key = f"{cid}-{mid}"
@@ -169,34 +191,54 @@ class Tickets(BaseCommands, TicketCommands, commands.Cog):
                 member = guild.get_member(int(uid))
                 if not member:
                     continue
-                for channel_id, data in tickets.items():
+                for channel_id, ticket in tickets.items():
+                    has_response = ticket.get("has_response")
+                    if has_response and channel_id not in self.valid:
+                        self.valid.append(channel_id)
+                        continue
                     if channel_id in self.valid:
                         continue
                     channel = guild.get_channel(int(channel_id))
                     if not channel:
                         continue
                     now = datetime.datetime.now()
-                    opened_on = datetime.datetime.fromisoformat(data["opened"])
+                    opened_on = datetime.datetime.fromisoformat(ticket["opened"])
                     hastyped = await self.ticket_owner_hastyped(channel, member)
-                    if hastyped:
-                        if channel_id not in self.valid:
-                            self.valid.append(channel_id)
+                    if hastyped and channel_id not in self.valid:
+                        self.valid.append(channel_id)
                         continue
                     td = (now - opened_on).total_seconds() / 3600
-                    if td < inactive:
+                    next_td = td + 0.33
+                    if td < inactive <= next_td:
+                        # Ticket hasn't expired yet but will in the next loop
+                        warning = _(
+                            "If you do not respond to this ticket "
+                            "within the next 20 minutes it will be closed automatically."
+                        )
+                        await channel.send(f"{member.mention}\n{warning}")
                         continue
+                    elif td < inactive:
+                        continue
+
                     time = "hours" if inactive != 1 else "hour"
                     try:
                         await self.close_ticket(
-                            member, channel, conf,
-                            _("(Auto-Close) Opened ticket with no response for ") + f"{inactive} {time}",
-                            self.bot.user.name
+                            member,
+                            channel,
+                            conf,
+                            _("(Auto-Close) Opened ticket with no response for ")
+                            + f"{inactive} {time}",
+                            self.bot.user.name,
                         )
-                        log.info(f"Ticket opened by {member.name} has been auto-closed.\n"
-                                 f"Has typed: {hastyped}\n"
-                                 f"Hours elapsed: {td}")
+                        log.info(
+                            f"Ticket opened by {member.name} has been auto-closed.\n"
+                            f"Has typed: {hastyped}\n"
+                            f"Hours elapsed: {td}"
+                        )
                     except Exception as e:
-                        log.error(f"Failed to auto-close ticket for {member} in {guild.name}\nException: {e}")
+                        log.error(
+                            f"Failed to auto-close ticket for {member} in {guild.name}\nException: {e}"
+                        )
 
         if tasks:
             await asyncio.gather(*actasks)
@@ -226,6 +268,13 @@ class Tickets(BaseCommands, TicketCommands, commands.Cog):
                 continue
             try:
                 await self.close_ticket(
-                    member, chan, conf, _("User left guild(Auto-Close)"), self.bot.user.display_name)
+                    member,
+                    chan,
+                    conf,
+                    _("User left guild(Auto-Close)"),
+                    self.bot.user.display_name,
+                )
             except Exception as e:
-                log.error(f"Failed to auto-close ticket for {member} leaving {member.guild}\nException: {e}")
+                log.error(
+                    f"Failed to auto-close ticket for {member} leaving {member.guild}\nException: {e}"
+                )

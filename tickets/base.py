@@ -1,6 +1,7 @@
 import datetime
 import logging
-from io import StringIO
+from abc import ABC
+from io import BytesIO
 from typing import Union
 
 import discord
@@ -8,13 +9,16 @@ from discord.utils import escape_markdown
 from redbot.core import commands
 from redbot.core.i18n import Translator
 from redbot.core.utils.mod import is_admin_or_superior
+from redbot.core.utils.chat_formatting import humanize_list
+
+from .abc import MixinMeta
 
 LOADING = "https://i.imgur.com/l3p6EMX.gif"
 log = logging.getLogger("red.vrt.tickets.base")
 _ = Translator("Tickets", __file__)
 
 
-class BaseCommands(commands.Cog):
+class BaseCommands(MixinMeta, ABC):
     @commands.command(name="add")
     async def add_user_to_ticket(self, ctx: commands.Context, *, user: discord.Member):
         """Add a user to your ticket"""
@@ -22,7 +26,9 @@ class BaseCommands(commands.Cog):
         opened = conf["opened"]
         owner_id = self.get_ticket_owner(opened, str(ctx.channel.id))
         if not owner_id:
-            return await ctx.send(_("This is not a ticket channel, or it has been removed from config"))
+            return await ctx.send(
+                _("This is not a ticket channel, or it has been removed from config")
+            )
         # If a mod tries
         can_add = False
         for role in ctx.author.roles:
@@ -35,7 +41,9 @@ class BaseCommands(commands.Cog):
         if owner_id == str(ctx.author.id) and conf["user_can_manage"]:
             can_add = True
         if not can_add:
-            return await ctx.send(_("You do not have permissions to add users to this ticket"))
+            return await ctx.send(
+                _("You do not have permissions to add users to this ticket")
+            )
         await ctx.channel.set_permissions(user, read_messages=True, send_messages=True)
         await ctx.send(f"**{user.name}** " + _("has been added to this ticket!"))
 
@@ -46,7 +54,9 @@ class BaseCommands(commands.Cog):
         opened = conf["opened"]
         owner_id = self.get_ticket_owner(opened, str(ctx.channel.id))
         if not owner_id:
-            return await ctx.send(_("This is not a ticket channel, or it has been removed from config"))
+            return await ctx.send(
+                _("This is not a ticket channel, or it has been removed from config")
+            )
         can_rename = False
         for role in ctx.author.roles:
             if role.id in conf["support_roles"]:
@@ -58,7 +68,9 @@ class BaseCommands(commands.Cog):
         if owner_id == str(ctx.author.id) and conf["user_can_rename"]:
             can_rename = True
         if not can_rename:
-            return await ctx.send(_("You do not have permissions to rename this ticket"))
+            return await ctx.send(
+                _("You do not have permissions to rename this ticket")
+            )
         await ctx.channel.edit(name=new_name)
         await ctx.send(_("Ticket has been renamed"))
 
@@ -70,7 +82,9 @@ class BaseCommands(commands.Cog):
         opened = conf["opened"]
         owner_id = self.get_ticket_owner(opened, str(ctx.channel.id))
         if not owner_id:
-            return await ctx.send(_("This is not a ticket channel, or it has been removed from config"))
+            return await ctx.send(
+                _("This is not a ticket channel, or it has been removed from config")
+            )
         can_close = False
         for role in user.roles:
             if role.id in conf["support_roles"]:
@@ -89,8 +103,14 @@ class BaseCommands(commands.Cog):
                 owner = await self.bot.fetch_user(int(owner_id))
         await self.close_ticket(owner, ctx.channel, conf, reason, ctx.author.name)
 
-    async def close_ticket(self, member: Union[discord.Member, discord.User], channel: discord.TextChannel,
-                           conf: dict, reason: str, closedby: str):
+    async def close_ticket(
+        self,
+        member: Union[discord.Member, discord.User],
+        channel: discord.TextChannel,
+        conf: dict,
+        reason: str,
+        closedby: str,
+    ):
         opened = conf["opened"]
         if not opened:
             return
@@ -108,46 +128,55 @@ class BaseCommands(commands.Cog):
         opened = int(datetime.datetime.fromisoformat(opened).timestamp())
         closed = int(datetime.datetime.now().timestamp())
         closer_name = escape_markdown(closedby)
-        desc = _("Ticket created by ") + f"**{member.name}-{member.id}**" + _(" has been closed.\n")
+        desc = (
+            _("Ticket created by ")
+            + f"**{member.name}-{member.id}**"
+            + _(" has been closed.\n")
+        )
         desc += _("`PanelType: `") + f"{panel_name}\n"
         desc += _("`Opened on: `") + f"<t:{opened}:F>\n"
         desc += _("`Closed on: `") + f"<t:{closed}:F>\n"
         desc += _("`Closed by: `") + f"{closer_name}\n"
         desc += _("`Reason:    `") + str(reason)
         embed = discord.Embed(
-            title=_("Ticket Closed"),
-            description=desc,
-            color=discord.Color.green()
+            title=_("Ticket Closed"), description=desc, color=discord.Color.green()
         )
         embed.set_thumbnail(url=pfp)
-        log_chan = self.bot.get_channel(panel["log_channel"]) if panel["log_channel"] else None
+        log_chan = (
+            self.bot.get_channel(panel["log_channel"]) if panel["log_channel"] else None
+        )
         text = ""
         filename = f"{member.name}-{member.id}.txt"
         filename = filename.replace("/", "")
         if conf["transcript"]:
             em = discord.Embed(
-                description=_("Archiving channel..."),
-                color=discord.Color.magenta()
+                description=_("Archiving channel..."), color=discord.Color.magenta()
             )
             em.set_footer(text=_("This channel will be deleted once complete"))
             em.set_thumbnail(url=LOADING)
             await channel.send(embed=em)
+            answers = ticket.get("answers")
+            if answers:
+                r = _("Response")
+                for q, a in answers.items():
+                    text += f"{self.bot.user.display_name}: {q}\n" \
+                            f"{r}: {a}\n"
             history = await self.fetch_channel_history(channel)
             for msg in history:
                 if msg.author.id == self.bot.user.id:
                     continue
                 if not msg:
                     continue
-                if not msg.content:
-                    continue
-                text += f"{msg.author.name}: {msg.content}\n"
+                att = [a.filename for a in msg.attachments]
+                if msg.content:
+                    text += f"{msg.author.name}: {msg.content}\n"
+                if att:
+                    text += _("Files uploaded: ") + humanize_list(att) + "\n"
 
         # Send off new messages
         if log_chan:
             if text:
-                iofile = StringIO(text)
-                iofile.seek(0)
-                file = discord.File(iofile, filename=filename)
+                file = discord.File(BytesIO(text.encode()), filename=filename)
                 await log_chan.send(embed=embed, file=file)
             else:
                 await log_chan.send(embed=embed)
@@ -168,9 +197,7 @@ class BaseCommands(commands.Cog):
         if conf["dm"]:
             try:
                 if text:
-                    iofile = StringIO(text)
-                    iofile.seek(0)
-                    file = discord.File(iofile, filename=filename)
+                    file = discord.File(BytesIO(text.encode()), filename=filename)
                     await member.send(embed=embed, file=file)
                 else:
                     await member.send(embed=embed)

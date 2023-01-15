@@ -1,5 +1,5 @@
 import discord
-from redbot.core import commands, Config
+from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import box, humanize_list
 
@@ -21,8 +21,9 @@ class NoNuke(Listen, commands.Cog):
 
     If a user or bot exceeds X mod events within X seconds, the set action will be performed
     """
+
     __author__ = "Vertyco"
-    __version__ = "0.1.1"
+    __version__ = "0.2.4"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -43,6 +44,7 @@ class NoNuke(Listen, commands.Cog):
             "overload": 3,  # Actions within cooldown time
             "dm": False,  # Whether to DM the user the bot kicks
             "action": "notify",  # Valid types are 'kick', 'ban', 'strip', and 'notify'
+            "ignore_bots": False,  # Whether to ignore other bots
             "whitelist": [],  # Whitelist of trusted users(or bots)
         }
         self.config.register_guild(**default_guild)
@@ -93,6 +95,24 @@ class NoNuke(Listen, commands.Cog):
         await self.initialize(ctx.guild)
 
     @nonuke.command()
+    async def ignorebots(self, ctx):
+        """
+        Toggle whether other bots are ignored
+
+        **NOTE:** Bot specific roles (the role created when the bot joins) cannot be removed.
+        If NoNuke is set to strip roles, and a bot triggers it while having an integrated role, NoNuke will fail
+        to remove the role from it.
+        """
+        toggle = await self.config.guild(ctx.guild).ignore_bots()
+        if toggle:
+            await self.config.guild(ctx.guild).ignore_bots.set(False)
+            await ctx.send("Other bots will **not** be ignored")
+        else:
+            await self.config.guild(ctx.guild).ignore_bots.set(True)
+            await ctx.send("Other bots will be ignored")
+        await self.initialize(ctx.guild)
+
+    @nonuke.command()
     async def dm(self, ctx):
         """Toggle whether the bot sends the user a DM when a kick or ban action is performed"""
         toggle = await self.config.guild(ctx.guild).dm()
@@ -128,7 +148,9 @@ class NoNuke(Listen, commands.Cog):
         Role Creation/Edit/Deletion
         """
         if not ctx.guild.me.guild_permissions.view_audit_log:
-            return await ctx.send("I do not have permission to view the audit log for this server!")
+            return await ctx.send(
+                "I do not have permission to view the audit log for this server!"
+            )
         action = await self.config.guild(ctx.guild).action()
         if action == "kick":
             if not ctx.guild.me.guild_permissions.kick_members:
@@ -155,7 +177,9 @@ class NoNuke(Listen, commands.Cog):
         `notify` - just sends a report to the log channel
         """
         if not ctx.guild.me.guild_permissions.view_audit_log:
-            return await ctx.send("I do not have permission to view the audit log for this server!")
+            return await ctx.send(
+                "I do not have permission to view the audit log for this server!"
+            )
         action = action.lower()
         if action not in ["kick", "ban", "notify", "strip"]:
             return await ctx.send("That is not a valid action type!")
@@ -188,23 +212,26 @@ class NoNuke(Listen, commands.Cog):
     async def view(self, ctx):
         """View the NoNuke settings"""
         conf = await self.config.guild(ctx.guild).all()
-        lchan = self.bot.get_channel(conf['log']) if conf['log'] else "Not Set"
+        lchan = self.bot.get_channel(conf["log"]) if conf["log"] else "Not Set"
         em = discord.Embed(
             title="NoNuke Settings",
             description=f"`Enabled:    `{conf['enabled']}\n"
-                        f"`Cooldown:   `{conf['cooldown']}\n"
-                        f"`Overload:   `{conf['overload']}\n"
-                        f"`DM:         `{conf['dm']}\n"
-                        f"`Action:     `{conf['action']}\n"
-                        f"`LogChannel: `{lchan}"
+            f"`Cooldown:   `{conf['cooldown']}\n"
+            f"`Overload:   `{conf['overload']}\n"
+            f"`DM:         `{conf['dm']}\n"
+            f"`Action:     `{conf['action']}\n"
+            f"`IgnoreBots: `{conf['ignore_bots']}\n"
+            f"`LogChannel: `{lchan}",
         )
         await ctx.send(embed=em)
         perms = {
-            ctx.guild.me.guild_permissions.manage_roles: "manage_roles",
-            ctx.guild.me.guild_permissions.ban_members: "ban_members",
-            ctx.guild.me.guild_permissions.kick_members: "kick_members",
-            ctx.guild.me.guild_permissions.view_audit_log: "view_audit_log"
+            "manage_roles": ctx.guild.me.guild_permissions.manage_roles,
+            "ban_members": ctx.guild.me.guild_permissions.ban_members,
+            "kick_members": ctx.guild.me.guild_permissions.kick_members,
+            "view_audit_log": ctx.guild.me.guild_permissions.view_audit_log,
         }
-        missing = [v for k, v in perms.items() if k]
+        missing = [k for k, v in perms.items() if not v]
         if missing:
-            await ctx.send(f"Just a heads up, I do not have the following permissions\n{box(humanize_list(missing))}")
+            await ctx.send(
+                f"Just a heads up, I do not have the following permissions\n{box(humanize_list(missing))}"
+            )

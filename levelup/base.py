@@ -6,40 +6,42 @@ import math
 import os.path
 import random
 import traceback
+from abc import ABC
 from io import BytesIO
 from time import perf_counter
-from typing import Union, Optional
+from typing import Optional, Union
 
 import discord
 import tabulate
 import validators
-from aiocache import cached, SimpleMemoryCache
-from discord.utils import escape_markdown
-from redbot.core import commands, bank
-from redbot.core.data_manager import bundled_data_path
+from aiocache import SimpleMemoryCache, cached
+from redbot.core import bank, commands
 from redbot.core.i18n import Translator, cog_i18n
-from redbot.core.utils.chat_formatting import box, humanize_number, humanize_list
+from redbot.core.utils.chat_formatting import box, humanize_list, humanize_number
 
 from levelup.utils.formatter import (
-    time_formatter,
-    hex_to_rgb,
-    get_level,
-    get_xp,
-    get_next_reset,
     get_attachments,
+    get_bar,
     get_content_from_url,
+    get_leaderboard,
+    get_level,
     get_user_position,
-    get_bar
+    get_xp,
+    hex_to_rgb,
+    time_formatter,
 )
-from .generator import Generator
+
+from .abc import MixinMeta
+
+# from .generator import Generator
 
 if discord.__version__ > "1.7.3":
-    from .dpymenu import menu, DEFAULT_CONTROLS
+    from .dpymenu import DEFAULT_CONTROLS, menu
 
     DPY2 = True
 else:
     # from .dislashmenu import menu, DEFAULT_CONTROLS
-    from .menus import menu, DEFAULT_CONTROLS
+    from .menus import DEFAULT_CONTROLS, menu
 
     DPY2 = False
 
@@ -48,10 +50,10 @@ _ = Translator("LevelUp", __file__)
 
 
 @cog_i18n(_)
-class UserCommands(commands.Cog):
+class UserCommands(MixinMeta, ABC):
     # Generate level up image
     async def gen_levelup_img(self, args: dict):
-        func = functools.partial(Generator().generate_levelup, **args)
+        func = functools.partial(self.generate_levelup, **args)
         task = self.bot.loop.run_in_executor(self.threadpool, func)
         try:
             img = await asyncio.wait_for(task, timeout=60)
@@ -62,9 +64,9 @@ class UserCommands(commands.Cog):
     # Generate profile image
     async def gen_profile_img(self, args: dict, full: bool = True):
         if full:
-            func = functools.partial(Generator().generate_profile, **args)
+            func = functools.partial(self.generate_profile, **args)
         else:
-            func = functools.partial(Generator().generate_slim_profile, **args)
+            func = functools.partial(self.generate_slim_profile, **args)
         task = self.bot.loop.run_in_executor(self.threadpool, func)
         try:
             img = await asyncio.wait_for(task, timeout=60)
@@ -81,12 +83,16 @@ class UserCommands(commands.Cog):
         try:
             # Try running it through profile generator blind to see if it errors
 
-            args = {'bg_image': image_url}
-            func = functools.partial(Generator().generate_profile, **args)
-            await self.bot.loop.run_in_executor(None, func)
+            args = {"bg_image": image_url}
+            func = functools.partial(self.generate_profile, **args)
+            await self.bot.loop.run_in_executor(self.threadpool, func)
         except Exception as e:
             if "cannot identify image file" in str(e):
-                await ctx.send(_("Uh Oh, looks like that is not a valid image, cannot identify the file"))
+                await ctx.send(
+                    _(
+                        "Uh Oh, looks like that is not a valid image, cannot identify the file"
+                    )
+                )
                 return
             else:
                 log.warning(f"background set failed: {traceback.format_exc()}")
@@ -95,12 +101,12 @@ class UserCommands(commands.Cog):
         return True
 
     async def get_or_fetch_fonts(self):
-        fonts = os.listdir(os.path.join(bundled_data_path(self), "fonts"))
+        fonts = os.listdir(os.path.join(self.path, "fonts"))
         same = all([name in self.fdata["names"] for name in fonts])
         if same and self.fdata["img"]:
             img = self.fdata["img"]
         else:
-            func = functools.partial(Generator().get_all_fonts)
+            func = functools.partial(self.get_all_fonts)
             task = self.bot.loop.run_in_executor(None, func)
             try:
                 img = await asyncio.wait_for(task, timeout=60)
@@ -111,12 +117,12 @@ class UserCommands(commands.Cog):
         return img
 
     async def get_or_fetch_backgrounds(self):
-        backgrounds = os.listdir(os.path.join(bundled_data_path(self), "backgrounds"))
+        backgrounds = os.listdir(os.path.join(self.path, "backgrounds"))
         same = all([name in self.fdata["names"] for name in backgrounds])
         if same and self.fdata["img"]:
             img = self.fdata["img"]
         else:
-            func = functools.partial(Generator().get_all_backgrounds)
+            func = functools.partial(self.get_all_backgrounds)
             task = self.bot.loop.run_in_executor(None, func)
             try:
                 img = await asyncio.wait_for(task, timeout=60)
@@ -126,7 +132,9 @@ class UserCommands(commands.Cog):
                 img = None
         return img
 
-    async def get_or_fetch_profile(self, user: discord.Member, args: dict, full: bool) -> Union[discord.File, None]:
+    async def get_or_fetch_profile(
+        self, user: discord.Member, args: dict, full: bool
+    ) -> Union[discord.File, None]:
         gid = user.guild.id
         uid = str(user.id)
         now = datetime.datetime.now()
@@ -156,10 +164,14 @@ class UserCommands(commands.Cog):
     # Hacky way to get user banner
     @cached(ttl=7200, cache=SimpleMemoryCache)
     async def get_banner(self, user: discord.Member) -> str:
-        req = await self.bot.http.request(discord.http.Route("GET", "/users/{uid}", uid=user.id))
+        req = await self.bot.http.request(
+            discord.http.Route("GET", "/users/{uid}", uid=user.id)
+        )
         banner_id = req["banner"]
         if banner_id:
-            banner_url = f"https://cdn.discordapp.com/banners/{user.id}/{banner_id}?size=1024"
+            banner_url = (
+                f"https://cdn.discordapp.com/banners/{user.id}/{banner_id}?size=1024"
+            )
             return banner_url
 
     @commands.command(name="stars", aliases=["givestar", "addstar", "thanks"])
@@ -193,7 +205,11 @@ class UserCommands(commands.Cog):
             else:
                 time_left = cooldown - td
                 tstring = time_formatter(time_left)
-                msg = _("You need to wait ") + f"**{tstring}**" + _(" before you can give more stars!")
+                msg = (
+                    _("You need to wait ")
+                    + f"**{tstring}**"
+                    + _(" before you can give more stars!")
+                )
                 return await ctx.send(msg)
         mention = self.data[guild_id]["mention"]
         users = self.data[guild_id]["users"]
@@ -201,8 +217,7 @@ class UserCommands(commands.Cog):
             return await ctx.send(_("No data available for that user yet!"))
         self.data[guild_id]["users"][user_id]["stars"] += 1
         if self.data[guild_id]["weekly"]["on"]:
-            weekly_users = self.data[guild_id]["weekly"]["users"]
-            if guild_id not in weekly_users:
+            if guild_id not in self.data[guild_id]["weekly"]["users"]:
                 self.init_user_weekly(guild_id, user_id)
             self.data[guild_id]["weekly"]["users"][user_id]["stars"] += 1
 
@@ -230,11 +245,11 @@ class UserCommands(commands.Cog):
         else:
             pfp = user.avatar_url
         args = {
-            'bg_image': banner,
-            'profile_image': pfp,
-            'level': random.randint(1, 999),
-            'color': color,
-            'font_name': font
+            "bg_image": banner,
+            "profile_image": pfp,
+            "level": random.randint(1, 999),
+            "color": color,
+            "font_name": font,
         }
         img = await self.gen_levelup_img(args)
         temp = BytesIO()
@@ -279,14 +294,14 @@ class UserCommands(commands.Cog):
             em = discord.Embed(
                 title=_("Your Profile Settings"),
                 description=desc,
-                color=ctx.author.color
+                color=ctx.author.color,
             )
             file = None
             if bg:
                 if "http" in bg.lower():
                     em.set_image(url=bg)
                 elif bg != "random":
-                    bgpaths = os.path.join(bundled_data_path(self), "backgrounds")
+                    bgpaths = os.path.join(self.path, "backgrounds")
                     defaults = [i for i in os.listdir(bgpaths)]
                     if bg in defaults:
                         bgpath = os.path.join(bgpaths, bg)
@@ -301,13 +316,15 @@ class UserCommands(commands.Cog):
     @commands.is_owner()
     async def get_bg_path(self, ctx: commands.Context):
         """Get folder path for this cog's default backgrounds"""
-        bgpath = os.path.join(bundled_data_path(self), "backgrounds")
+        bgpath = os.path.join(self.path, "backgrounds")
         txt = _("Your default background folder path is \n")
         await ctx.send(f"{txt}`{bgpath}`")
 
     @set_profile.command(name="addbackground")
     @commands.is_owner()
-    async def add_background(self, ctx: commands.Context, preferred_filename: str = None):
+    async def add_background(
+        self, ctx: commands.Context, preferred_filename: str = None
+    ):
         """
         Add a custom background to the cog from discord
 
@@ -323,7 +340,10 @@ class UserCommands(commands.Cog):
         filename = content[0].filename
         if not any([i in filename.lower() for i in valid]):
             return await ctx.send(
-                _("That is not a valid format, must be on of the following extensions: ") + humanize_list(valid)
+                _(
+                    "That is not a valid format, must be on of the following extensions: "
+                )
+                + humanize_list(valid)
             )
         ext = ".png"
         for ext in valid:
@@ -334,7 +354,7 @@ class UserCommands(commands.Cog):
             return await ctx.send(_("I was not able to get the file from Discord"))
         if preferred_filename:
             filename = f"{preferred_filename}{ext}"
-        bgpath = os.path.join(bundled_data_path(self), "backgrounds")
+        bgpath = os.path.join(self.path, "backgrounds")
         filepath = os.path.join(bgpath, filename)
         with open(filepath, "wb") as f:
             f.write(bytes_file)
@@ -344,12 +364,14 @@ class UserCommands(commands.Cog):
     @commands.is_owner()
     async def remove_background(self, ctx: commands.Context, *, filename: str):
         """Remove a default background from the cog's backgrounds folder"""
-        bgpath = os.path.join(bundled_data_path(self), "backgrounds")
+        bgpath = os.path.join(self.path, "backgrounds")
         for f in os.listdir(bgpath):
             if filename.lower() in f.lower():
                 break
         else:
-            return await ctx.send(_("I could not find any background images with that name"))
+            return await ctx.send(
+                _("I could not find any background images with that name")
+            )
         file = os.path.join(bgpath, f)
         try:
             os.remove(file)
@@ -361,7 +383,7 @@ class UserCommands(commands.Cog):
     @commands.is_owner()
     async def get_font_path(self, ctx: commands.Context):
         """Get folder path for this cog's default backgrounds"""
-        fpath = os.path.join(bundled_data_path(self), "fonts")
+        fpath = os.path.join(self.path, "fonts")
         txt = _("Your custom font folder path is \n")
         await ctx.send(f"{txt}`{fpath}`")
 
@@ -382,7 +404,9 @@ class UserCommands(commands.Cog):
         url = content[0].url
         filename = content[0].filename
         if not any([i in filename.lower() for i in valid]):
-            return await ctx.send(_("That is not a valid format, must be `.ttf` or `.otf` extensions"))
+            return await ctx.send(
+                _("That is not a valid format, must be `.ttf` or `.otf` extensions")
+            )
         ext = ".ttf"
         for ext in valid:
             if ext in filename.lower():
@@ -392,7 +416,7 @@ class UserCommands(commands.Cog):
             return await ctx.send(_("I was not able to get the file from Discord"))
         if preferred_filename:
             filename = f"{preferred_filename}{ext}"
-        fpath = os.path.join(bundled_data_path(self), "fonts")
+        fpath = os.path.join(self.path, "fonts")
         filepath = os.path.join(fpath, filename)
         with open(filepath, "wb") as f:
             f.write(bytes_file)
@@ -402,7 +426,7 @@ class UserCommands(commands.Cog):
     @commands.is_owner()
     async def remove_font(self, ctx: commands.Context, *, filename: str):
         """Remove a font from the cog's font folder"""
-        fpath = os.path.join(bundled_data_path(self), "fonts")
+        fpath = os.path.join(self.path, "fonts")
         for f in os.listdir(fpath):
             if filename.lower() in f.lower():
                 break
@@ -420,7 +444,9 @@ class UserCommands(commands.Cog):
     async def view_default_backgrounds(self, ctx: commands.Context):
         """View the default backgrounds"""
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(_("Image profiles are disabled on this server so this command is off"))
+            return await ctx.send(
+                _("Image profiles are disabled on this server so this command is off")
+            )
         async with ctx.typing():
             img = await self.get_or_fetch_backgrounds()
             if img is None:
@@ -434,19 +460,25 @@ class UserCommands(commands.Cog):
                 buffer.name = f"{ctx.author.id}.png"
             buffer.seek(0)
             file = discord.File(buffer)
-            txt = _("Here are the current default backgrounds, to set one permanently you can use the ")
+            txt = _(
+                "Here are the current default backgrounds, to set one permanently you can use the "
+            )
             txt += f"`{ctx.prefix}mypf background <filename>` " + _("command")
             try:
                 await ctx.send(txt, file=file)
             except discord.HTTPException:
-                await ctx.send(_("Could not send background collage, file size may be too large."))
+                await ctx.send(
+                    _("Could not send background collage, file size may be too large.")
+                )
 
     @set_profile.command(name="fonts")
     @commands.cooldown(1, 30, commands.BucketType.user)
     async def view_fonts(self, ctx: commands.Context):
         """View available fonts to use"""
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(_("Image profiles are disabled on this server so this command is off"))
+            return await ctx.send(
+                _("Image profiles are disabled on this server so this command is off")
+            )
         async with ctx.typing():
             img = await self.get_or_fetch_fonts()
             if img is None:
@@ -460,12 +492,16 @@ class UserCommands(commands.Cog):
                 buffer.name = f"{ctx.author.id}.png"
             buffer.seek(0)
             file = discord.File(buffer)
-            txt = _("Here are the current fonts, to set one permanently you can use the ")
+            txt = _(
+                "Here are the current fonts, to set one permanently you can use the "
+            )
             txt += f"`{ctx.prefix}mypf font <fontname>` " + _("command")
             try:
                 await ctx.send(txt, file=file)
             except discord.HTTPException:
-                await ctx.send(_("Could not send font collage, file size may be too large."))
+                await ctx.send(
+                    _("Could not send font collage, file size may be too large.")
+                )
 
     @set_profile.command(name="type")
     async def toggle_profile_type(self, ctx: commands.Context):
@@ -476,11 +512,19 @@ class UserCommands(commands.Cog):
         Slim is a smaller slimmed down version
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+            return await ctx.send(
+                _(
+                    "Image profiles are disabled on this server, this setting has no effect"
+                )
+            )
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
-            return await ctx.send(_("You have no information stored about your account yet. Talk for a bit first"))
+            return await ctx.send(
+                _(
+                    "You have no information stored about your account yet. Talk for a bit first"
+                )
+            )
         full = users[user_id]["full"]
         if full:
             self.data[ctx.guild.id]["users"][user_id]["full"] = False
@@ -501,7 +545,11 @@ class UserCommands(commands.Cog):
         Set to `default` to randomize your name color each time you run the command
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+            return await ctx.send(
+                _(
+                    "Image profiles are disabled on this server, this setting has no effect"
+                )
+            )
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
@@ -515,15 +563,21 @@ class UserCommands(commands.Cog):
             rgb = hex_to_rgb(hex_color)
         except ValueError:
             return await ctx.send(
-                _("That is an invalid color, please use a valid integer color code or hex color."))
+                _(
+                    "That is an invalid color, please use a valid integer color code or hex color."
+                )
+            )
         try:
             embed = discord.Embed(
                 description="This is the color you chose",
-                color=discord.Color.from_rgb(rgb[0], rgb[1], rgb[2])
+                color=discord.Color.from_rgb(rgb[0], rgb[1], rgb[2]),
             )
             await ctx.send(embed=embed)
         except Exception as e:
-            await ctx.send(_("Failed to set color, the following error occurred:\n") + f"{box(str(e), lang='python')}")
+            await ctx.send(
+                _("Failed to set color, the following error occurred:\n")
+                + f"{box(str(e), lang='python')}"
+            )
             return
         self.data[ctx.guild.id]["users"][user_id]["colors"]["name"] = hex_color
         await ctx.tick()
@@ -539,7 +593,11 @@ class UserCommands(commands.Cog):
         Set to `default` to randomize your name color each time you run the command
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+            return await ctx.send(
+                _(
+                    "Image profiles are disabled on this server, this setting has no effect"
+                )
+            )
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
@@ -553,16 +611,22 @@ class UserCommands(commands.Cog):
             rgb = hex_to_rgb(hex_color)
         except ValueError:
             return await ctx.send(
-                _("That is an invalid color, please use a valid integer color code or hex color."))
+                _(
+                    "That is an invalid color, please use a valid integer color code or hex color."
+                )
+            )
 
         try:
             embed = discord.Embed(
                 description="This is the color you chose",
-                color=discord.Color.from_rgb(rgb[0], rgb[1], rgb[2])
+                color=discord.Color.from_rgb(rgb[0], rgb[1], rgb[2]),
             )
             await ctx.send(embed=embed)
         except Exception as e:
-            await ctx.send(_("Failed to set color, the following error occurred:\n") + f"{box(str(e), lang='python')}")
+            await ctx.send(
+                _("Failed to set color, the following error occurred:\n")
+                + f"{box(str(e), lang='python')}"
+            )
             return
         self.data[ctx.guild.id]["users"][user_id]["colors"]["stat"] = hex_color
         await ctx.tick()
@@ -578,7 +642,11 @@ class UserCommands(commands.Cog):
         Set to `default` to randomize your name color each time you run the command
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+            return await ctx.send(
+                _(
+                    "Image profiles are disabled on this server, this setting has no effect"
+                )
+            )
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
@@ -592,16 +660,22 @@ class UserCommands(commands.Cog):
             rgb = hex_to_rgb(hex_color)
         except ValueError:
             return await ctx.send(
-                _("That is an invalid color, please use a valid integer color code or hex color."))
+                _(
+                    "That is an invalid color, please use a valid integer color code or hex color."
+                )
+            )
 
         try:
             embed = discord.Embed(
                 description="This is the color you chose",
-                color=discord.Color.from_rgb(rgb[0], rgb[1], rgb[2])
+                color=discord.Color.from_rgb(rgb[0], rgb[1], rgb[2]),
             )
             await ctx.send(embed=embed)
         except Exception as e:
-            await ctx.send(_("Failed to set color, the following error occurred:\n") + f"{box(str(e), lang='python')}")
+            await ctx.send(
+                _("Failed to set color, the following error occurred:\n")
+                + f"{box(str(e), lang='python')}"
+            )
             return
         self.data[ctx.guild.id]["users"][user_id]["colors"]["levelbar"] = hex_color
         await ctx.tick()
@@ -632,14 +706,18 @@ class UserCommands(commands.Cog):
          - `filename` run `[p]mypf backgrounds` to view default options you can use by including their filename
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+            return await ctx.send(
+                _(
+                    "Image profiles are disabled on this server, this setting has no effect"
+                )
+            )
 
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
             self.init_user(ctx.guild.id, user_id)
 
-        backgrounds = os.path.join(bundled_data_path(self), "backgrounds")
+        backgrounds = os.path.join(self.path, "backgrounds")
 
         # If image url is given, run some checks
         filepath = None
@@ -662,7 +740,9 @@ class UserCommands(commands.Cog):
         if image_url:
             self.data[ctx.guild.id]["users"][user_id]["background"] = image_url
             if image_url == "random":
-                await ctx.send("Your profile background will be randomized each time you run the profile command!")
+                await ctx.send(
+                    "Your profile background will be randomized each time you run the profile command!"
+                )
             else:
                 # Either a valid url or a specified default file
                 if filepath:
@@ -672,7 +752,9 @@ class UserCommands(commands.Cog):
                     await ctx.send(_("Your background image has been set!"))
         else:
             self.data[ctx.guild.id]["users"][user_id]["background"] = None
-            await ctx.send(_("Your background has been removed since you did not specify a url!"))
+            await ctx.send(
+                _("Your background has been removed since you did not specify a url!")
+            )
         await ctx.tick()
 
     @set_profile.command(name="font")
@@ -684,7 +766,11 @@ class UserCommands(commands.Cog):
         To revert to the default font, use `default` for the `font_name` argument
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
+            return await ctx.send(
+                _(
+                    "Image profiles are disabled on this server, this setting has no effect"
+                )
+            )
 
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
@@ -695,7 +781,7 @@ class UserCommands(commands.Cog):
             self.data[ctx.guild.id]["users"][user_id]["font"] = None
             return await ctx.send(_("Your profile font has been reverted to default"))
 
-        fonts = os.path.join(bundled_data_path(self), "fonts")
+        fonts = os.path.join(self.path, "fonts")
         for filename in os.listdir(fonts):
             if font_name.lower() in filename.lower():
                 break
@@ -730,9 +816,13 @@ class UserCommands(commands.Cog):
             return await ctx.send(_("No information available yet!"))
 
         if usepics and not ctx.channel.permissions_for(ctx.me).attach_files:
-            return await ctx.send(_("I do not have permission to send images to this channel"))
+            return await ctx.send(
+                _("I do not have permission to send images to this channel")
+            )
         if not usepics and not ctx.channel.permissions_for(ctx.me).embed_links:
-            return await ctx.send(_("I do not have permission to send embeds to this channel"))
+            return await ctx.send(
+                _("I do not have permission to send embeds to this channel")
+            )
 
         bal = await bank.get_balance(user)
         currency_name = await bank.get_currency_name(ctx.guild)
@@ -770,7 +860,12 @@ class UserCommands(commands.Cog):
             if not usepics:
                 msg = "🎖｜" + _("Level ") + humanize_number(level) + "\n"
                 if prestige:
-                    msg += "🏆｜" + _("Prestige ") + humanize_number(prestige) + f" {emoji['str']}\n"
+                    msg += (
+                        "🏆｜"
+                        + _("Prestige ")
+                        + humanize_number(prestige)
+                        + f" {emoji['str']}\n"
+                    )
                 msg += f"⭐｜{humanize_number(stars)}" + _(" stars\n")
                 msg += f"💬｜{humanize_number(messages)}" + _(" messages sent\n")
                 msg += f"🎙｜{time_formatter(voice)}" + _(" in voice\n")
@@ -778,12 +873,15 @@ class UserCommands(commands.Cog):
                 if showbal:
                     msg += f"💰｜{humanize_number(bal)} {currency_name}"
                 em = discord.Embed(description=msg, color=user.color)
-                footer = _("Rank ") + position + _(", with ") + str(percentage) + _("% of global server Exp")
-                em.set_footer(text=footer)
-                em.add_field(
-                    name=_("Progress"),
-                    value=box(lvlbar, "py")
+                footer = (
+                    _("Rank ")
+                    + position
+                    + _(", with ")
+                    + str(percentage)
+                    + _("% of global server Exp")
                 )
+                em.set_footer(text=footer)
+                em.add_field(name=_("Progress"), value=box(lvlbar, "py"))
                 txt = _("Profile")
                 if role_icon:
                     em.set_author(name=f"{user.name}'s {txt}", icon_url=role_icon)
@@ -803,35 +901,43 @@ class UserCommands(commands.Cog):
                     "base": hex_to_rgb(str(user.colour)),
                     "name": hex_to_rgb(colors["name"]) if colors["name"] else None,
                     "stat": hex_to_rgb(colors["stat"]) if colors["stat"] else None,
-                    "levelbar": hex_to_rgb(colors["levelbar"]) if colors["levelbar"] else None
+                    "levelbar": hex_to_rgb(colors["levelbar"])
+                    if colors["levelbar"]
+                    else None,
                 }
 
                 args = {
-                    'bg_image': bg_image,  # Background image link
-                    'profile_image': pfp,  # User profile picture link
-                    'level': level,  # User current level
-                    'user_xp': xp,  # User current xp
-                    'next_xp': xp_needed,  # xp required for next level
-                    'user_position': position,  # User position in leaderboard
-                    'user_name': user.name,  # username with discriminator
-                    'user_status': str(user.status).strip(),  # User status eg. online, offline, idle, streaming, dnd
-                    'colors': usercolors,  # User's color
-                    'messages': humanize_number(messages),
-                    'voice': time_formatter(voice),
-                    'prestige': prestige,
-                    'emoji': emoji["url"] if emoji and isinstance(emoji, dict) else None,
-                    'stars': stars,
-                    'balance': bal if showbal else 0,
-                    'currency': currency_name,
-                    'role_icon': role_icon,
-                    'font_name': font,
-                    'render_gifs': self.render_gifs
+                    "bg_image": bg_image,  # Background image link
+                    "profile_image": pfp,  # User profile picture link
+                    "level": level,  # User current level
+                    "user_xp": xp,  # User current xp
+                    "next_xp": xp_needed,  # xp required for next level
+                    "user_position": position,  # User position in leaderboard
+                    "user_name": user.name,  # username with discriminator
+                    "user_status": str(
+                        user.status
+                    ).strip(),  # User status eg. online, offline, idle, streaming, dnd
+                    "colors": usercolors,  # User's color
+                    "messages": humanize_number(messages),
+                    "voice": time_formatter(voice),
+                    "prestige": prestige,
+                    "emoji": emoji["url"]
+                    if emoji and isinstance(emoji, dict)
+                    else None,
+                    "stars": stars,
+                    "balance": bal if showbal else 0,
+                    "currency": currency_name,
+                    "role_icon": role_icon,
+                    "font_name": font,
+                    "render_gifs": self.render_gifs,
                 }
                 start = perf_counter()
                 file = await self.get_or_fetch_profile(user, args, full)
                 rtime = round((perf_counter() - start) * 1000)
                 if not file:
-                    return await ctx.send(f"Failed to generate profile image :( try again in a bit")
+                    return await ctx.send(
+                        "Failed to generate profile image :( try again in a bit"
+                    )
                 start2 = perf_counter()
                 try:
                     await ctx.reply(file=file, mention_author=mention)
@@ -848,8 +954,10 @@ class UserCommands(commands.Cog):
                         log.error(f"Failed AGAIN to send profile pic: {e}")
                 mtime = round((perf_counter() - start2) * 1000)
                 if ctx.author.id == 350053505815281665:
-                    log.info(f"Render time: {humanize_number(rtime)}ms\n"
-                             f"Send Time: {humanize_number(mtime)}ms")
+                    log.info(
+                        f"Render time: {humanize_number(rtime)}ms\n"
+                        f"Send Time: {humanize_number(mtime)}ms"
+                    )
 
     @commands.command(name="prestige")
     @commands.guild_only()
@@ -884,14 +992,15 @@ class UserCommands(commands.Cog):
             msg = _("**You are not eligible to prestige yet!**\n")
             msg += _("`Your level:     `") + f"{current_level}\n"
             msg += _("`Required Level: `") + f"{required_level}"
-            embed = discord.Embed(
-                description=msg,
-                color=discord.Color.red()
-            )
+            embed = discord.Embed(description=msg, color=discord.Color.red())
             return await ctx.send(embed=embed)
 
         if pending_prestige not in prestige_data:
-            return await ctx.send(_("Prestige level ") + str(pending_prestige) + _(" has not been set yet!"))
+            return await ctx.send(
+                _("Prestige level ")
+                + str(pending_prestige)
+                + _(" has not been set yet!")
+            )
 
         role_id = prestige_data[pending_prestige]["role"]
         role = ctx.guild.get_role(role_id) if role_id else None
@@ -900,12 +1009,17 @@ class UserCommands(commands.Cog):
             try:
                 await ctx.author.add_roles(role)
             except discord.Forbidden:
-                await ctx.send(_("I do not have the proper permissions to assign you to the role ") + role.mention)
+                await ctx.send(
+                    _("I do not have the proper permissions to assign you to the role ")
+                    + role.mention
+                )
 
         current_xp = user["xp"]
         xp_at_prestige = get_xp(required_level, conf["base"], conf["exp"])
         leftover_xp = current_xp - xp_at_prestige if current_xp > xp_at_prestige else 0
-        newlevel = get_level(leftover_xp, conf["base"], conf["exp"]) if leftover_xp > 0 else 1
+        newlevel = (
+            get_level(leftover_xp, conf["base"], conf["exp"]) if leftover_xp > 0 else 1
+        )
 
         self.data[ctx.guild.id]["users"][user_id]["prestige"] = int(pending_prestige)
         self.data[ctx.guild.id]["users"][user_id]["emoji"] = emoji
@@ -913,7 +1027,7 @@ class UserCommands(commands.Cog):
         self.data[ctx.guild.id]["users"][user_id]["xp"] = leftover_xp
         embed = discord.Embed(
             description=_("You have reached Prestige ") + f"{pending_prestige}!",
-            color=ctx.author.color
+            color=ctx.author.color,
         )
         await ctx.send(embed=embed)
 
@@ -923,104 +1037,37 @@ class UserCommands(commands.Cog):
                 role_id = prestige_data[str(prestige)]["role"]
                 role = ctx.guild.get_role(role_id)
                 if role and perms:
-                    await ctx.author.remove_roled(role)
+                    await ctx.author.remove_roles(role)
 
     @commands.command(name="lvltop", aliases=["topstats", "membertop", "topranks"])
     @commands.guild_only()
-    async def leaderboard(self, ctx: commands.Context):
-        """View the Leaderboard"""
+    async def leaderboard(self, ctx: commands.Context, stat: Optional[str]):
+        """
+        View the Leaderboard
+
+        **Arguments**
+        `stat`: What kind of stat to display the weekly leaderboard for
+        Valid options are `exp`, `messages`, and `voice`
+        Abbreviations of those arguments may also be used
+        """
+        if not stat:
+            stat = "exp"
+        if "star" in stat.lower():
+            txt = _("Use the `") + str(ctx.prefix) + _("startop` command for that")
+            return await ctx.send(txt)
         conf = self.data[ctx.guild.id]
-        base = conf["base"]
-        exp = conf["exp"]
-        embeds = []
-        prestige_req = conf["prestige"]
-        leaderboard = {}
-        total_messages = 0
-        total_voice = 0  # Seconds
-        for user, data in conf["users"].items():
-            prestige = data["prestige"]
-            xp = int(data["xp"])
-            if prestige:
-                add_xp = get_xp(prestige_req, base, exp)
-                xp = int(xp + (prestige * add_xp))
-            if xp > 0:
-                leaderboard[user] = xp
-            messages = data["messages"]
-            voice = data["voice"]
-            total_voice += voice
-            total_messages += messages
-        if not leaderboard:
+        func = functools.partial(get_leaderboard, ctx, conf, stat, "normal")
+        embeds = await self.bot.loop.run_in_executor(None, func)
+        if isinstance(embeds, str):
+            return await ctx.send(embeds)
+        if not embeds:
             return await ctx.send(_("No user data yet!"))
-        voice = time_formatter(total_voice)
-        sorted_users = sorted(leaderboard.items(), key=lambda x: x[1], reverse=True)
 
-        # Get your place in the LB
-        you = ""
-        for i in sorted_users:
-            uid = i[0]
-            if str(uid) == str(ctx.author.id):
-                i = sorted_users.index(i)
-                you = f"You: {i + 1}/{len(sorted_users)}\n"
-
-        pages = math.ceil(len(sorted_users) / 10)
-        start = 0
-        stop = 10
-        title = _("**Total Messages:** `") + humanize_number(total_messages) + "`\n"
-        title += _("**Total VoiceTime:** `") + voice + "`\n"
-        for p in range(pages):
-            if stop > len(sorted_users):
-                stop = len(sorted_users)
-            table = []
-            for i in range(start, stop):
-                # Place, level, xp, user
-                place = i + 1
-                uid = sorted_users[i][0]
-                user = ctx.guild.get_member(int(uid)).name if ctx.guild.get_member(int(uid)) else uid
-                xp = sorted_users[i][1]
-                xptext = str(xp)
-                if xp > 1000:
-                    xptext = f"{round(xp / 1000)}K"
-                if xp > 1000000:
-                    xptext = f"{round(xp / 1000000)}M"
-                level = get_level(int(xp), base, exp)
-                name = escape_markdown(user)
-                if len(name) > 15:
-                    name = f"{name[:14]}..."
-                table.append([place, name, level, xptext])
-
-            headers = ["Pos", "Name", "lvl", "exp"]
-            msg = tabulate.tabulate(
-                tabular_data=table,
-                headers=headers,
-                numalign="left",
-                stralign="left"
-            )
-            embed = discord.Embed(
-                title=_("LevelUp Leaderboard"),
-                description=f"{title}{box(msg, lang='python')}",
-                color=discord.Color.random()
-            )
-            if DPY2:
-                if ctx.guild.icon:
-                    embed.set_thumbnail(url=ctx.guild.icon.url)
-            else:
-                embed.set_thumbnail(url=ctx.guild.icon_url)
-
-            if you:
-                embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages} ｜ {you}")
-            else:
-                embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages}")
-            embeds.append(embed)
-            start += 10
-            stop += 10
-        if embeds:
-            if len(embeds) == 1:
-                embed = embeds[0]
-                await ctx.send(embed=embed)
-            else:
-                await menu(ctx, embeds, DEFAULT_CONTROLS)
+        if len(embeds) == 1:
+            embed = embeds[0]
+            await ctx.send(embed=embed)
         else:
-            return await ctx.send(_("No user data yet!"))
+            await menu(ctx, embeds, DEFAULT_CONTROLS)
 
     @commands.command(name="startop", aliases=["starlb"])
     @commands.guild_only()
@@ -1051,7 +1098,12 @@ class UserCommands(commands.Cog):
         pages = math.ceil(len(sorted_users) / 10)
         start = 0
         stop = 10
-        title = _("**Star Leaderboard**\n") + _("**Total ⭐'s: ") + humanize_number(total_stars) + "**\n"
+        title = (
+            _("**Star Leaderboard**\n")
+            + _("**Total ⭐'s: ")
+            + humanize_number(total_stars)
+            + "**\n"
+        )
         for p in range(pages):
             if stop > len(sorted_users):
                 stop = len(sorted_users)
@@ -1069,7 +1121,7 @@ class UserCommands(commands.Cog):
             data = tabulate.tabulate(table, tablefmt="presto", colalign=("right",))
             embed = discord.Embed(
                 description=f"{title}{box(data, lang='python')}",
-                color=discord.Color.random()
+                color=discord.Color.random(),
             )
             if DPY2:
                 if ctx.guild.icon:
@@ -1105,99 +1157,19 @@ class UserCommands(commands.Cog):
         """
         if not stat:
             stat = "exp"
-        w = self.data[ctx.guild.id]["weekly"]
-        if not w["on"]:
+        conf = self.data[ctx.guild.id]
+        if not conf["weekly"]["on"]:
             return await ctx.send(_("Weekly stats are disabled for this guild"))
-        if not w["users"]:
-            return await ctx.send(_("There is no data for the weekly leaderboard yet, please chat a bit first."))
-
-        if "v" in stat.lower():
-            sorted_users = sorted(w["users"].items(), key=lambda x: x[1]["voice"], reverse=True)
-            title = _("Weekly Voice Leaderboard")
-            key = "voice"
-            statname = _("Voicetime")
-            total = time_formatter(sum(v["voice"] for v in w["users"].values()))
-        elif "m" in stat.lower():
-            sorted_users = sorted(w["users"].items(), key=lambda x: x[1]["messages"], reverse=True)
-            title = _("Weekly Message Leaderboard")
-            key = "messages"
-            statname = _("Messages")
-            total = humanize_number(round(sum(v["messages"] for v in w["users"].values())))
-        elif "s" in stat.lower():
-            sorted_users = sorted(w["users"].items(), key=lambda x: x[1]["stars"], reverse=True)
-            title = _("Weekly Star Leaderboard")
-            key = "stars"
-            statname = _("Stars")
-            total = humanize_number(round(sum(v["stars"] for v in w["users"].values())))
-        else:  # Exp
-            sorted_users = sorted(w["users"].items(), key=lambda x: x[1]["xp"], reverse=True)
-            title = _("Weekly Exp Leaderboard")
-            key = "xp"
-            statname = _("Exp")
-            total = humanize_number(round(sum(v["xp"] for v in w["users"].values())))
-
-        desc = _("Total ") + f"{statname}: `{total}`\n"
-        desc += _("Last Reset: ") + f"<t:{w['last_reset']}:d>\n"
-        if w["autoreset"]:
-            tl = get_next_reset(w["reset_day"], w["reset_hour"])
-            desc += _("Next Reset: ") + f"<t:{tl}:d>\n"
-
-        for i in sorted_users.copy():
-            if not i[1][key]:
-                sorted_users.remove(i)
-        if not sorted_users:
-            txt = _("There is no data for the weekly ") + statname.lower() + _(" leaderboard yet")
-            return await ctx.send(txt)
-        you = ""
-        for i in sorted_users:
-            if i[0] == str(ctx.author.id):
-                you = _("You: ") + f"{sorted_users.index(i) + 1}/{len(sorted_users)}\n"
-
-        pages = math.ceil(len(sorted_users) / 10)
-        start = 0
-        stop = 10
-        embeds = []
-        for p in range(pages):
-            if stop > len(sorted_users):
-                stop = len(sorted_users)
-
-            table = []
-            for i in range(start, stop, 1):
-                uid = sorted_users[i][0]
-                user: discord.Member = ctx.guild.get_member(int(uid))
-                user = user.display_name if user else uid
-                data = sorted_users[i][1]
-
-                place = i + 1
-                stat = time_formatter(data[key]) if key == "voice" else int(data[key])
-                table.append([place, user, stat])
-
-            headers = ["Pos", "Name", statname]
-            msg = tabulate.tabulate(
-                tabular_data=table,
-                headers=headers,
-                numalign="left",
-                stralign="left"
+        if not conf["weekly"]["users"]:
+            return await ctx.send(
+                _(
+                    "There is no data for the weekly leaderboard yet, please chat a bit first."
+                )
             )
-            embed = discord.Embed(
-                title=title,
-                description=desc + f"{box(msg, lang='python')}",
-                color=discord.Color.random()
-            )
-            if DPY2:
-                if ctx.guild.icon:
-                    embed.set_thumbnail(url=ctx.guild.icon.url)
-            else:
-                embed.set_thumbnail(url=ctx.guild.icon_url)
-
-            if you:
-                embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages} ｜ {you}")
-            else:
-                embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages}")
-
-            embeds.append(embed)
-            start += 10
-            stop += 10
+        func = functools.partial(get_leaderboard, ctx, conf, stat, "weekly")
+        embeds = await self.bot.loop.run_in_executor(None, func)
+        if isinstance(embeds, str):
+            return await ctx.send(embeds)
 
         if len(embeds) == 1:
             embed = embeds[0]

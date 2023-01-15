@@ -1,11 +1,14 @@
-import datetime
 import json
 import math
+import re
+import traceback
+from datetime import datetime
+from typing import List
 
 import discord
 import pytz
 import tabulate
-from redbot.core.utils.chat_formatting import box, pagify
+from redbot.core.utils.chat_formatting import box, humanize_timedelta, pagify
 
 
 # Check if an object is None
@@ -24,7 +27,9 @@ def time_format(time):
 
 # Format time from total seconds and format into readable string
 def time_formatter(time_in_seconds) -> str:
-    time_in_seconds = int(time_in_seconds)  # Some time differences get sent as a float so just handle it the dumb way
+    time_in_seconds = int(
+        time_in_seconds
+    )  # Some time differences get sent as a float so just handle it the dumb way
     minutes, seconds = divmod(time_in_seconds, 60)
     hours, minutes = divmod(minutes, 60)
     days, hours = divmod(hours, 24)
@@ -51,46 +56,47 @@ def time_formatter(time_in_seconds) -> str:
 
 
 # Microsoft's timestamp end digits are fucked up and random, so we iteratively try fixing them by stripping digits
-def fix_timestamp(time, timezone: str = "UTC"):
+def fix_timestamp(time: str, timezone: str = "UTC"):
     try:
-        time = datetime.datetime.fromisoformat(time)
+        res = re.search(r"(.+:\d\d)[.Z]\d*([+-].+)*", time)
+        string = "".join(g for g in res.groups() if g)
+        return datetime.fromisoformat(string).astimezone(pytz.timezone(timezone))
     except ValueError:
-        stripping_that_shit = True
-        strip = -1
-        while stripping_that_shit:
-            try:
-                time = datetime.datetime.fromisoformat(time[:strip])
-                stripping_that_shit = False
-            except ValueError:
-                strip -= 1
-                if strip < -10:
-                    stripping_that_shit = False  # idfk then
-    return time.astimezone(pytz.timezone(timezone))
+        raise ValueError(f"{traceback.format_exc()}\nOriginal String: {time}")
 
 
 # Format profile data
 def profile(data):
     # Main profile data
-    gt, bio, location, gs, pfp, tenure, tier, rep = None, None, None, None, None, None, None, None
+    gt, bio, location, gs, pfp, tenure, tier, rep = (
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
     user = data["profile_users"][0]
-    xuid = user['id']
+    xuid = user["id"]
     for setting in user["settings"]:
         if setting["id"] == "Gamertag":
             gt = setting["value"]
         if setting["id"] == "Bio":
-            bio = setting['value']
+            bio = setting["value"]
         if setting["id"] == "Location":
-            location = setting['value']
+            location = setting["value"]
         if setting["id"] == "Gamerscore":
-            gs = "{:,}".format(int(setting['value']))
+            gs = "{:,}".format(int(setting["value"]))
         if setting["id"] == "GameDisplayPicRaw":
-            pfp = setting['value']
+            pfp = setting["value"]
         if setting["id"] == "TenureLevel":
-            tenure = setting['value']
+            tenure = setting["value"]
         if setting["id"] == "AccountTier":
-            tier = setting['value']
+            tier = setting["value"]
         if setting["id"] == "XboxOneRep":
-            rep = setting['value']
+            rep = setting["value"]
     return gt, xuid, bio, location, gs, pfp, tenure, tier, rep
 
 
@@ -107,18 +113,20 @@ def profile_embed(data):
         title=title,
         color=color,
         description="Any field with `¯\\_(ツ)_/¯` is due to account privacy settings, you can manage that "
-                    "**[here](https://account.xbox.com/en-gb/Settings)**"
+        "**[here](https://account.xbox.com/en-gb/Settings)**",
     )
     following = data["friends"]["target_following_count"]
     followers = data["friends"]["target_follower_count"]
-    account_info = f"`Gamerscore:  `{gs}\n" \
-                   f"`Followers:   `{followers}\n" \
-                   f"`Following:   `{following}\n" \
-                   f"`AccountTier: `{tier}\n" \
-                   f"`Player Rep:  `{rep}\n" \
-                   f"`Location:    `{check(location)}\n" \
-                   f"`Member For:  `{tenure} years\n" \
-                   f"`XUID:        `{xuid}"
+    account_info = (
+        f"`Gamerscore:  `{gs}\n"
+        f"`Followers:   `{followers}\n"
+        f"`Following:   `{following}\n"
+        f"`AccountTier: `{tier}\n"
+        f"`Player Rep:  `{rep}\n"
+        f"`Location:    `{check(location)}\n"
+        f"`Member For:  `{tenure} years\n"
+        f"`XUID:        `{xuid}"
+    )
     embed.set_thumbnail(url=pfp)
     embed.add_field(name="Account Info", value=account_info)
 
@@ -138,21 +146,16 @@ def profile_embed(data):
             device = "Xbox Series X"
         return device
 
-    # Format field depending if user is offline or not
-    current_time = datetime.datetime.now().astimezone(pytz.timezone("UTC"))
+    # Format field depending on if user is offline or not
+    current_time = datetime.now().astimezone(pytz.timezone("UTC"))
     if "lastSeen" in presence:
         game = presence["lastSeen"]["titleName"]
         device = presence["lastSeen"]["deviceType"]
         device = device_check(device)
         time = fix_timestamp(presence["lastSeen"]["timestamp"])
         tdiff = current_time - time
-        h, m = time_format(tdiff.seconds)
-        if tdiff.days >= 1:
-            lseen = f"{tdiff.days}d ago on {device}:\n{game}"
-        elif h < 1:
-            lseen = f"{m}m ago on {device}:\n{game}"
-        else:
-            lseen = f"{h}h {m}m ago on {device}:\n{game}"
+        tstring = humanize_timedelta(seconds=tdiff.total_seconds())
+        lseen = f"{tstring} ago on {device}:\n{game}"
         embed.add_field(name="Last Seen", value=lseen)
     if "devices" in presence:
         device = presence["devices"][0]["type"]
@@ -169,19 +172,8 @@ def profile_embed(data):
         desc = desc[:1].upper() + desc[1:]
         time = fix_timestamp(activity["date"])
         diff = current_time - time
-        h, m = time_format(diff.seconds)
-        if diff.days >= 30:
-            months, _ = divmod(diff.days, 30)
-            if months == 1:
-                event = f"{months} month ago"
-            else:
-                event = f"{months} months ago"
-        elif 30 > diff.days > 1:
-            event = f"{diff.days} days ago"
-        elif h < 1:
-            event = f"{m} minutes ago"
-        else:
-            event = f"{h}h {m}m ago"
+        tstring = humanize_timedelta(seconds=diff.total_seconds())
+        event = f"{tstring} ago"
         activitylist += f"{desc} - {event}\n"
     if activitylist == "":
         activitylist = "`¯\\_(ツ)_/¯`"
@@ -208,18 +200,21 @@ def screenshot_embeds(data, gamertag):
         views = pic["views"]
         ss = pic["screenshot_uris"][0]["uri"]
         ss = ss.split("?")[0]
-        timestamp = (datetime.datetime.fromisoformat(pic["date_taken"])).strftime("%m/%d/%Y, %H:%M:%S")
+        timestamp = (datetime.fromisoformat(pic["date_taken"])).strftime(
+            "%m/%d/%Y, %H:%M:%S"
+        )
         embed = discord.Embed(
-            color=discord.Color.random(),
-            description=f"**{gamertag}'s Screenshots**"
+            color=discord.Color.random(), description=f"**{gamertag}'s Screenshots**"
         )
         embed.set_image(url=ss)
-        embed.add_field(name="Info",
-                        value=f"Game: `{check(game)}`\n"
-                              f"Screenshot Name: `{check(name)}`\n"
-                              f"Views: `{views}`\n"
-                              f"Taken on: `{check(timestamp)}`\n"
-                              f"Caption: `{check(caption)}`\n")
+        embed.add_field(
+            name="Info",
+            value=f"Game: `{check(game)}`\n"
+            f"Screenshot Name: `{check(name)}`\n"
+            f"Views: `{views}`\n"
+            f"Taken on: `{check(timestamp)}`\n"
+            f"Caption: `{check(caption)}`\n",
+        )
         embed.set_footer(text=f"Pages: {cur_page}/{length}")
         cur_page += 1
         pages.append(embed)
@@ -238,7 +233,9 @@ def game_embeds(gamertag, gamename, gs, data):
     # Main data setup
     minutes_played = 0
     if len(data["stats"]["statlistscollection"][0]["stats"]) > 0:
-        minutes_played = int(data["stats"]["statlistscollection"][0]["stats"][0]["value"])
+        minutes_played = int(
+            data["stats"]["statlistscollection"][0]["stats"][0]["value"]
+        )
     title_pic = data["info"]["titles"][0]["display_image"]
 
     count = 1
@@ -253,15 +250,14 @@ def game_embeds(gamertag, gamename, gs, data):
             time = fix_timestamp(timestamp)
             time = time.strftime("%m/%d/%Y, %H:%M:%S")
             desc = ach["description"]
-            info = f"{name}\n" \
-                   f"Status: Unlocked on {time}\n" \
-                   f"{desc}\n" \
-                   f"{worth} Gamerscore"
+            info = (
+                f"{name}\n"
+                f"Status: Unlocked on {time}\n"
+                f"{desc}\n"
+                f"{worth} Gamerscore"
+            )
         else:
-            info = f"{name}\n" \
-                   f"Status: {status}\n" \
-                   f"{desc}\n" \
-                   f"{worth} Gamerscore"
+            info = f"{name}\n" f"Status: {status}\n" f"{desc}\n" f"{worth} Gamerscore"
 
         embed = discord.Embed(
             description=f"**{gamertag}'s Achievements for {gamename}**\n{gs} Gamerscore"
@@ -294,7 +290,9 @@ def game_embeds(gamertag, gamename, gs, data):
         embed.set_image(url=icon)
         hours, minutes = divmod(minutes_played, 60)
         days, hours = divmod(hours, 24)
-        embed.set_footer(text=f"Page {count}/{len(achievements)} | Total time played: {days}d {hours}h {minutes}m")
+        embed.set_footer(
+            text=f"Page {count}/{len(achievements)} | Total time played: {days}d {hours}h {minutes}m"
+        )
         embeds.append(embed)
         count += 1
     return embeds
@@ -307,18 +305,19 @@ def friend_embeds(friend_data, main_gamertag):
     friends = friend_data["people"]
     for friend in friends:
         xuid = friend["xuid"]
-        followed_by = friend["is_following_caller"]  # Only useful for authorized user
+        # followed_by = friend["is_following_caller"]  # Only useful for authorized user
         name = friend["gamertag"]
         pfp = friend["display_pic_raw"]
         gs = friend["gamer_score"]
         rep = friend["xbox_one_rep"]
         tier = friend["detail"]["account_tier"]
         state = friend["presence_state"]
-        account_info = f"Gamerscore: `{gs}`\n" \
-                       f"AccountTier: `{tier}`\n" \
-                       f"Player Rep: `{rep}`\n" \
-                       f"XUID: `{xuid}`\n" \
-            # f"Is Following {main_gamertag}: `{followed_by}`" guess this only works for token owner
+        account_info = (
+            f"Gamerscore: `{gs}`\n"
+            f"AccountTier: `{tier}`\n"
+            f"Player Rep: `{rep}`\n"
+            f"XUID: `{xuid}`\n"
+        )  # f"Is Following {main_gamertag}: `{followed_by}`" guess this only works for token owner
 
         game = None
         color = discord.Color.random()
@@ -331,16 +330,16 @@ def friend_embeds(friend_data, main_gamertag):
 
         bio = friend["detail"]["bio"]
 
-        embed = discord.Embed(
-            color=color,
-            description=f"**{main_gamertag}'s Friends**"
-        )
+        embed = discord.Embed(color=color, description=f"**{main_gamertag}'s Friends**")
         embed.set_thumbnail(url=pfp)
         embed.add_field(name=f"{name} ({state})", value=account_info, inline=False)
         if state == "Online":
             embed.add_field(name="Playing", value=game)
         if int(session) > 0 or int(party) > 0:
-            embed.add_field(name="Session Info", value=f"Game Session: {session} players\nParty Chat: {party}")
+            embed.add_field(
+                name="Session Info",
+                value=f"Game Session: {session} players\nParty Chat: {party}",
+            )
         if bio != "":
             embed.add_field(name="Bio", value=box(bio), inline=False)
         embed.set_footer(text=f"Page {count}/{len(friends)}")
@@ -355,7 +354,9 @@ def gameclip_embeds(clip_data, gamertag):
     clips = clip_data["game_clips"]
     for clip in clips:
         state = clip["state"]
-        recorded_on = fix_timestamp(clip["date_recorded"]).strftime("%m/%d/%Y, %H:%M:%S")
+        recorded_on = fix_timestamp(clip["date_recorded"]).strftime(
+            "%m/%d/%Y, %H:%M:%S"
+        )
         published = False
         if state == "Published":
             published = True
@@ -369,18 +370,21 @@ def gameclip_embeds(clip_data, gamertag):
         clip_uri = clip["game_clip_uris"][0]["uri"]
         game = clip["title_name"]
         embed = discord.Embed(
-            description=f"**{gamertag}'s Game Clips**",
-            color=discord.Color.random()
+            description=f"**{gamertag}'s Game Clips**", color=discord.Color.random()
         )
         embed.set_image(url=thumbnail)
-        clip_info = f"Title: `{title}`\n" \
-                    f"Game: `{game}`\n" \
-                    f"Duration: `{m}m {s}s`\n" \
-                    f"Views: `{views}`\n" \
-                    f"State: `{state}`\n" \
-                    f"Recorded on: `{recorded_on}`\n"
+        clip_info = (
+            f"Title: `{title}`\n"
+            f"Game: `{game}`\n"
+            f"Duration: `{m}m {s}s`\n"
+            f"Views: `{views}`\n"
+            f"State: `{state}`\n"
+            f"Recorded on: `{recorded_on}`\n"
+        )
         if published:
-            published_on = fix_timestamp(clip["date_published"]).strftime("%m/%d/%Y, %H:%M:%S")
+            published_on = fix_timestamp(clip["date_published"]).strftime(
+                "%m/%d/%Y, %H:%M:%S"
+            )
             clip_info += f"Published on `{published_on}`\n"
         clip_info += f"**[Click Here To Watch]({clip_uri})**"
         embed.add_field(name="Clip Info", value=clip_info)
@@ -391,24 +395,24 @@ def gameclip_embeds(clip_data, gamertag):
 
 
 # Format microsoft service data
-def ms_status(data: dict) -> list:
+def ms_status(data: dict) -> List[discord.Embed]:
     timezone = "UTC"
     up = "✅"
-    limited = "⚠"
+    limited = "⚠️"
     down = "⛔"
 
     ss = data["ServiceStatus"]
 
     status_data = ss["Status"]["Overall"]
     overall = status_data["State"]
-    last_updated = fix_timestamp(status_data["LastUpdated"], timezone).strftime("%m/%d/%y at %I:%M %p %Z")
-
+    last_updated = fix_timestamp(status_data["LastUpdated"], timezone).strftime(
+        "%m/%d/%y at %I:%M %p %Z"
+    )
     # If nothing is impacted then just return embed
     if overall == "None":
         color = discord.Color.green()
         embed = discord.Embed(
-            description="✅ All Microsoft services are up and running!",
-            color=color
+            description="✅ All Microsoft services are up and running!", color=color
         )
         embed.set_footer(text=f"Last Updated: {last_updated}")
         return [embed]
@@ -459,8 +463,7 @@ def ms_status(data: dict) -> list:
 
             name = scenario["Name"]
             service_info = scenario["Description"]
-            info += f"➣ {name.upper()}\n" \
-                    f"{service_info}\n"
+            info += f"➣ {name.upper()}\n" f"{service_info}\n"
         service_statuses += f"{box(info.strip())}\n"
 
     for i in title_svc["Category"]:
@@ -489,34 +492,27 @@ def ms_status(data: dict) -> list:
 
             name = scenario["Name"]
             service_info = scenario["Description"]
-            info += f"➣ {name.upper()}\n" \
-                    f"{service_info}\n"
+            info += f"➣ {name.upper()}\n" f"{service_info}\n"
         service_statuses += f"{box(info.strip())}\n"
 
-    grammer = f"{out} {'service is' if out == 1 else 'services are'}"
-    title = f"{grammer} affected at this time"
-    text = f"{limited} Limited\n" \
-           f"{down} Major outage"
+    grammar = f"{out} {'service is' if out == 1 else 'services are'}"
+    title = f"{grammar} affected at this time"
+    text = f"{limited} Limited\n" f"{down} Major outage"
 
-    desc = f"{text}\n\n" \
-           f"{service_statuses.strip()}"
+    desc = f"{text}\n\n" f"{service_statuses.strip()}"
 
     if len(desc) > 4096:
         embeds = []
         for p in pagify(desc):
             embed = discord.Embed(
-                title=title,
-                description=p,
-                color=discord.Color.orange()
+                title=title, description=p, color=discord.Color.orange()
             )
             embed.set_footer(text=f"Last Updated: {last_updated}")
             embeds.append(embed)
             return embeds
     else:
         embed = discord.Embed(
-            title=title,
-            description=desc,
-            color=discord.Color.orange()
+            title=title, description=desc, color=discord.Color.orange()
         )
         embed.set_footer(text=f"Last Updated: {last_updated}")
         return [embed]
@@ -547,20 +543,22 @@ def gwg_embeds(products):
             categories += f"{category}\n"
         if categories == "":
             categories = "--"
-        price = game["display_sku_availabilities"][0]["availabilities"][0]["order_management_data"]["price"][
-            "list_price"]
-        release_date = game["display_sku_availabilities"][0]["availabilities"][0]["properties"]["original_release_date"]
+        price = game["display_sku_availabilities"][0]["availabilities"][0][
+            "order_management_data"
+        ]["price"]["list_price"]
+        release_date = game["display_sku_availabilities"][0]["availabilities"][0][
+            "properties"
+        ]["original_release_date"]
         timestamp = fix_timestamp(release_date).strftime("%m/%d/%Y")
         embed = discord.Embed(
-            title=f"{game_name}",
-            description=f"**Description**\n{box(desc)}"
+            title=f"{game_name}", description=f"**Description**\n{box(desc)}"
         )
         embed.add_field(
             name="Info",
             value=f"`Developer:` {dev_name}\n"
-                  f"`Release Date:` {timestamp}\n"
-                  f"`Price:` ~~${price}~~ FREE",
-            inline=False
+            f"`Release Date:` {timestamp}\n"
+            f"`Price:` ~~${price}~~ FREE",
+            inline=False,
         )
         embed.add_field(name="Categories", value=categories)
         embed.set_image(url=icon)
@@ -600,40 +598,33 @@ def mostplayed(data, gt):
         embed = discord.Embed(
             title=f"{gt}'s Most Played Games",
             description=box(mostplayedlist, lang="python"),
-            color=discord.Color.random()
+            color=discord.Color.random(),
         )
         hours, minutes = divmod(total_playtime, 60)
         days, hours = divmod(hours, 24)
-        embed.set_footer(text=f"Page {p + 1}/{int(pages)} | Total Playtime: {days}d {hours}h {minutes}m")
+        embed.set_footer(
+            text=f"Page {p + 1}/{int(pages)} | Total Playtime: {days}d {hours}h {minutes}m"
+        )
         embeds.append(embed)
     return embeds
 
 
 # Formatting for game stats api call
 def stats_api_format(token, title_id, xuid):
-    header = {"x-xbl-contract-version": "2",
-              "Authorization": token,
-              "Accept": "application/json",
-              "Accept-Language": "en-US",
-              "Content-Type": "application/json"
-              }
-    url = f"https://userstats.xboxlive.com/batch"
-    payload = json.dumps({
-        "arrangebyfield": "xuid",
-        "xuids": [
-            xuid
-        ],
-        "groups": [
-            {
-                "name": "Hero",
-                "titleId": title_id
-            }
-        ],
-        "stats": [
-            {
-                "name": "MinutesPlayed",
-                "titleId": title_id
-            }
-        ]
-    })
+    header = {
+        "x-xbl-contract-version": "2",
+        "Authorization": token,
+        "Accept": "application/json",
+        "Accept-Language": "en-US",
+        "Content-Type": "application/json",
+    }
+    url = "https://userstats.xboxlive.com/batch"
+    payload = json.dumps(
+        {
+            "arrangebyfield": "xuid",
+            "xuids": [xuid],
+            "groups": [{"name": "Hero", "titleId": title_id}],
+            "stats": [{"name": "MinutesPlayed", "titleId": title_id}],
+        }
+    )
     return url, header, payload

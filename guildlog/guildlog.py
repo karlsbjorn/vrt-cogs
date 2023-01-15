@@ -1,7 +1,7 @@
 import logging
 
 import discord
-from redbot.core import commands, Config
+from redbot.core import Config, commands
 from redbot.core.utils.chat_formatting import box
 
 log = logging.getLogger("red.vrt.guildlog")
@@ -11,8 +11,9 @@ class GuildLog(commands.Cog):
     """
     Log when the bot joins or leaves a guild
     """
+
     __author__ = "Vertyco"
-    __version__ = "0.0.1"
+    __version__ = "0.1.2"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -27,14 +28,8 @@ class GuildLog(commands.Cog):
         default_guild = {
             "channel": None,
             "embeds": False,
-            "join": {
-                "msg": "default",
-                "color": 56865
-            },
-            "leave": {
-                "msg": "default",
-                "color": 15158332
-            }
+            "join": {"msg": "default", "color": 56865},
+            "leave": {"msg": "default", "color": 15158332},
         }
         self.config.register_guild(**default_guild)
 
@@ -63,18 +58,24 @@ class GuildLog(commands.Cog):
             if msg == "default":
                 msg = f"✅ Joined guild **{new_guild.name}!** That makes {len(self.bot.guilds)} servers now!"
             else:
+                bots = 0
+                users = 0
+                for m in new_guild.members:
+                    if m.bot:
+                        bots += 1
+                    else:
+                        users += 1
                 params = {
                     "guild": new_guild.name,
                     "servers": len(self.bot.guilds),
-                    "botname": self.bot.user.name
+                    "botname": self.bot.user.name,
+                    "bots": bots,
+                    "members": users,
                 }
                 msg = msg.format(**params)
             if embeds:
-                color = data["join"]["color"]
-                embed = discord.Embed(
-                    description=msg,
-                    color=color
-                )
+                color = data["join"].get("color", 56865)
+                embed = discord.Embed(description=msg, color=color)
                 await channel.send(embed=embed)
             else:
                 await channel.send(msg)
@@ -104,18 +105,24 @@ class GuildLog(commands.Cog):
             if msg == "default":
                 msg = f"❌ Left guild **{old_guild.name}!** That makes {len(self.bot.guilds)} servers now!"
             else:
+                bots = 0
+                users = 0
+                for m in old_guild.members:
+                    if m.bot:
+                        bots += 1
+                    else:
+                        users += 1
                 params = {
                     "guild": old_guild.name,
                     "servers": len(self.bot.guilds),
-                    "botname": self.bot.user.name
+                    "botname": self.bot.user.name,
+                    "bots": bots,
+                    "members": users,
                 }
                 msg = msg.format(**params)
             if embeds:
-                color = data["leave"]["color"]
-                embed = discord.Embed(
-                    description=msg,
-                    color=color
-                )
+                color = data["leave"].get("color", 15158332)
+                embed = discord.Embed(description=msg, color=color)
                 await channel.send(embed=embed)
             else:
                 await channel.send(msg)
@@ -140,25 +147,18 @@ class GuildLog(commands.Cog):
                 channel = cid
         else:
             channel = "Not Set"
-        msg = f"`Log Channel: `{channel}\n" \
-              f"`Use Embeds:  `{conf['embeds']}"
-        embed = discord.Embed(
-            title="Guild Log Settings",
-            description=msg
-        )
+
+        msg = f"`Log Channel: `{channel}\n" f"`Use Embeds:  `{conf['embeds']}"
+        embed = discord.Embed(title="Guild Log Settings", description=msg)
         jcolor = conf["join"]["color"]
         jmsg = conf["join"]["msg"]
         embed.add_field(
-            name=f"Join Msg (color: {jcolor})",
-            value=box(jmsg),
-            inline=False
+            name=f"Join Msg (color: {jcolor})", value=box(jmsg), inline=False
         )
         lcolor = conf["leave"]["color"]
         lmsg = conf["leave"]["msg"]
         embed.add_field(
-            name=f"Leave Msg (color: {lcolor})",
-            value=box(lmsg),
-            inline=False
+            name=f"Leave Msg (color: {lcolor})", value=box(lmsg), inline=False
         )
         await ctx.send(embed=embed)
 
@@ -197,6 +197,8 @@ class GuildLog(commands.Cog):
         `{guild}` - the name of the guild the bot just joined
         `{servers}` - the amount of servers the bot is now in
         `{botname}` - the name of the bot
+        `{bots}` - the amount of bots in the guild
+        `{members}` - the member count of the guild
 
         To set back to default just to `default` as the message value
         """
@@ -212,7 +214,9 @@ class GuildLog(commands.Cog):
         Color value must be an integer
         """
         try:
-            embed = discord.Embed(description="Your join messages will now use this color", color=color)
+            embed = discord.Embed(
+                description="Your join messages will now use this color", color=color
+            )
             await ctx.send(embed=embed)
         except Exception as e:
             return await ctx.send(f"Failed to set embed color:\n{box(str(e))}")
@@ -233,6 +237,8 @@ class GuildLog(commands.Cog):
         `{guild}` - the name of the guild the bot just joined
         `{servers}` - the amount of servers the bot is now in
         `{botname}` - the name of the bot
+        `{bots}` - the amount of bots that were in the guild
+        `{members}` - the member count of the guild
 
         To set back to default just to `default` as the message value
         """
@@ -248,7 +254,9 @@ class GuildLog(commands.Cog):
         Color value must be an integer
         """
         try:
-            embed = discord.Embed(description="Your leave messages will now use this color", color=color)
+            embed = discord.Embed(
+                description="Your leave messages will now use this color", color=color
+            )
             await ctx.send(embed=embed)
         except Exception as e:
             return await ctx.send(f"Failed to set embed color:\n{box(str(e))}")
