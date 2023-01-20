@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import logging
 from abc import ABC
@@ -7,9 +8,10 @@ from typing import Union
 import discord
 from discord.utils import escape_markdown
 from redbot.core import commands
+from redbot.core.commands import parse_timedelta
 from redbot.core.i18n import Translator
-from redbot.core.utils.mod import is_admin_or_superior
 from redbot.core.utils.chat_formatting import humanize_list
+from redbot.core.utils.mod import is_admin_or_superior
 
 from .abc import MixinMeta
 
@@ -76,7 +78,15 @@ class BaseCommands(MixinMeta, ABC):
 
     @commands.command(name="close")
     async def close_a_ticket(self, ctx: commands.Context, *, reason: str = None):
-        """Close your ticket"""
+        """
+        Close your ticket
+
+        **Examples**
+        `[p]close` - closes ticket with no reason attached
+        `[p]close thanks for helping!` - closes with reason "thanks for helping!"
+        `[p]close 1h` - closes in 1 hour with no reason attached
+        `[p]close 1m thanks for helping!` - closes in 1 minute with reason "thanks for helping!"
+        """
         user = ctx.author
         conf = await self.config.guild(ctx.guild).all()
         opened = conf["opened"]
@@ -95,12 +105,39 @@ class BaseCommands(MixinMeta, ABC):
             can_close = True
         if owner_id == str(user.id) and conf["user_can_close"]:
             can_close = True
+
         if not can_close:
             return await ctx.send(_("You do not have permissions to close this ticket"))
         else:
             owner = ctx.guild.get_member(int(owner_id))
             if not owner:
                 owner = await self.bot.fetch_user(int(owner_id))
+
+        if reason:
+            timestring = reason.split(" ")[0]
+            if td := parse_timedelta(timestring):
+
+                def check(m: discord.Message):
+                    return m.channel.id == ctx.channel.id
+
+                reason = reason.replace(timestring, "")
+                if not reason.strip():
+                    # User provided delayed close with no reason attached
+                    reason = None
+                closing_in = int((datetime.datetime.now() + td).timestamp())
+                closemsg = _("This ticket will close {}").format(f"<t:{closing_in}:R>")
+                msg = await ctx.send(f"{owner.mention}, {closemsg}")
+                try:
+                    await ctx.bot.wait_for(
+                        "message", check=check, timeout=td.total_seconds()
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                else:
+                    cancelled = _("Closing cancelled!")
+                    await msg.edit(content=cancelled)
+                    return
+
         await self.close_ticket(owner, ctx.channel, conf, reason, ctx.author.name)
 
     async def close_ticket(
@@ -159,8 +196,7 @@ class BaseCommands(MixinMeta, ABC):
             if answers:
                 r = _("Response")
                 for q, a in answers.items():
-                    text += f"{self.bot.user.display_name}: {q}\n" \
-                            f"{r}: {a}\n"
+                    text += f"{self.bot.user.display_name}: {q}\n" f"{r}: {a}\n"
             history = await self.fetch_channel_history(channel)
             for msg in history:
                 if msg.author.id == self.bot.user.id:
