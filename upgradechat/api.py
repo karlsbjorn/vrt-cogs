@@ -1,3 +1,5 @@
+import asyncio
+import json.decoder
 import logging
 from datetime import datetime
 
@@ -70,7 +72,7 @@ class API:
         while True:
             if tries == 3:
                 return 404, None, None
-            if token is None and not tries:
+            if token is None:
                 token = await self.get_auth(cid, secret)
                 update_token = token
             header = {"accept": "application/json", "Authorization": f"Bearer {token}"}
@@ -78,6 +80,18 @@ class API:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url=url, headers=header, ssl=False) as res:
                     status = res.status
+                    if status == 429:
+                        try:
+                            data = await res.json(content_type=None)
+                            wait = data.get("Retry-After", 15)
+                            log.warning(
+                                f"We are being rate-limited, waiting {wait} seconds..."
+                            )
+                        except json.decoder.JSONDecodeError:
+                            wait = 15
+                        await asyncio.sleep(wait)
+                        tries += 1
+                        continue
                     if status == 401:
                         token = await self.get_auth(cid, secret)
                         if token:
@@ -86,6 +100,8 @@ class API:
                         continue
                     if status != 200:
                         log.error(f"Error calling API ({status}) - {res.text}")
+                        await asyncio.sleep(5)
+                        tries += 1
                         continue
                     results = await res.json()
                     purchases.extend(results["data"])
