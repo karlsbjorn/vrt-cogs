@@ -2,14 +2,19 @@
 
 Various useful and fun cogs for Red V3.
 
-![Python 3.8](https://img.shields.io/badge/python-v3.11-orange?style=for-the-badge)
-![Discord.py](https://img.shields.io/badge/discord-py-blue?style=for-the-badge)
+![Py](https://img.shields.io/badge/python-v3.11-orange?style=for-the-badge)
 ![black](https://img.shields.io/badge/style-black-000000?style=for-the-badge&?link=https://github.com/psf/black)
 ![license](https://img.shields.io/github/license/Vertyco/Vrt-Cogs?style=for-the-badge)
 
 ![Red-DiscordBot](https://img.shields.io/badge/Red%20DiscordBot-V3.5-red?style=for-the-badge)
-![Lines of code](https://img.shields.io/tokei/lines/github/Vertyco/Vrt-Cogs?color=yellow&label=Lines&style=for-the-badge)
 ![GitHub repo size](https://img.shields.io/github/repo-size/Vertyco/Vrt-Cogs?color=blueviolet&style=for-the-badge)
+
+![Forks](https://img.shields.io/github/forks/Vertyco/Vrt-Cogs?style=for-the-badge&color=9cf)
+![Stars](https://img.shields.io/github/stars/Vertyco/Vrt-Cogs?style=for-the-badge&color=yellow)
+![Lines of code](https://img.shields.io/tokei/lines/github/Vertyco/Vrt-Cogs?color=ff69b4&label=Lines&style=for-the-badge)
+
+[![Visitors](https://api.visitorbadge.io/api/daily?path=https%3A%2F%2Fgithub.com%2Fvertyco%2Fvrt-cogs&label=Visitors%20Today&countColor=%230015b3)](https://visitorbadge.io/status?path=https%3A%2F%2Fgithub.com%2Fvertyco%2Fvrt-cogs)
+[![Visitors](https://api.visitorbadge.io/api/visitors?path=https%3A%2F%2Fgithub.com%2Fvertyco%2Fvrt-cogs&label=Total&countColor=%230015b3)](https://visitorbadge.io/status?path=https%3A%2F%2Fgithub.com%2Fvertyco%2Fvrt-cogs)
 
 I enjoy working with APIs and making cogs for game servers or other helpful use cases. Check out some of my projects
 below!
@@ -24,7 +29,7 @@ below!
 | [Events](events/README.md)                       |   ✓    | <details><summary>Host events in your Discord.</summary> Create and manage events easily with a variety of entry types and requirements. Event submissions will be posted and counted with a winner or winners announced automatically when the event is complete.</details>                                                                                                                                        |
 | [Fluent](fluent/README.md)                       |   ✓    | <details><summary>Set any channel as a two-way translator for fluent conversation.</summary> Set a channel and both languages, if a message is in language 1 it gets converted to language 2 and vice versa using googles free api.</details>                                                                                                                                                                       |
 | GuildLog                                         |   ✓    | <details><summary>Set a channel to log guilds the bot leaves/joins.</summary> Configure a join/leave message of your choice and whether you want to use embeds or not, the bot will log when it joins or leaves a guild. All guilds can use this cog to see what servers the bot is joining(Guild Name/Bot Name/Total Servers)</details>                                                                            |
-| Hunting                                          |   ✓    | <details><summary>Hunt birds in your server!</summary> Originally created by Paddo for red v2, then ported to v3 by aikaterna#1393, and now maintained by me. This cog allows you to 'hunt' birds in your server via reactions or text.</details>                                                                                                                                                                   |
+| [Hunting](hunting/README.md)                     |   ✓    | <details><summary>Hunt birds in your server!</summary> Originally created by Paddo for red v2, then ported to v3 by aikaterna#1393, and now maintained by me. This cog allows you to 'hunt' birds in your server via reactions or text.</details>                                                                                                                                                                   |
 | Inspire                                          |   ✓    | <details><summary>Get inspirational messages.</summary> Super simple cog that replies to certain sad words with positive encouragements, and responds to the [p]inspire command with an inspirational quote using zenquotes.io API. Note: this cog was my very first project just to get the feel for Red so it's not very big and there aren't any plans of expanding it at the moment.</details>                  |
 | [LevelUp](levelup/README.md)                     |   ✓    | <details><summary>Streamlined Discord Leveling System.</summary> An intuitive full-featured leveling system with prestige features, customizable backgrounds, toggleable embed/image profiles, and extensive voice tracking options.</details>                                                                                                                                                                      |
 | [MCTools](mctools/README.md)                     |   ✓    | <details><summary>Super simple status cog for Minecraft Bedrock servers.</summary> Displays a status embed showing server version and player count. Only for BEDROCK dedicated servers since there is already one that supports Java.</details>                                                                                                                                                                     |                                                                                      |
@@ -43,7 +48,6 @@ below!
 | [YouTubeDownloader](youtubedownloader/README.md) |   ✓    | <details><summary>Download YouTube videos as audio files.</summary> Allows you to download entire playlists, all videos from a channel, or individual videos as audio files. You can either download them locally or have them sent directly to discord. WARNING: Downloading YouTube videos via 3rd party methods is against their ToS and I am not responsible if you get your bots ip suspended.</details>       |
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/vertyco)<br/>
-![visitors](https://visitor-badge.glitch.me/badge?page_id=Vertyco/Vrt-Cogs)
 
 # Installation
 
@@ -83,3 +87,5 @@ If you are interested in contributing to translations for my cogs, [Click Here](
 # Feature Requests
 
 I am open to ideas or suggestions for new cogs and features!
+
+![visitors](https://visitor-badge.glitch.me/badge?page_id=Vertyco/Vrt-Cogs)

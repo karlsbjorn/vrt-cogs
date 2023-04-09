@@ -42,7 +42,7 @@ class Events(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "0.1.3"
+    __version__ = "0.1.4"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -224,7 +224,7 @@ class Events(commands.Cog):
         if days_required:
             now = datetime.now()
             joined_on = author.joined_at
-            if (now - joined_on).days < days_required:
+            if (now.timestamp() - joined_on.timestamp()) / (60 * 60 * 24) < days_required:
                 txt = f"You must be in the server for at least `{days_required}` day(s) in order to enter this event."
                 return await edit(msg, txt)
 
@@ -472,6 +472,7 @@ class Events(commands.Cog):
                         )
                     else:
                         val += f"`{place} place: `{reward}\n"
+
                 em.add_field(name="Rewards", value=val, inline=False)
             em.set_footer(text=f"Page {page}/{pagecount}")
             pages.append(em)
@@ -1200,7 +1201,7 @@ class Events(commands.Cog):
         if event["emoji"] and event["emoji"] != emoji_id:
             emoji = self.bot.get_emoji(event["emoji"])
 
-        channel: discord.TextChannel = guild.get_channel(event["channel_id"])
+        channel: discord.TextChannel = guild.get_channel(int(event["channel_id"]))
         subs = event["submissions"]
         rewards = event["rewards"]
         currency = await bank.get_currency_name(guild)
@@ -1215,11 +1216,14 @@ class Events(commands.Cog):
             if any(r.id in rblacklist for r in submitter.roles):
                 continue
             for message_id in message_ids:
+                if isinstance(message_id, list):
+                    # IDFK
+                    message_id = message_id[0]
                 try:
                     message = await channel.fetch_message(message_id)
                 except (discord.NotFound, discord.HTTPException):
                     log.warning(
-                        f"Failed to fetch message ID {message_id} for {submitter}"
+                        f"Failed to fetch message ID {message_id} for {submitter} in {channel.name}"
                     )
                     continue
                 votes = 0
