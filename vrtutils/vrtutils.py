@@ -29,17 +29,10 @@ from redbot.core.utils.chat_formatting import (
 )
 
 from .diskspeed import get_disk_speed
+from .dpymenu import DEFAULT_CONTROLS, confirm, menu
 
 log = logging.getLogger("red.vrt.vrtutils")
-dpy = discord.__version__
-if dpy > "1.7.4":
-    from .dpymenu import DEFAULT_CONTROLS, confirm, menu
-
-    DPY2 = True
-else:
-    from .dislashmenu import DEFAULT_CONTROLS, confirm, menu
-
-    DPY2 = False
+DPY = discord.__version__
 
 
 async def wait_reply(ctx: commands.Context, timeout: int = 60):
@@ -51,7 +44,11 @@ async def wait_reply(ctx: commands.Context, timeout: int = 60):
         res = reply.content
         try:
             await reply.delete()
-        except (discord.Forbidden, discord.NotFound, discord.DiscordServerError):
+        except (
+            discord.Forbidden,
+            discord.NotFound,
+            discord.DiscordServerError,
+        ):
             pass
         return res
     except asyncio.TimeoutError:
@@ -64,9 +61,9 @@ class VrtUtils(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "1.4.15"
+    __version__ = "1.6.2"
 
-    def format_help_for_context(self, ctx):
+    def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
         return f"{helpcmd}\nCog Version: {self.__version__}\nAuthor: {self.__author__}"
 
@@ -76,10 +73,6 @@ class VrtUtils(commands.Cog):
     def __init__(self, bot: Red, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.bot = bot
-        if not DPY2:
-            from dislash import InteractionClient
-
-            InteractionClient(bot, sync_commands=False)
         self.path = cog_data_path(self)
         self.threadpool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="vrt_utils"
@@ -124,14 +117,18 @@ class VrtUtils(commands.Cog):
         return res
 
     async def run_disk_speed(
-        self, block_count: int = 128, block_size: int = 1048576, passes: int = 1
+        self,
+        block_count: int = 128,
+        block_size: int = 1048576,
+        passes: int = 1,
     ) -> dict:
         reads = []
         writes = []
         with ThreadPoolExecutor(max_workers=1) as pool:
             futures = [
                 self.bot.loop.run_in_executor(
-                    pool, lambda: get_disk_speed(self.path, block_count, block_size)
+                    pool,
+                    lambda: get_disk_speed(self.path, block_count, block_size),
                 )
                 for _ in range(passes)
             ]
@@ -139,7 +136,10 @@ class VrtUtils(commands.Cog):
             for i in results:
                 reads.append(i["read"])
                 writes.append(i["write"])
-        results = {"read": sum(reads) / len(reads), "write": sum(writes) / len(writes)}
+        results = {
+            "read": sum(reads) / len(reads),
+            "write": sum(writes) / len(writes),
+        }
         return results
 
     # -/-/-/-/-/-/-/-/COMMANDS-/-/-/-/-/-/-/-/
@@ -157,7 +157,7 @@ class VrtUtils(commands.Cog):
 
     @commands.command(aliases=["diskbench"])
     @commands.is_owner()
-    async def diskspeed(self, ctx):
+    async def diskspeed(self, ctx: commands.Context):
         """
         Get disk R/W performance for the server your bot is on
 
@@ -167,8 +167,13 @@ class VrtUtils(commands.Cog):
         """
 
         def diskembed(data: dict) -> discord.Embed:
-            if data["write5"] != "Waiting..." and data["write5"] != "Running...":
-                embed = discord.Embed(title="Disk I/O", color=discord.Color.green())
+            if (
+                data["write5"] != "Waiting..."
+                and data["write5"] != "Running..."
+            ):
+                embed = discord.Embed(
+                    title="Disk I/O", color=discord.Color.green()
+                )
                 embed.description = "Disk Speed Check COMPLETE"
             else:
                 embed = discord.Embed(title="Disk I/O", color=ctx.author.color)
@@ -252,7 +257,7 @@ class VrtUtils(commands.Cog):
             await asyncio.sleep(1)
 
     # @commands.command()
-    # async def latency(self, ctx):
+    # async def latency(self, ctx: commands.Context):
     #     """Check the bots latency"""
     #     try:
     #         socket_latency = round(self.bot.latency * 1000)
@@ -269,7 +274,9 @@ class VrtUtils(commands.Cog):
             embeds = []
             page = 1
             for p in pagify(res):
-                embed = discord.Embed(title="Pip Command Results", description=box(p))
+                embed = discord.Embed(
+                    title="Pip Command Results", description=box(p)
+                )
                 embed.set_footer(text=f"Page {page}")
                 page += 1
                 embeds.append(embed)
@@ -291,7 +298,9 @@ class VrtUtils(commands.Cog):
             embeds = []
             page = 1
             for p in pagify(res):
-                embed = discord.Embed(title="Shell Command Results", description=box(p))
+                embed = discord.Embed(
+                    title="Shell Command Results", description=box(p)
+                )
                 embed.set_footer(text=f"Page {page}")
                 page += 1
                 embeds.append(embed)
@@ -320,7 +329,7 @@ class VrtUtils(commands.Cog):
     # Inspired by kennnyshiwa's imperialtoolkit botstat command
     # https://github.com/kennnyshiwa/kennnyshiwa-cogs
     @commands.command()
-    async def botinfo(self, ctx):
+    async def botinfo(self, ctx: commands.Context):
         """
         Get info about the bot
         """
@@ -332,7 +341,9 @@ class VrtUtils(commands.Cog):
             )  # List of floats
             cpu_freq = psutil.cpu_freq(percpu=True)  # List of Objects
             cpu_info = cpuinfo.get_cpu_info()  # Dict
-            cpu_type = cpu_info["brand_raw"] if "brand_raw" in cpu_info else "Unknown"
+            cpu_type = (
+                cpu_info["brand_raw"] if "brand_raw" in cpu_info else "Unknown"
+            )
 
             # -/-/-/MEM-/-/-/
             ram = psutil.virtual_memory()  # Obj
@@ -363,9 +374,12 @@ class VrtUtils(commands.Cog):
             recv = self.get_size(net.bytes_recv)
 
             # -/-/-/OS-/-/-/
+            ostype = "Unknown"
             if os.name == "nt":
                 osdat = platform.uname()
-                ostype = f"{osdat.system} {osdat.release} (version {osdat.version})"
+                ostype = (
+                    f"{osdat.system} {osdat.release} (version {osdat.version})"
+                )
             elif sys.platform == "darwin":
                 osdat = platform.mac_ver()
                 ostype = f"Mac OS {osdat[0]} {osdat[1]}"
@@ -373,8 +387,6 @@ class VrtUtils(commands.Cog):
                 import distro
 
                 ostype = f"{distro.name()} {distro.version()}"
-            else:
-                ostype = "Unknown"
 
             td = datetime.datetime.utcnow() - datetime.datetime.fromtimestamp(
                 psutil.boot_time()
@@ -418,7 +430,7 @@ class VrtUtils(commands.Cog):
                 f"Commands: {commandcount}\n"
                 f"Uptime:   {uptime}\n"
                 f"Red:      {red_version}\n"
-                f"DPy:      {dpy}\n"
+                f"DPy:      {DPY}\n"
                 f"Python:   {py_version}"
             )
             embed.add_field(
@@ -433,22 +445,25 @@ class VrtUtils(commands.Cog):
             else:
                 for i, obj in enumerate(cpu_freq):
                     maxfreq = f"/{round(obj.max, 2)}" if obj.max else ""
-                    cpustats += f"Core {i}: {round(obj.current, 2)}{maxfreq} Mhz\n"
+                    cpustats += (
+                        f"Core {i}: {round(obj.current, 2)}{maxfreq} Mhz\n"
+                    )
             if isinstance(cpu_perc, list):
                 for i, perc in enumerate(cpu_perc):
                     space = " "
                     if i >= 10:
                         space = ""
-                    bar = self.get_bar(0, 0, perc)
+                    bar = self.get_bar(0, 0, perc, width=16)
                     cpustats += f"Core {i}:{space} {bar}\n"
-            embed.add_field(
-                name="\N{DESKTOP COMPUTER} CPU",
-                value=box(cpustats, lang="python"),
-                inline=False,
-            )
+            for p in pagify(cpustats, page_length=1024):
+                embed.add_field(
+                    name="\N{DESKTOP COMPUTER} CPU",
+                    value=box(p, lang="python"),
+                    inline=False,
+                )
 
-            rambar = self.get_bar(0, 0, ram.percent, width=30)
-            diskbar = self.get_bar(0, 0, disk.percent, width=30)
+            rambar = self.get_bar(0, 0, ram.percent, width=18)
+            diskbar = self.get_bar(0, 0, disk.percent, width=18)
             memtext = (
                 f"RAM ({ram_used}/{ram_total})\n"
                 f"{rambar}\n"
@@ -461,7 +476,7 @@ class VrtUtils(commands.Cog):
                 inline=False,
             )
 
-            disk_usage_bar = self.get_bar(0, 0, disk_usage, width=30)
+            disk_usage_bar = self.get_bar(0, 0, disk_usage, width=18)
             i_o = f"DISK LOAD\n" f"{disk_usage_bar}"
             embed.add_field(
                 name="\N{GEAR}\N{VARIATION SELECTOR-16} I/O",
@@ -476,10 +491,7 @@ class VrtUtils(commands.Cog):
                 inline=False,
             )
 
-            if DPY2:
-                bot_icon = self.bot.user.avatar.url.format("png")
-            else:
-                bot_icon = self.bot.user.avatar_url_as(format="png")
+            bot_icon = self.bot.user.avatar.url.format("png")
             embed.set_thumbnail(url=bot_icon)
             embed.set_footer(text=f"System: {ostype}\nUptime: {sys_uptime}")
             await ctx.send(embed=embed)
@@ -509,16 +521,13 @@ class VrtUtils(commands.Cog):
             description=created_on,
             color=await ctx.embed_color(),
         )
-        if DPY2:
-            if member.avatar:
-                embed.set_image(url=member.avatar.url)
-        else:
-            embed.set_image(url=member.avatar_url)
+        if member.avatar:
+            embed.set_image(url=member.avatar.url)
         await ctx.send(embed=embed)
 
     @commands.command()
     @commands.is_owner()
-    async def botip(self, ctx):
+    async def botip(self, ctx: commands.Context):
         """Get the bots public IP address (in DMs)"""
         async with ctx.typing():
             test = speedtest.Speedtest(secure=True)
@@ -536,7 +545,7 @@ class VrtUtils(commands.Cog):
 
     @commands.command()
     @commands.is_owner()
-    async def usersjson(self, ctx):
+    async def usersjson(self, ctx: commands.Context):
         """Get a json file containing all usernames/ID's in this guild"""
         members = {}
         for member in ctx.guild.members:
@@ -550,7 +559,7 @@ class VrtUtils(commands.Cog):
 
     @commands.command()
     @commands.is_owner()
-    async def guilds(self, ctx):
+    async def guilds(self, ctx: commands.Context):
         """View guilds your bot is in"""
         # Just wanted a stripped down version of getguild from Trusty's serverstats cog
         # https://github.com/TrustyJAID/Trusty-cogs
@@ -577,12 +586,8 @@ class VrtUtils(commands.Cog):
             guild: discord.Guild = guild
             if guild.id == ctx.guild.id:
                 page = i
-            if DPY2:
-                guild_splash = guild.splash.url if guild.splash else None
-                guild_icon = guild.icon.url if guild.icon else None
-            else:
-                guild_splash = guild.splash_url
-                guild_icon = guild.icon_url
+            guild_splash = guild.splash.url if guild.splash else None
+            guild_icon = guild.icon.url if guild.icon else None
             created = f"<t:{int(guild.created_at.replace(tzinfo=datetime.timezone.utc).timestamp())}:D>"
             time_elapsed = f"<t:{int(guild.created_at.replace(tzinfo=datetime.timezone.utc).timestamp())}:R>"
             try:
@@ -594,10 +599,16 @@ class VrtUtils(commands.Cog):
 
             humans = sum(1 for x in guild.members if not x.bot)
             bots = sum(1 for x in guild.members if x.bot)
-            idle = sum(1 for x in guild.members if x.status is discord.Status.idle)
-            online = sum(1 for x in guild.members if x.status is discord.Status.online)
+            idle = sum(
+                1 for x in guild.members if x.status is discord.Status.idle
+            )
+            online = sum(
+                1 for x in guild.members if x.status is discord.Status.online
+            )
             dnd = sum(
-                1 for x in guild.members if x.status is discord.Status.do_not_disturb
+                1
+                for x in guild.members
+                if x.status is discord.Status.do_not_disturb
             )
             offline = sum(
                 1 for x in guild.members if x.status is discord.Status.offline
@@ -655,7 +666,9 @@ class VrtUtils(commands.Cog):
             em.add_field(name="Details", value=field)
 
             text_channels = len(guild.text_channels)
-            nsfw_channels = len([c for c in guild.text_channels if c.is_nsfw()])
+            nsfw_channels = len(
+                [c for c in guild.text_channels if c.is_nsfw()]
+            )
             voice_channels = len(guild.voice_channels)
             field = (
                 f"`Text:  `{text_channels}\n"
@@ -672,7 +685,9 @@ class VrtUtils(commands.Cog):
             normal_roles = [
                 r
                 for r in guild.roles
-                if not any([p[0] in elevated_perms for p in r.permissions if p[1]])
+                if not any(
+                    [p[0] in elevated_perms for p in r.permissions if p[1]]
+                )
             ]
             field = (
                 f"`Elevated: `{len(elevated_roles)}\n"
@@ -697,7 +712,9 @@ class VrtUtils(commands.Cog):
         data = instance.pages[instance.page].title.split("--")
         guildname = data[0].strip()
         guildid = data[1].strip()
-        msg = await ctx.send(f"Are you sure you want me to leave **{guildname}**?")
+        msg = await ctx.send(
+            f"Are you sure you want me to leave **{guildname}**?"
+        )
         yes = await confirm(ctx, msg)
         await msg.delete()
         if yes is None:
@@ -740,23 +757,9 @@ class VrtUtils(commands.Cog):
                 break
         else:  # No existing invite found that is valid
             channel = None
-            if not DPY2:
-                channels_and_perms = zip(
-                    guild.text_channels,
-                    map(guild.me.permissions_in, guild.text_channels),
-                )
-                channel = next(
-                    (
-                        channel
-                        for channel, perms in channels_and_perms
-                        if perms.create_instant_invite
-                    ),
-                    None,
-                )
-            else:
-                for channel in guild.text_channels:
-                    if channel.permissions_for(guild.me).create_instant_invite:
-                        break
+            for channel in guild.text_channels:
+                if channel.permissions_for(guild.me).create_instant_invite:
+                    break
             try:
                 if channel is not None:
                     # Create invite that expires after max_age
@@ -803,7 +806,10 @@ class VrtUtils(commands.Cog):
     @commands.command(aliases=["oldestusers"])
     @commands.guild_only()
     async def oldestmembers(
-        self, ctx, amount: Optional[int] = 10, include_bots: Optional[bool] = False
+        self,
+        ctx,
+        amount: Optional[int] = 10,
+        include_bots: Optional[bool] = False,
     ):
         """
         See which users have been in the server the longest
@@ -832,7 +838,10 @@ class VrtUtils(commands.Cog):
     @commands.command()
     @commands.guild_only()
     async def oldestaccounts(
-        self, ctx, amount: Optional[int] = 10, include_bots: Optional[bool] = False
+        self,
+        ctx,
+        amount: Optional[int] = 10,
+        include_bots: Optional[bool] = False,
     ):
         """
         See which users have the oldest Discord accounts
@@ -863,12 +872,16 @@ class VrtUtils(commands.Cog):
     async def rolemembers(self, ctx, role: discord.Role):
         """View all members that have a specific role"""
         members = []
-        async for member in AsyncIter(ctx.guild.members, steps=500, delay=0.001):
+        async for member in AsyncIter(
+            ctx.guild.members, steps=500, delay=0.001
+        ):
             if role.id in [r.id for r in member.roles]:
                 members.append(member)
 
         if not members:
-            return await ctx.send(f"There are no members with the {role.mention} role")
+            return await ctx.send(
+                f"There are no members with the {role.mention} role"
+            )
 
         members = sorted(members, key=lambda x: x.name)
         start = 0
@@ -898,15 +911,12 @@ class VrtUtils(commands.Cog):
     @commands.command()
     @commands.guildowner()
     @commands.guild_only()
-    async def wipevcs(self, ctx):
+    async def wipevcs(self, ctx: commands.Context):
         """
-        Clear all voice channels from a guild
-
-        This command was made to recover from Nuked servers that were VC spammed.
-        Hopefully it will never need to be used again.
+        Clear all voice channels from a server
         """
         msg = await ctx.send(
-            "Are you sure you want to clear **ALL** Voice Channels from this guild?"
+            "Are you sure you want to clear **ALL** Voice Channels from this server?"
         )
         yes = await confirm(ctx, msg)
         if yes is None:
@@ -915,7 +925,9 @@ class VrtUtils(commands.Cog):
             return await msg.edit(content="Not deleting all VC's")
         perm = ctx.guild.me.guild_permissions.manage_channels
         if not perm:
-            return await msg.edit(content="I dont have perms to manage channels")
+            return await msg.edit(
+                content="I dont have perms to manage channels"
+            )
         deleted = 0
         for chan in ctx.guild.channels:
             if isinstance(chan, discord.TextChannel):
@@ -930,24 +942,34 @@ class VrtUtils(commands.Cog):
         else:
             await msg.edit(content="No VCs to delete!")
 
-    @commands.command(name="syncslash")
-    @commands.is_owner()
-    async def sync_slash(self, ctx: commands.Context, global_sync: bool):
+    @commands.command()
+    @commands.guildowner()
+    @commands.guild_only()
+    async def wipethreads(self, ctx: commands.Context):
         """
-        Sync slash commands
-
-        **Arguments**
-        `global_sync:` If True, syncs global slash commands, syncs current guild by default
+        Clear all threads from a server
         """
-        if not DPY2:
-            return await ctx.send("This command can only be used with DPy2")
-        if global_sync:
-            await self.bot.tree.sync()
-            await ctx.send("Synced global slash commands!")
+        msg = await ctx.send(
+            "Are you sure you want to clear **ALL** threads from this server?"
+        )
+        yes = await confirm(ctx, msg)
+        if yes is None:
+            return
+        if not yes:
+            return await msg.edit(content="Not deleting all threads")
+        perm = ctx.guild.me.guild_permissions.manage_threads
+        if not perm:
+            return await msg.edit(
+                content="I dont have perms to manage threads"
+            )
+        deleted = 0
+        for thread in ctx.guild.threads:
+            await thread.delete()
+            deleted += 1
+        if deleted:
+            await msg.edit(content=f"Deleted {deleted} threads!")
         else:
-            await self.bot.tree.sync(guild=ctx.guild)
-            await ctx.send("Synced slash commands for this guild!")
-        await ctx.tick()
+            await msg.edit(content="No threads to delete!")
 
     @commands.command(name="text2binary")
     async def text2binary(self, ctx: commands.Context, *, text: str):

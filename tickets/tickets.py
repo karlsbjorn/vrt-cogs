@@ -8,23 +8,25 @@ from redbot.core import Config, commands
 from redbot.core.i18n import Translator, cog_i18n
 
 from .abc import CompositeMetaClass
-from .admin import AdminCommands
-from .base import BaseCommands
-from .views import PanelView
+from .commands import TicketCommands
+from .utils import Utils, update_active_overview
+from .views import LogView, PanelView
 
 log = logging.getLogger("red.vrt.tickets")
 _ = Translator("Tickets", __file__)
 
 
-# redgettext -D tickets.py base.py admin.py views.py menu.py
+# redgettext -D tickets.py commands/base.py commands/admin.py views.py menu.py utils.py
 @cog_i18n(_)
-class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMetaClass):
+class Tickets(
+    TicketCommands, Utils, commands.Cog, metaclass=CompositeMetaClass
+):
     """
     Support ticket system with multi-panel functionality
     """
 
     __author__ = "Vertyco"
-    __version__ = "1.6.17"
+    __version__ = "1.15.6"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -44,19 +46,23 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
         self.config = Config.get_conf(self, 117117, force_registration=True)
         default_guild = {
             # Settings
-            "support_roles": [],  # Role ids
-            "blacklist": [],  # User ids
+            "support_roles": [],  # Role ids that have access to all tickets
+            "blacklist": [],  # User ids that cannot open any tickets
             "max_tickets": 1,  # Max amount of tickets a user can have open at a time of any kind
             "inactive": 0,  # Auto close tickets with X hours of inactivity (0 = disabled)
+            "overview_channel": 0,  # Overview of open tickets across panels
+            "overview_msg": 0,  # Message id of the overview info
             # Ticket data
             "opened": {},  # All opened tickets
             "panels": {},  # All ticket panels
             # Toggles
-            "dm": False,
-            "user_can_rename": False,
-            "user_can_close": True,
-            "user_can_manage": False,
-            "transcript": False,
+            "dm": False,  # Whether to DM the user when their ticket is closed
+            "user_can_rename": False,  # Ticket opener can rename their ticket channel
+            "user_can_close": True,  # Ticket opener can close their own ticket
+            "user_can_manage": False,  # Ticket opener can add other users to their ticket
+            "transcript": False,  # Save a transcript of the ticket conversation on close
+            "auto_add": False,  # Auto-add support/subroles to thread tickets
+            "thread_close": True,  # Whether to close/lock the thread instead of deleting it
         }
         self.config.register_guild(**default_guild)
 
@@ -65,15 +71,20 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
             "category_id": 0,  # <Required>
             "channel_id": 0,  # <Required>
             "message_id": 0,  # <Required>
+            "alt_channel": 0,  # (Optional) Open tickets from another channel/category
             # Button settings
             "button_text": "Open a Ticket",  # (Optional)
             "button_color": "blue",  # (Optional)
             "button_emoji": None,  # (Optional) Either None or an emoji for the button
+            "priority": 1,  # (Optional) Button order
+            "row": None,  # Row for the button to be placed
             # Ticket settings
             "ticket_messages": [],  # (Optional) A list of messages to be sent
             "ticket_name": None,  # (Optional) Name format for the ticket channel
             "log_channel": 0,  # (Optional) Log open/closed tickets
             "modal": {},  # (Optional) Modal fields to fill out before ticket is opened
+            "threads": False,  # Whether this panel makes a thread or channel
+            "roles": [],  # Sub-support roles
             # Ticker
             "ticket_num": 1,
         }
@@ -81,15 +92,16 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
         self.modal_schema = {
             "label": "",  # <Required>
             "style": "short",  # <Required>
-            "placeholder": None,  # (Optional
-            "default": None,  # (Optional
-            "required": True,  # (Optional
-            "min_length": None,  # (Optional
-            "max_length": None,  # (Optional
-            "answer": None,  # (Optional
+            "placeholder": None,  # (Optional)
+            "default": None,  # (Optional)
+            "required": True,  # (Optional)
+            "min_length": None,  # (Optional)
+            "max_length": None,  # (Optional)
+            "answer": None,  # (Optional)
         }
 
         self.valid = []  # Valid ticket channels
+        self.views = []  # Saved views to end on reload
 
         self.auto_close.start()
 
@@ -98,6 +110,8 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
 
     async def cog_unload(self) -> None:
         self.auto_close.cancel()
+        for view in self.views:
+            view.stop()
 
     async def startup(self) -> None:
         await self.bot.wait_until_red_ready()
@@ -113,9 +127,27 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
             guild = self.bot.get_guild(gid)
             if not guild:
                 continue
-            panels = data["panels"]
+            pruned = await self.prune_invalid_tickets(guild, data)
+            if pruned:
+                data = await self.config.guild(guild).all()
+            # Refresh overview panel
+            new_id = await update_active_overview(guild, data)
+            if new_id:
+                await self.config.guild(guild).overview_msg.set(new_id)
+
+            # v1.14.0 Migration, new support role schema
+            cleaned = []
+            for i in data["support_roles"]:
+                if isinstance(i, int):
+                    cleaned.append([i, False])
+            if cleaned:
+                await self.config.guild(guild).support_roles.set(cleaned)
+
+            # Refresh buttons for all panels
+            migrations = False
+            all_panels = data["panels"]
             to_deploy = {}  # Message ID keys for multi-button support
-            for panel_name, panel in panels.items():
+            for panel_name, panel in all_panels.items():
                 catid = panel["category_id"]
                 cid = panel["channel_id"]
                 mid = panel["message_id"]
@@ -131,10 +163,36 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
                     await chan.fetch_message(mid)
                 except discord.NotFound:
                     continue
+                except discord.Forbidden:
+                    log.info(
+                        f"I can no longer see a set panel channel in {guild.name}"
+                    )
+                    continue
 
                 # v1.3.10 schema update (Modals)
                 if "modals" not in panel:
                     panel["modals"] = {}
+                    migrations = True
+                # Schema update (Sub support roles)
+                if "roles" not in panel:
+                    panel["roles"] = []
+                    migrations = True
+                # v1.14.0 Schema update (Mentionable support roles + alt channel)
+                cleaned = []
+                for i in panel["roles"]:
+                    if isinstance(i, int):
+                        cleaned.append([i, False])
+                if cleaned:
+                    panel["roles"] = cleaned
+                    migrations = True
+                if "alt_channel" not in panel:
+                    panel["alt_channel"] = 0
+                    migrations = True
+                # v1.15.0 schema update (Button priority and rows)
+                if "row" not in panel or "priority" not in panel:
+                    panel["row"] = None
+                    panel["priority"] = 1
+                    migrations = True
 
                 panel["name"] = panel_name
                 key = f"{cid}-{mid}"
@@ -146,41 +204,75 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
             if not to_deploy:
                 continue
 
-            for panels in to_deploy.values():
-                panelview = PanelView(guild, self.config, panels)
-                await panelview.start()
+            # Update config for any migrations
+            if migrations:
+                await self.config.guild(guild).panels.set(all_panels)
 
-    # Clean up any ticket data that comes from a deleted channel or unknown user
-    async def cleanup(self):
-        for guild in self.bot.guilds:
-            t = await self.config.guild(guild).opened()
-            if not t:
-                continue
-            current_tickets = {}
-            count = 0
-            for uid, tickets in t.items():
-                if not guild.get_member(int(uid)):
-                    count += 1
+            try:
+                for panels in to_deploy.values():
+                    sorted_panels = sorted(panels, key=lambda x: x["priority"])
+                    panelview = PanelView(
+                        self.bot, guild, self.config, sorted_panels
+                    )
+                    await panelview.start()
+                    self.views.append(panelview)
+            except discord.NotFound:
+                log.warning(f"Failed to refresh panels in {guild.name}")
+
+            # Refresh view for logs of opened tickets (v1.8.18 update)
+            for uid, opened_tickets in data["opened"].items():
+                member = guild.get_member(int(uid))
+                if not member:
                     continue
-                new_tickets = {}
-                for cid, data in tickets.items():
-                    if not guild.get_channel(int(cid)):
-                        count += 1
+                for ticket_channel_id, ticket_info in opened_tickets.items():
+                    ticket_channel = guild.get_channel_or_thread(
+                        int(ticket_channel_id)
+                    )
+                    if not ticket_channel:
                         continue
-                    else:
-                        new_tickets[cid] = data
-                if new_tickets:
-                    current_tickets[uid] = new_tickets
-
-            if current_tickets and count:
-                await self.config.guild(guild).opened.set(current_tickets)
-                log.info(f"{count} tickets pruned from {guild.name}")
+                    if not ticket_info["logmsg"]:
+                        continue
+                    panel_name = ticket_info["panel"]
+                    if panel_name not in all_panels:
+                        continue
+                    panel = all_panels[panel_name]
+                    if not panel["log_channel"]:
+                        continue
+                    log_channel = guild.get_channel(int(panel["log_channel"]))
+                    if not log_channel:
+                        log.warning(
+                            f"Log channel no longer exits for {member.display_name}'s ticket in {guild.name}"
+                        )
+                        continue
+                    try:
+                        logmsg = await log_channel.fetch_message(
+                            ticket_info["logmsg"]
+                        )
+                    except discord.NotFound:
+                        log.warning(
+                            f"Failed to get log channel message in {guild.name}"
+                        )
+                        continue
+                    if not logmsg:
+                        continue
+                    view = LogView(guild, ticket_channel)
+                    try:
+                        await logmsg.edit(view=view)
+                    except discord.NotFound:
+                        log.warning(
+                            f"Failed to refresh log views in {guild.name}"
+                        )
 
     @tasks.loop(minutes=20)
     async def auto_close(self):
         actasks = []
-        for guild in self.bot.guilds:
-            conf = await self.config.guild(guild).all()
+        conf = await self.config.all_guilds()
+        for gid, conf in conf.items():
+            if not conf:
+                continue
+            guild = self.bot.get_guild(gid)
+            if not guild:
+                continue
             inactive = conf["inactive"]
             if not inactive:
                 continue
@@ -198,12 +290,16 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
                         continue
                     if channel_id in self.valid:
                         continue
-                    channel = guild.get_channel(int(channel_id))
+                    channel = guild.get_channel_or_thread(int(channel_id))
                     if not channel:
                         continue
                     now = datetime.datetime.now()
-                    opened_on = datetime.datetime.fromisoformat(ticket["opened"])
-                    hastyped = await self.ticket_owner_hastyped(channel, member)
+                    opened_on = datetime.datetime.fromisoformat(
+                        ticket["opened"]
+                    )
+                    hastyped = await self.ticket_owner_hastyped(
+                        channel, member
+                    )
                     if hastyped and channel_id not in self.valid:
                         self.valid.append(channel_id)
                         continue
@@ -224,9 +320,12 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
                     try:
                         await self.close_ticket(
                             member,
+                            guild,
                             channel,
                             conf,
-                            _("(Auto-Close) Opened ticket with no response for ")
+                            _(
+                                "(Auto-Close) Opened ticket with no response for "
+                            )
                             + f"{inactive} {time}",
                             self.bot.user.name,
                         )
@@ -242,19 +341,21 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
 
         if tasks:
             await asyncio.gather(*actasks)
-        await self.cleanup()
 
     @auto_close.before_loop
     async def before_auto_close(self):
         await self.bot.wait_until_red_ready()
-        await asyncio.sleep(30)
+        await asyncio.sleep(300)
 
     # Will automatically close/cleanup any tickets if a member leaves that has an open ticket
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         if not member:
             return
-        conf = await self.config.guild(member.guild).all()
+        guild = member.guild
+        if not guild:
+            return
+        conf = await self.config.guild(guild).all()
         opened = conf["opened"]
         if str(member.id) not in opened:
             return
@@ -262,13 +363,14 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
         if not tickets:
             return
 
-        for cid, ticket in tickets.items():
-            chan = self.bot.get_channel(int(cid))
+        for cid in tickets:
+            chan = guild.get_channel_or_thread(int(cid))
             if not chan:
                 continue
             try:
                 await self.close_ticket(
                     member,
+                    guild,
                     chan,
                     conf,
                     _("User left guild(Auto-Close)"),
@@ -278,3 +380,34 @@ class Tickets(BaseCommands, AdminCommands, commands.Cog, metaclass=CompositeMeta
                 log.error(
                     f"Failed to auto-close ticket for {member} leaving {member.guild}\nException: {e}"
                 )
+
+    @commands.Cog.listener()
+    async def on_thread_delete(self, thread: discord.Thread):
+        if not thread:
+            return
+        guild = thread.guild
+        async with self.config.guild(guild).all() as conf:
+            for user_id, tickets in conf["opened"].items():
+                for channel_id, ticket in tickets.items():
+                    if int(channel_id) != thread.id:
+                        continue
+
+                    panel = conf["panels"][ticket["panel"]]
+                    log_message_id = ticket["logmsg"]
+                    log_channel_id = panel["log_channel"]
+
+                    if log_channel_id and log_message_id:
+                        log_channel = guild.get_channel(log_channel_id)
+                        try:
+                            log_message = await log_channel.fetch_message(
+                                log_message_id
+                            )
+                            await log_message.delete()
+                        except discord.NotFound:
+                            pass
+
+                    del conf["opened"][user_id][channel_id]
+                    log.info(
+                        f"Removed {thread.name} thread from config in {guild.name}"
+                    )
+                    return
