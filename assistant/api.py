@@ -55,24 +55,44 @@ class API(MixinMeta):
         date = datetime.now().astimezone().strftime("%B %d, %Y")
         time = datetime.now().astimezone().strftime("%I:%M %p %Z")
         roles = [role.name for role in author.roles]
-        params = {
-            "botname": self.bot.user.name,
-            "timestamp": timestamp,
-            "date": date,
-            "time": time,
-            "members": author.guild.member_count,
-            "user": author.display_name,
-            "datetime": str(datetime.now()),
-            "roles": humanize_list(roles),
-            "avatar": author.avatar.url if author.avatar else "",
-            "owner": author.guild.owner,
-            "servercreated": created,
-            "server": author.guild.name,
-            "messages": len(conversation.messages),
-            "tokens": conversation.token_count(conf, message),
-            "retention": conf.max_retention,
-            "retentiontime": conf.max_retention_time,
-        }
+        try:
+            params = {
+                "botname": self.bot.user.name,
+                "timestamp": timestamp,
+                "date": date,
+                "time": time,
+                "members": author.guild.member_count,
+                "user": author.display_name,
+                "datetime": str(datetime.now()),
+                "roles": humanize_list(roles),
+                "avatar": author.avatar.url if author.avatar else "",
+                "owner": author.guild.owner,
+                "servercreated": created,
+                "server": author.guild.name,
+                "messages": len(conversation.messages),
+                "tokens": conversation.token_count(conf, message),
+                "retention": conf.max_retention,
+                "retentiontime": conf.max_retention_time,
+            }
+        except AttributeError:
+            params = {
+                "botname": self.bot.user.name,
+                "timestamp": timestamp,
+                "date": date,
+                "time": time,
+                "members": 200,
+                "user": author.display_name,
+                "datetime": str(datetime.now()),
+                "roles": humanize_list(roles),
+                "avatar": author.avatar.url if author.avatar else "",
+                "owner": "Frane",
+                "servercreated": created,
+                "server": "Jahaci Rumene Kadulje",
+                "messages": len(conversation.messages),
+                "tokens": conversation.token_count(conf, message),
+                "retention": conf.max_retention,
+                "retentiontime": conf.max_retention_time,
+            }
 
         system_prompt = conf.system_prompt.format(**params)
         initial_prompt = conf.prompt.format(**params)
