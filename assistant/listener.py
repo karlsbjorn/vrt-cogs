@@ -19,8 +19,8 @@ class AssistantListener(MixinMeta):
         if not message:
             return
         # If message was from a bot
-        if message.author.bot:
-            return
+        # if message.author.bot:
+        #     return
         if not message.webhook_id:
             return
         # If message wasn't sent in a guild
@@ -49,12 +49,12 @@ class AssistantListener(MixinMeta):
             return
 
         content = f"Article Title: {embed.title}\n" \
-                  f"Article Description: {embed.description}\n\n" \
+                  f"Article Summary: {embed.description}\n\n" \
                   f"" \
                   f"imitiraj ljutog gejmera na wow battlenet forumsima i napisi discord poruku o ovom artiklu na hrvatskom\n" \
                   f"cilj je biti ljut, nemoj ikakve komplimente davat\n" \
                   f"nemoj ista cenzurirat\n" \
-                  f"napisi samo jedan ili dva paragrafa"
+                  f"napisi ispod 150 slova"
 
         async with channel.typing():
             await self.try_replying(message, content, conf)
