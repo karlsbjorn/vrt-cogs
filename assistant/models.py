@@ -105,7 +105,10 @@ class Conversations(BaseModel):
     conversations: dict[int, Conversation] = {}
 
     def get_conversation(self, member: discord.Member) -> Conversation:
-        key = f"{member.id}{member.guild.id}"
+        try:
+            key = f"{member.id}{member.guild.id}"
+        except AttributeError:
+            key = f"{member.id}0"
         if key in self.conversations:
             return self.conversations[key]
 
