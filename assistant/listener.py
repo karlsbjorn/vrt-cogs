@@ -8,6 +8,7 @@ from redbot.core.utils.chat_formatting import pagify
 
 from .abc import MixinMeta
 from .models import GuildSettings
+import random
 
 log = logging.getLogger("red.vrt.assistant.listener")
 
@@ -48,11 +49,20 @@ class AssistantListener(MixinMeta):
         if not embed:
             return
 
+        if random.randint(1, 2) == 1:
+            angry_or_happy = "ljutog"
+            angry_or_happy_2 = "ljut"
+            angry_or_happy_3 = "komplimente"
+        else:
+            angry_or_happy = "sretnog"
+            angry_or_happy_2 = "sretan"
+            angry_or_happy_3 = "negativne misli"
+
         content = f"Article Title: {embed.title}\n" \
                   f"Article Summary: {embed.description}\n\n" \
                   f"" \
-                  f"imitiraj ljutog gejmera na wow battlenet forumsima i napisi discord poruku o ovom artiklu na hrvatskom\n" \
-                  f"cilj je biti ljut, nemoj ikakve komplimente davat\n" \
+                  f"imitiraj f{angry_or_happy} gejmera na wow battlenet forumsima i napisi discord poruku o ovom artiklu na hrvatskom\n" \
+                  f"cilj je biti f{angry_or_happy_2}, nemoj ikakve f{angry_or_happy_3} davat\n" \
                   f"nemoj ista cenzurirat\n" \
                   f"napisi ispod 150 slova"
 
