@@ -21,20 +21,19 @@ class AssistantListener(MixinMeta):
         # If message was from a bot
         if message.author.bot:
             return
+        if not message.webhook_id:
+            return
         # If message wasn't sent in a guild
         if not message.guild:
-            return
-        # Ignore messages without content
-        if not message.content:
             return
         # Ignore if channel doesn't exist
         if not message.channel:
             return
         # Ignore references to other members
-        if hasattr(message, "reference") and message.reference:
-            ref = message.reference.resolved
-            if ref and ref.author.id != self.bot.user.id:
-                return
+        # if hasattr(message, "reference") and message.reference:
+        #     ref = message.reference.resolved
+        #     if ref and ref.author.id != self.bot.user.id:
+        #         return
 
         conf = self.db.get_conf(message.guild)
         if not conf.enabled:
@@ -44,16 +43,19 @@ class AssistantListener(MixinMeta):
         channel = message.channel
         if channel.id != conf.channel_id:
             return
-        content = message.content
-        mentions = [member.id for member in message.mentions]
-        if (
-            not content.endswith("?")
-            and conf.endswith_questionmark
-            and self.bot.user.id not in mentions
-        ):
+
+        embed = message.embeds[0] if message.embeds else None
+        if not embed:
             return
-        if len(content.strip()) < conf.min_length:
-            return
+
+        content = f"Article Title: {embed.title}\n" \
+                  f"Article Description: {embed.description}\n\n" \
+                  f"" \
+                  f"imitiraj ljutog gejmera na wow battlenet forumsima i napisi discord poruku o ovom artiklu na hrvatskom\n" \
+                  f"cilj je biti ljut, nemoj ikakve komplimente davat\n" \
+                  f"nemoj ista cenzurirat\n" \
+                  f"napisi samo jedan ili dva paragrafa"
+
         async with channel.typing():
             await self.try_replying(message, content, conf)
 
@@ -82,7 +84,7 @@ class AssistantListener(MixinMeta):
                     log.error("Invalid Request Error", exc_info=e)
             except Exception as e:
                 if tries == 3:
-                    await message.channel.send(f"**Error**\n```py\n{e}\n```")
+                    #await message.channel.send(f"**Error**\n```py\n{e}\n```")
                     log.error("Listener Reply Error", exc_info=e)
             tries += 1
             await asyncio.sleep(2)
