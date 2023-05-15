@@ -33,7 +33,10 @@ class API(MixinMeta):
         conversation: Conversation,
     ) -> str:
         timestamp = f"<t:{round(datetime.now().timestamp())}:F>"
-        created = f"<t:{round(author.guild.created_at.timestamp())}:F>"
+        try:
+            created = f"<t:{round(author.guild.created_at.timestamp())}:F>"
+        except AttributeError:
+            created = "Unknown"
         day = datetime.now().astimezone().strftime("%A")
         date = datetime.now().astimezone().strftime("%B %d, %Y")
         time = datetime.now().astimezone().strftime("%I:%M %p %Z")
