@@ -11,18 +11,18 @@ from ..common.utils import (
     extract_message_content,
     fetch_channel_history,
     get_attachments,
+    get_embedding_async,
     num_tokens_from_string,
-    token_pagify,
 )
-from ..models import MODELS
-from ..views import SetAPI
+from ..models import MODELS, Embedding
+from ..views import EmbeddingMenu, SetAPI
 
 log = logging.getLogger("red.vrt.assistant.admin")
 
 
 class Admin(MixinMeta):
     @commands.group(name="assistant", aliases=["ass"])
-    @commands.guildowner()
+    @commands.admin()
     @commands.guild_only()
     async def assistant(self, ctx: commands.Context):
         """
@@ -54,7 +54,10 @@ class Admin(MixinMeta):
             f"`Min Length:       `{conf.min_length}\n"
             f"`System Message:   `{humanize_number(system_tokens)} tokens\n"
             f"`Initial Prompt:   `{humanize_number(prompt_tokens)} tokens\n"
-            f"`Model:            `{conf.model}"
+            f"`Model:            `{conf.model}\n"
+            f"`Embeddings:       `{humanize_number(len(conf.embeddings))}\n"
+            f"`Top N Embeddings: `{conf.top_n}\n"
+            f"`Min Relatedness:  `{conf.min_relatedness}"
         )
         system_file = (
             discord.File(
@@ -65,9 +68,7 @@ class Admin(MixinMeta):
             else None
         )
         prompt_file = (
-            discord.File(
-                BytesIO(conf.prompt.encode()), filename="InitialPrompt.txt"
-            )
+            discord.File(BytesIO(conf.prompt.encode()), filename="InitialPrompt.txt")
             if conf.prompt
             else None
         )
@@ -76,7 +77,8 @@ class Admin(MixinMeta):
             description=desc,
             color=ctx.author.color,
         )
-        if private:
+        send_key = [ctx.guild.owner_id == ctx.author.id, ctx.author.id in self.bot.owner_ids]
+        if private and any(send_key):
             embed.add_field(
                 name="OpenAI Key",
                 value=conf.api_key if conf.api_key else "Not Set",
@@ -92,9 +94,7 @@ class Admin(MixinMeta):
         if private:
             try:
                 await ctx.author.send(embed=embed, files=files)
-                await ctx.send(
-                    "Sent your current settings for this server in DMs!"
-                )
+                await ctx.send("Sent your current settings for this server in DMs!")
             except discord.Forbidden:
                 await ctx.send("You need to allow DMs so I can message you!")
         else:
@@ -104,50 +104,36 @@ class Admin(MixinMeta):
     async def set_openai_key(self, ctx: commands.Context):
         """Set your OpenAI key"""
         view = SetAPI(ctx.author)
-        embed = discord.Embed(
-            description="Click to set your OpenAI key", color=ctx.author.color
-        )
+        embed = discord.Embed(description="Click to set your OpenAI key", color=ctx.author.color)
         msg = await ctx.send(embed=embed, view=view)
         await view.wait()
         key = view.key.strip()
         if not key:
-            return await msg.edit(
-                content="No key was entered!", embed=None, view=None
-            )
+            return await msg.edit(content="No key was entered!", embed=None, view=None)
         conf = self.db.get_conf(ctx.guild)
         conf.api_key = key
-        await msg.edit(
-            content="OpenAI key has been set!", embed=None, view=None
-        )
+        await msg.edit(content="OpenAI key has been set!", embed=None, view=None)
         await self.save_conf()
 
     @assistant.command(name="train")
     async def create_training_prompt(
         self,
         ctx: commands.Context,
-        *channels: Union[
-            discord.TextChannel, discord.Thread, discord.ForumChannel
-        ],
+        *channels: Union[discord.TextChannel, discord.Thread, discord.ForumChannel],
     ):
         """
-        Automatically create a training prompt for your server
+        Automatically create embedding data to train your assistant
 
         **How to Use**
         Include channels that give helpful info about your server, NOT normal chat channels.
         The bot will scan all pinned messages in addition to the most recent 50 messages.
-        The idea is to have the bot compile the information, condense it and provide a usable training prompt for your Q&A channel.
+        The idea is to have the bot compile the information, condense it and provide a usable training embeddings for your Q&A channel.
 
-        **Note:** This just meant to get you headed in the right direction, creating a perfect training prompt takes trial and error.
+        **Note:** This just meant to get you headed in the right direction, creating quality training data takes trial and error.
         """
         if not channels:
             return await ctx.send_help()
         conf = self.db.get_conf(ctx.guild)
-        initial_prompt = (
-            "Condense the following information as much as possible, "
-            "the result will be used as the initial prompt to provide Q&A so keep thinks bulleted.\n"
-            "Maintain all channel mentions in the <#ID> format.\n"
-            f"The name of the Discord server is {ctx.guild.name}\n"
-        )
         loading = "https://i.imgur.com/l3p6EMX.gif"
         color = ctx.author.color
         channel_list = humanize_list([c.mention for c in channels])
@@ -159,82 +145,37 @@ class Admin(MixinMeta):
         embed.add_field(name="Channels being trained", value=channel_list)
         async with ctx.typing():
             msg = await ctx.send(embed=embed)
-            training_data = ""
-            tokens_consumed = 0
+            created = 0
             for channel in channels:
-                embed.description = f"Processing {channel.mention}..."
-                await msg.edit(embed=embed)
-                prompt = f"{initial_prompt}Current channel: {channel.name}\nChannel mention: {channel.mention}\n"
+                messages = []
+                for i in await fetch_channel_history(channel, oldest=False, limit=50):
+                    messages.append(i)
+                text = f"Channel name: {channel.name}\nChannel mention: {channel.mention}\n"
                 if isinstance(channel, discord.TextChannel):
-                    prompt += f"Channel topic: {channel.topic}\n"
-                channelcontent = ""
-                pins = [m for m in await channel.pins()]
-                ids = [pin.id for pin in pins]
-                for pin in pins:
-                    if content := extract_message_content(pin):
-                        channelcontent += f"{content}\n"
-                for message in await fetch_channel_history(
-                    channel, oldest=False
-                ):
-                    if message.id in ids:
-                        continue
+                    text += f"Channel topic: {channel.topic}\n"
+                    for pin in await channel.pins():
+                        messages.append(pin)
+                for message in messages:
                     if content := extract_message_content(message):
-                        channelcontent += f"{content}\n"
-                if channelcontent:
-                    for chunk in token_pagify(channelcontent):
-                        reply, usage = await self.get_training_response(
-                            f"{prompt}\n{chunk}", conf
-                        )
-                        training_data += f"{reply.strip()}\n"
-                        tokens_consumed += usage
+                        text += content
+                        key = f"{channel.name}-{message.id}"
+                        embedding = await get_embedding_async(text, conf.api_key)
+                        if not embedding:
+                            continue
+                        conf.embeddings[key] = Embedding(text=text, embedding=embedding)
+                        created += 1
 
-            if num_tokens_from_string(training_data) > 3000:
-                embed.description = "Condensing compiled channel content..."
-                await msg.edit(embed=embed)
-
-            while num_tokens_from_string(training_data) > 3000:
-                condensed_training_data = ""
-                for chunk in token_pagify(training_data):
-                    reply, usage = await self.get_training_response(
-                        f"{initial_prompt}\n{chunk}", conf
-                    )
-                    condensed_training_data += f"{reply.strip()}\n"
-                    tokens_consumed += usage
-                training_data = condensed_training_data
-
-            pre_final_prompt, usage = await self.get_training_response(
-                f"{initial_prompt}\n{training_data}", conf
-            )
-            tokens_consumed += usage
-            final_prompt = (
-                "You are a bot named {botname} - and are currently chatting in a Discord server called {server}\n\n"
-                "Consider the following in your responses:\n"
-                "- Answer questions in as few characters as possible\n"
-                "- Current time: {timestamp}\n"
-                "- Member count: {members}\n"
-                "- The server owner is {owner}\n"
-                "- The server was created on {servercreated}\n"
-                f"{pre_final_prompt}\n\n"
-                "The person you are replying to is {user}"
-            )
-            prompt_file = discord.File(
-                BytesIO(final_prompt.encode()), filename="TrainingPrompt.txt"
-            )
-            tokens = num_tokens_from_string(final_prompt)
-            embed.description = (
-                f"Here is your training prompt. Keep in mind this may not be perfect in any way.\n"
-                f"This prompt uses {humanize_number(tokens)} tokens.\n"
-                f"Tokens consumed during training: {humanize_number(tokens_consumed)}\n\n"
-                "**Note:** Keep in mind this is not a replacement for good prompting, its just to get you going."
-            )
-            embed.set_thumbnail(url=None)
+            if not created:
+                embed.description = "No content found!"
+                embed.clear_fields()
+                return await msg.edit(embed=embed)
+            embed.description = f"Training finished, {created} embedding entries created!"
             embed.clear_fields()
-            await msg.edit(embed=embed, attachments=[prompt_file])
+            await msg.edit(embed=embed)
+            await self.save_conf()
 
     @assistant.command(name="prompt", aliases=["pre"])
-    async def set_initial_prompt(
-        self, ctx: commands.Context, *, prompt: str = ""
-    ):
+    async def set_initial_prompt(self, ctx: commands.Context, *, prompt: str = ""):
         """
         Set the initial prompt for GPT to use
 
@@ -298,9 +239,7 @@ class Admin(MixinMeta):
         await self.save_conf()
 
     @assistant.command(name="system", aliases=["sys"])
-    async def set_system_prompt(
-        self, ctx: commands.Context, *, system_prompt: str = None
-    ):
+    async def set_system_prompt(self, ctx: commands.Context, *, system_prompt: str = None):
         """
         Set the system prompt for GPT to use
 
@@ -372,9 +311,7 @@ class Admin(MixinMeta):
         await self.save_conf()
 
     @assistant.command(name="channel")
-    async def set_channel(
-        self, ctx: commands.Context, channel: discord.TextChannel
-    ):
+    async def set_channel(self, ctx: commands.Context, channel: discord.TextChannel):
         """Set the channel for the assistant"""
         conf = self.db.get_conf(ctx.guild)
         conf.channel_id = channel.id
@@ -387,9 +324,7 @@ class Admin(MixinMeta):
         conf = self.db.get_conf(ctx.guild)
         if conf.endswith_questionmark:
             conf.endswith_questionmark = False
-            await ctx.send(
-                "Questions will be answered regardless of if they end with **?**"
-            )
+            await ctx.send("Questions will be answered regardless of if they end with **?**")
         else:
             conf.endswith_questionmark = True
             await ctx.send("Questions must end in **?** to be answered")
@@ -432,9 +367,7 @@ class Admin(MixinMeta):
         Set to 0 to disable conversation retention
         """
         if max_retention < 0:
-            return await ctx.send(
-                "Max retention needs to be at least 0 or higher"
-            )
+            return await ctx.send("Max retention needs to be at least 0 or higher")
         conf = self.db.get_conf(ctx.guild)
         conf.max_retention = max_retention
         if max_retention == 0:
@@ -452,9 +385,7 @@ class Admin(MixinMeta):
             )
 
     @assistant.command(name="maxtime")
-    async def max_retention_time(
-        self, ctx: commands.Context, retention_time: int
-    ):
+    async def max_retention_time(self, ctx: commands.Context, retention_time: int):
         """
         Set the conversation expiration time
 
@@ -464,9 +395,7 @@ class Admin(MixinMeta):
         Set to 0 to store conversations indefinitely or until the bot restarts or cog is reloaded
         """
         if retention_time < 0:
-            return await ctx.send(
-                "Max retention time needs to be at least 0 or higher"
-            )
+            return await ctx.send("Max retention time needs to be at least 0 or higher")
         conf = self.db.get_conf(ctx.guild)
         conf.max_retention_time = retention_time
         if retention_time == 0:
@@ -478,24 +407,18 @@ class Admin(MixinMeta):
         await self.save_conf()
 
     @assistant.command(name="minlength")
-    async def min_length(
-        self, ctx: commands.Context, min_question_length: int
-    ):
+    async def min_length(self, ctx: commands.Context, min_question_length: int):
         """
         set min character length for questions
 
         Set to 0 to respond to anything
         """
         if min_question_length < 0:
-            return await ctx.send(
-                "Minimum length needs to be at least 0 or higher"
-            )
+            return await ctx.send("Minimum length needs to be at least 0 or higher")
         conf = self.db.get_conf(ctx.guild)
         conf.min_length = min_question_length
         if min_question_length == 0:
-            await ctx.send(
-                f"{ctx.bot.user.name} will respond regardless of message length"
-            )
+            await ctx.send(f"{ctx.bot.user.name} will respond regardless of message length")
         else:
             await ctx.tick()
         await self.save_conf()
@@ -514,9 +437,7 @@ class Admin(MixinMeta):
             return await ctx.send("Use at least 1000 tokens for the model")
         conf = self.db.get_conf(ctx.guild)
         conf.max_tokens = max_tokens
-        await ctx.send(
-            f"The max tokens the current model will use is {max_tokens}"
-        )
+        await ctx.send(f"The max tokens the current model will use is {max_tokens}")
         await self.save_conf()
 
     @assistant.command(name="model")
@@ -531,4 +452,62 @@ class Admin(MixinMeta):
         conf = self.db.get_conf(ctx.guild)
         conf.model = model
         await ctx.send(f"The {model} model will now be used")
+        await self.save_conf()
+
+    @assistant.command(name="embeddings", aliases=["embed"])
+    async def embeddings(self, ctx: commands.Context):
+        """Manage embeddings for training
+
+        Embeddings are used to optimize training of the assistant and minimize token usage.
+
+        By using this the bot can store vast amounts of contextual information without going over the token limit.
+        """
+        conf = self.db.get_conf(ctx.guild)
+        view = EmbeddingMenu(ctx, conf, self.save_conf)
+        await view.start()
+
+    @assistant.command(name="resetembeddings")
+    async def wipe_embeddings(self, ctx: commands.Context, yes_or_no: bool):
+        """
+        Wipe saved embeddings for the assistant
+
+        This will delete any and all saved embedding training data for the assistant.
+        """
+        if not yes_or_no:
+            return await ctx.send("Not wiping embedding data")
+        conf = self.db.get_conf(ctx.guild)
+        conf.embeddings = {}
+        await ctx.send("All embedding data has been wiped!")
+        await self.save_conf()
+
+    @assistant.command(name="topn")
+    async def set_topn(self, ctx: commands.Context, top_n: int):
+        """
+        Set the embedding inclusion about
+
+        Top N is the amount of embeddings to include with the initial prompt
+        """
+        if not 0 <= top_n <= 10:
+            return await ctx.send("Top N must be between 0 and 10")
+        conf = self.db.get_conf(ctx.guild)
+        conf.top_n = top_n
+        await ctx.tick()
+        await self.save_conf()
+
+    @assistant.command(name="relatedness")
+    async def set_min_relatedness(self, ctx: commands.Context, mimimum_relatedness: float):
+        """
+        Set the minimum relatedness an embedding must be to include with the prompt
+
+        Relatedness threshold between 0 and 1 to include in embeddings during chat
+
+        Questions are converted to embeddings and compared against stored embeddings to pull the most relevant, this is the score that is derived from that comparison
+
+        **Hint**: The closer to 1 you get, the more deterministic and accurate the results may be, just don't be *too* strict or there wont be any results.
+        """
+        if not 0 <= mimimum_relatedness <= 1:
+            return await ctx.send("Minimum relatedness must be between 0 and 1")
+        conf = self.db.get_conf(ctx.guild)
+        conf.min_relatedness = mimimum_relatedness
+        await ctx.tick()
         await self.save_conf()
