@@ -43,6 +43,8 @@ class AssistantListener(MixinMeta):
         channel = message.channel
         if channel.id != conf.channel_id:
             return
+        if random.random() > 0.2:
+            return
 
         embed = message.embeds[0] if message.embeds else None
         if not embed:
