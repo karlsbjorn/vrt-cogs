@@ -68,6 +68,7 @@ class API(MixinMeta):
             params = {
                 "botname": self.bot.user.name,
                 "timestamp": timestamp,
+                "day": day,
                 "date": date,
                 "time": time,
                 "members": 200,
