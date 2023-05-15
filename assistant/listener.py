@@ -48,14 +48,14 @@ class AssistantListener(MixinMeta):
         if not embed:
             return
 
-        if random.randint(1, 2) == 1:
-            angry_or_happy = "ljutog"
-            angry_or_happy_2 = "ljut"
-            angry_or_happy_3 = "komplimente"
-        else:
-            angry_or_happy = "sretnog"
-            angry_or_happy_2 = "sretan"
-            angry_or_happy_3 = "negativne misli"
+        # if random.randint(1, 2) == 1:
+        angry_or_happy = "ljutog"
+        angry_or_happy_2 = "ljut"
+        angry_or_happy_3 = "komplimente"
+        # else:
+        #     angry_or_happy = "sretnog"
+        #     angry_or_happy_2 = "sretan"
+        #     angry_or_happy_3 = "negativne misli"
 
         content = f"Article Title: {embed.title}\n" \
                   f"Article Summary: {embed.description}\n\n" \
