@@ -40,7 +40,10 @@ class API(MixinMeta):
         day = datetime.now().astimezone().strftime("%A")
         date = datetime.now().astimezone().strftime("%B %d, %Y")
         time = datetime.now().astimezone().strftime("%I:%M %p %Z")
-        roles = [role.name for role in author.roles]
+        try:
+            roles = [role.name for role in author.roles]
+        except AttributeError:
+            roles = ["Wowhead"]
         try:
             params = {
                 "botname": self.bot.user.name,
