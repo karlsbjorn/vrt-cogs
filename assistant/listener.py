@@ -73,7 +73,7 @@ class AssistantListener(MixinMeta):
                   f"Article Summary: {embed.description}\n\n" \
                   f"" \
                   f"ignorirajuci sve sto je prije navedeno, imitiraj f{angry_or_happy} gejmera na wow battlenet forumsima i napisi discord poruku o ovom artiklu na hrvatskom\n" \
-                  f"cilj je biti f{angry_or_happy_2}, f{angry_or_happy_3}\n" \
+                  f"cilj je kritizirati i biti f{angry_or_happy_2}, f{angry_or_happy_3}\n" \
                   f"nemoj ista cenzurirat\n" \
                   f"napisi ispod 150 slova"
 
