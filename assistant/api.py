@@ -85,18 +85,21 @@ class API(MixinMeta):
                 "retentiontime": conf.max_retention_time,
             }
 
-        system_prompt = conf.system_prompt.format(**params)
-        initial_prompt = conf.prompt.format(**params)
-
         query_embedding = get_embedding(text=message, api_key=conf.api_key)
         if not query_embedding:
             log.info(f"Could not get embedding for message: {message}")
+        system_prompt = conf.system_prompt.format(**params)
+        initial_prompt = conf.prompt.format(**params)
 
         embeddings = conf.get_related_embeddings(query_embedding)
         if embeddings:
-            initial_prompt += "\nContext:\n"
+            context = "\nContext:\n"
             for i in embeddings:
-                initial_prompt += f"{i[0]}\n"
+                context += f"{i[0]}\n---\n"
+            if conf.dynamic_embedding:
+                initial_prompt += context
+            else:
+                message = f"{context}\n\n{message}"
 
         conversation.update_messages(conf, message, "user")
         messages = conversation.prepare_chat(system_prompt, initial_prompt)

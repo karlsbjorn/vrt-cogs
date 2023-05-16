@@ -4,7 +4,7 @@ from typing import Union
 
 import discord
 from redbot.core import commands
-from redbot.core.utils.chat_formatting import humanize_list, humanize_number
+from redbot.core.utils.chat_formatting import humanize_list, humanize_number, pagify
 
 from ..abc import MixinMeta
 from ..common.utils import (
@@ -44,20 +44,21 @@ class Admin(MixinMeta):
         system_tokens = num_tokens_from_string(conf.system_prompt)
         prompt_tokens = num_tokens_from_string(conf.prompt)
         desc = (
-            f"`Enabled:          `{conf.enabled}\n"
-            f"`Channel:          `{channel}\n"
-            f"`? Required:       `{conf.endswith_questionmark}\n"
-            f"`Mentions:         `{conf.mention}\n"
-            f"`Max Retention:    `{conf.max_retention}\n"
-            f"`Retention Expire: `{conf.max_retention_time}s\n"
-            f"`Max Tokens:       `{conf.max_tokens}\n"
-            f"`Min Length:       `{conf.min_length}\n"
-            f"`System Message:   `{humanize_number(system_tokens)} tokens\n"
-            f"`Initial Prompt:   `{humanize_number(prompt_tokens)} tokens\n"
-            f"`Model:            `{conf.model}\n"
-            f"`Embeddings:       `{humanize_number(len(conf.embeddings))}\n"
-            f"`Top N Embeddings: `{conf.top_n}\n"
-            f"`Min Relatedness:  `{conf.min_relatedness}"
+            f"`Enabled:           `{conf.enabled}\n"
+            f"`Channel:           `{channel}\n"
+            f"`? Required:        `{conf.endswith_questionmark}\n"
+            f"`Mentions:          `{conf.mention}\n"
+            f"`Max Retention:     `{conf.max_retention}\n"
+            f"`Retention Expire:  `{conf.max_retention_time}s\n"
+            f"`Max Tokens:        `{conf.max_tokens}\n"
+            f"`Min Length:        `{conf.min_length}\n"
+            f"`System Message:    `{humanize_number(system_tokens)} tokens\n"
+            f"`Initial Prompt:    `{humanize_number(prompt_tokens)} tokens\n"
+            f"`Model:             `{conf.model}\n"
+            f"`Embeddings:        `{humanize_number(len(conf.embeddings))}\n"
+            f"`Top N Embeddings:  `{conf.top_n}\n"
+            f"`Min Relatedness:   `{conf.min_relatedness}\n"
+            f"`Dynamic Embedding: `{conf.dynamic_embedding}"
         )
         system_file = (
             discord.File(
@@ -147,23 +148,26 @@ class Admin(MixinMeta):
             msg = await ctx.send(embed=embed)
             created = 0
             for channel in channels:
-                messages = []
-                for i in await fetch_channel_history(channel, oldest=False, limit=50):
-                    messages.append(i)
-                text = f"Channel name: {channel.name}\nChannel mention: {channel.mention}\n"
-                if isinstance(channel, discord.TextChannel):
-                    text += f"Channel topic: {channel.topic}\n"
-                    for pin in await channel.pins():
-                        messages.append(pin)
-                for message in messages:
-                    if content := extract_message_content(message):
-                        text += content
-                        key = f"{channel.name}-{message.id}"
-                        embedding = await get_embedding_async(text, conf.api_key)
-                        if not embedding:
-                            continue
-                        conf.embeddings[key] = Embedding(text=text, embedding=embedding)
-                        created += 1
+                try:
+                    messages = []
+                    for i in await fetch_channel_history(channel, oldest=False, limit=50):
+                        messages.append(i)
+                    text = f"Channel name: {channel.name}\nChannel mention: {channel.mention}\n"
+                    if isinstance(channel, discord.TextChannel):
+                        text += f"Channel topic: {channel.topic}\n"
+                        for pin in await channel.pins():
+                            messages.append(pin)
+                    for message in messages:
+                        if content := extract_message_content(message):
+                            text += content
+                            key = f"{channel.name}-{message.id}"
+                            embedding = await get_embedding_async(text, conf.api_key)
+                            if not embedding:
+                                continue
+                            conf.embeddings[key] = Embedding(text=text, embedding=embedding)
+                            created += 1
+                except discord.Forbidden:
+                    await ctx.send(f"I dont have access to {channel.mention}")
 
             if not created:
                 embed.description = "No content found!"
@@ -512,4 +516,48 @@ class Admin(MixinMeta):
         conf = self.db.get_conf(ctx.guild)
         conf.min_relatedness = mimimum_relatedness
         await ctx.tick()
+        await self.save_conf()
+
+    @assistant.command(name="embeddingtest", aliases=["etest"])
+    async def test_embedding_response(self, ctx: commands.Context, *, question: str):
+        """
+        Fetch related embeddings according to the current settings along with their scores
+
+        You can use this to fine-tune the minimum relatedness for your assistant
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if not conf.embeddings:
+            return await ctx.send("You do not have any embeddings configured!")
+        async with ctx.typing():
+            query = await get_embedding_async(question, conf.api_key)
+            if not query:
+                return await ctx.send("Failed to get embedding for your query")
+            embeddings = conf.get_related_embeddings(query)
+            if not embeddings:
+                return await ctx.send(
+                    "No embeddings could be related to this query with the current settings"
+                )
+            for em, score in embeddings:
+                for p in pagify(em, page_length=4000):
+                    embed = discord.Embed(description=f"`Score: `{score}\n```\n{p}\n```")
+                    await ctx.send(embed=embed)
+
+    @assistant.command(name="dynamicembedding")
+    async def toggle_dynamic_embeddings(self, ctx: commands.Context):
+        """
+        Toggle whether embeddings are dynamic
+
+        Dynamic embeddings mean that the embeddings pulled are dynamically appended to the initial prompt for each individual question.
+        When each time the user asks a question, the previous embedding is replaced with embeddings pulled from the current question, this reduces token usage significantly
+
+        Dynamic embeddings are helpful for Q&A, but not so much for chat when you need to retain the context pulled from the embeddings.
+        Turning this off will instead append the embedding context in front of the user's question, thus retaining all pulled embeddings during the conversation.
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if conf.dynamic_embedding:
+            conf.dynamic_embedding = False
+            await ctx.send("Dynamic embedding is now **Disabled**")
+        else:
+            conf.dynamic_embedding = True
+            await ctx.send("Dynamic embedding is now **Enabled**")
         await self.save_conf()

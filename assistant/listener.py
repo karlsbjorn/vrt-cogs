@@ -6,7 +6,8 @@ from redbot.core import commands
 from redbot.core.utils.chat_formatting import pagify
 
 from .abc import MixinMeta
-from .models import GuildSettings
+from .common.utils import get_attachments
+from .models import READ_EXTENSIONS, GuildSettings
 import random
 
 log = logging.getLogger("red.vrt.assistant.listener")
@@ -48,6 +49,15 @@ class AssistantListener(MixinMeta):
 
         embed = message.embeds[0] if message.embeds else None
         if not embed:
+            return
+        if attachments := get_attachments(message):
+            for i in attachments:
+                if not any(i.filename.lower().endswith(ext) for ext in READ_EXTENSIONS):
+                    continue
+                text = await i.read()
+                content += f"\n\nUploaded [{i.filename}]: {text.decode()}"
+
+        if len(content.strip()) < conf.min_length:
             return
 
         if random.randint(1, 2) == 1:

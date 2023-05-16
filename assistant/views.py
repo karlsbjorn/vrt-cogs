@@ -82,15 +82,17 @@ class EmbeddingModal(discord.ui.Modal):
 
 class EmbeddingMenu(discord.ui.View):
     def __init__(self, ctx: commands.Context, conf: GuildSettings, save_func: Callable):
-        super().__init__(timeout=600)
+        super().__init__(timeout=1800)
         self.ctx = ctx
         self.conf = conf
         self.save = save_func
 
+        self.has_skip = True
         self.place = 0
         self.page = 0
         self.pages = self.get_pages()
         self.message: discord.Message = None
+        self.tasks: List[asyncio.Task] = []
 
     async def interaction_check(self, interaction: discord.Interaction):
         if interaction.user.id != self.ctx.author.id:
@@ -100,17 +102,28 @@ class EmbeddingMenu(discord.ui.View):
 
     async def on_timeout(self):
         await self.message.edit(view=None)
+        for task in self.tasks:
+            await task
         return await super().on_timeout()
 
     def get_pages(self) -> List[discord.Embed]:
-        return embedding_embeds(
+        pages = embedding_embeds(
             embeddings={k: v.dict() for k, v in self.conf.embeddings.items()}, place=self.place
         )
+        if len(pages) > 30 and not self.has_skip:
+            self.add_item(self.left10)
+            self.add_item(self.right10)
+            self.has_skip = True
+        elif len(pages) <= 30 and self.has_skip:
+            self.remove_item(self.left10)
+            self.remove_item(self.right10)
+            self.has_skip = False
+        return pages
 
     async def process_embeddings(self, df: pd.DataFrame):
         for row in df.values:
-            name = row[0]
-            text = row[1]
+            name = str(row[0])
+            text = str(row[1])
             embedding = await get_embedding_async(text, self.conf.api_key)
             if not embedding:
                 await self.ctx.send(f"Failed to process {name} embedding")
@@ -118,7 +131,7 @@ class EmbeddingMenu(discord.ui.View):
             self.conf.embeddings[name] = Embedding(text=text, embedding=embedding)
         await self.ctx.send("Your embeddings upload has finished processing!")
         self.pages = self.get_pages()
-        self.message = await self.message.edit(embed=self.pages[self.page])
+        self.message = await self.message.edit(embed=self.pages[self.page], view=self)
         await self.save()
 
     async def add_embedding(self, name: str, text: str):
@@ -131,7 +144,7 @@ class EmbeddingMenu(discord.ui.View):
             return await self.ctx.send(f"An embedding with the name `{name}` already exists!")
         self.conf.embeddings[name] = Embedding(text=text, embedding=embedding)
         self.pages = self.get_pages()
-        self.message = await self.message.edit(embed=self.pages[self.page])
+        self.message = await self.message.edit(embed=self.pages[self.page], view=self)
         await self.ctx.send(f"Your embedding labeled `{name}` has been processed!")
         await self.save()
 
@@ -157,11 +170,11 @@ class EmbeddingMenu(discord.ui.View):
     )
     async def up(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        if fields := self.message.embeds[0].fields:
+        if fields := self.pages[self.page].fields:
             self.place -= 1
             self.place %= len(fields)
             self.pages = self.get_pages()
-            self.message = await self.message.edit(embed=self.pages[self.page])
+            self.message = await self.message.edit(embed=self.pages[self.page], view=self)
 
     @discord.ui.button(style=discord.ButtonStyle.primary, emoji="\N{MEMO}")
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -188,7 +201,7 @@ class EmbeddingMenu(discord.ui.View):
         if modal.name != name:
             del self.conf.embeddings[name]
         self.pages = self.get_pages()
-        await self.message.edit(embed=self.pages[self.page])
+        await self.message.edit(embed=self.pages[self.page], view=self)
         await interaction.followup.send("Your embedding has been modified!", ephemeral=True)
         await self.save()
 
@@ -201,12 +214,15 @@ class EmbeddingMenu(discord.ui.View):
         await interaction.response.defer()
         self.page -= 1
         self.page %= len(self.pages)
-        await self.message.edit(embed=self.pages[self.page])
+        self.place = min(self.place, len(self.pages[self.page].fields) - 1)
+        await self.message.edit(embed=self.pages[self.page], view=self)
 
     @discord.ui.button(style=discord.ButtonStyle.secondary, emoji="\N{CROSS MARK}", row=1)
     async def close(self, interaction: discord.Interaction, button: discord.Button):
         await interaction.response.defer()
         await self.message.delete()
+        for task in self.tasks:
+            await task
         self.stop()
 
     @discord.ui.button(
@@ -218,7 +234,8 @@ class EmbeddingMenu(discord.ui.View):
         await interaction.response.defer()
         self.page += 1
         self.page %= len(self.pages)
-        await self.message.edit(embed=self.pages[self.page])
+        self.place = min(self.place, len(self.pages[self.page].fields) - 1)
+        await self.message.edit(embed=self.pages[self.page], view=self)
 
     @discord.ui.button(style=discord.ButtonStyle.success, emoji="\N{SQUARED NEW}", row=2)
     async def new_embedding(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -227,7 +244,7 @@ class EmbeddingMenu(discord.ui.View):
         await modal.wait()
         if not modal.name or not modal.text:
             return
-        asyncio.create_task(self.add_embedding(modal.name, modal.text))
+        self.tasks.append(asyncio.create_task(self.add_embedding(modal.name, modal.text)))
         await interaction.followup.send(
             "Your embedding is processing and will appear when ready!", ephemeral=True
         )
@@ -239,11 +256,11 @@ class EmbeddingMenu(discord.ui.View):
     )
     async def down(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        if fields := self.message.embeds[0].fields:
+        if fields := self.pages[self.page].fields:
             self.place += 1
             self.place %= len(fields)
             self.pages = self.get_pages()
-            self.message = await self.message.edit(embed=self.pages[self.page])
+            self.message = await self.message.edit(embed=self.pages[self.page], view=self)
 
     @discord.ui.button(
         style=discord.ButtonStyle.danger, emoji="\N{WASTEBASKET}\N{VARIATION SELECTOR-16}", row=2
@@ -258,7 +275,7 @@ class EmbeddingMenu(discord.ui.View):
         del self.conf.embeddings[name]
         self.pages = self.get_pages()
         self.page %= len(self.pages)
-        self.message = await self.message.edit(embed=self.pages[self.page])
+        self.message = await self.message.edit(embed=self.pages[self.page], view=self)
         await self.save()
 
     @discord.ui.button(
@@ -311,7 +328,7 @@ class EmbeddingMenu(discord.ui.View):
                 "The .csv file you uploaded contains invalid formatting, columns must be ['name', 'text']",
                 ephemeral=True,
             )
-        asyncio.create_task(self.process_embeddings(df))
+        self.tasks.append(asyncio.create_task(self.process_embeddings(df)))
         await interaction.followup.send(
             "Your embeddings have been imported and are processing in the background, come back later to view them!",
             ephemeral=True,
@@ -337,3 +354,27 @@ class EmbeddingMenu(discord.ui.View):
         await interaction.response.send_message(
             "Here is your embeddings export!", file=file, ephemeral=True
         )
+
+    @discord.ui.button(
+        style=discord.ButtonStyle.secondary,
+        emoji="\N{BLACK LEFT-POINTING DOUBLE TRIANGLE}",
+        row=4,
+    )
+    async def left10(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.page -= 10
+        self.page %= len(self.pages)
+        self.place = min(self.place, len(self.pages[self.page].fields) - 1)
+        await self.message.edit(embed=self.pages[self.page], view=self)
+
+    @discord.ui.button(
+        style=discord.ButtonStyle.secondary,
+        emoji="\N{BLACK RIGHT-POINTING DOUBLE TRIANGLE}",
+        row=4,
+    )
+    async def right10(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.page += 10
+        self.page %= len(self.pages)
+        self.place = min(self.place, len(self.pages[self.page].fields) - 1)
+        await self.message.edit(embed=self.pages[self.page], view=self)
