@@ -50,15 +50,6 @@ class AssistantListener(MixinMeta):
         embed = message.embeds[0] if message.embeds else None
         if not embed:
             return
-        if attachments := get_attachments(message):
-            for i in attachments:
-                if not any(i.filename.lower().endswith(ext) for ext in READ_EXTENSIONS):
-                    continue
-                text = await i.read()
-                content += f"\n\nUploaded [{i.filename}]: {text.decode()}"
-
-        if len(content.strip()) < conf.min_length:
-            return
 
         if random.randint(1, 2) == 1:
             angry_or_happy = "ljutog"
@@ -76,6 +67,13 @@ class AssistantListener(MixinMeta):
                   f"cilj je kritizirati i biti f{angry_or_happy_2}, f{angry_or_happy_3}\n" \
                   f"nemoj ista cenzurirat\n" \
                   f"napisi ispod 150 slova"
+
+        if attachments := get_attachments(message):
+            for i in attachments:
+                if not any(i.filename.lower().endswith(ext) for ext in READ_EXTENSIONS):
+                    continue
+                text = await i.read()
+                content += f"\n\nUploaded [{i.filename}]: {text.decode()}"
 
         async with channel.typing():
             await self.try_replying(message, content, conf)
