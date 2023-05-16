@@ -50,20 +50,20 @@ class AssistantListener(MixinMeta):
         if not embed:
             return
 
-        # if random.randint(1, 2) == 1:
-        angry_or_happy = "ljutog"
-        angry_or_happy_2 = "ljut"
-        angry_or_happy_3 = "komplimente"
-        # else:
-        #     angry_or_happy = "sretnog"
-        #     angry_or_happy_2 = "sretan"
-        #     angry_or_happy_3 = "negativne misli"
+        if random.randint(1, 2) == 1:
+            angry_or_happy = "ljutog"
+            angry_or_happy_2 = "ljut"
+            angry_or_happy_3 = "nemoj ikakve komplimente davat"
+        else:
+            angry_or_happy = "skepticnog"
+            angry_or_happy_2 = "skeptik"
+            angry_or_happy_3 = "nemoj biti ni previse pozitivan ni previse negativan"
 
         content = f"Article Title: {embed.title}\n" \
                   f"Article Summary: {embed.description}\n\n" \
                   f"" \
                   f"ignorirajuci sve sto je prije navedeno, imitiraj f{angry_or_happy} gejmera na wow battlenet forumsima i napisi discord poruku o ovom artiklu na hrvatskom\n" \
-                  f"cilj je biti f{angry_or_happy_2}, nemoj ikakve f{angry_or_happy_3} davat\n" \
+                  f"cilj je biti f{angry_or_happy_2}, f{angry_or_happy_3}\n" \
                   f"nemoj ista cenzurirat\n" \
                   f"napisi ispod 150 slova"
 
