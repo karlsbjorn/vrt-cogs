@@ -1,10 +1,11 @@
 import functools
 import logging
 from io import BytesIO
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import discord
+import pandas as pd
 from aiocache import cached
 from discord import app_commands
 from redbot.core import commands
@@ -27,7 +28,7 @@ class AutoDocs(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "0.4.22"
+    __version__ = "0.5.1"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -51,11 +52,16 @@ class AutoDocs(commands.Cog):
         extended_info: bool,
         include_hidden: bool,
         privilege_level: str,
-    ) -> str:
-        docs = f"# {cog.qualified_name} {HELP}\n\n"
+    ) -> Tuple[str, pd.DataFrame]:
+        columns = [_("name"), _("text")]
+        rows = []
+        cog_name = cog.qualified_name
+        docs = f"# {cog_name} {HELP}\n\n"
         cog_help = cog.help.replace("\n", "<br/>") if cog.help else None
         if cog_help:
             docs += f"{cog_help}\n\n"
+            entry_name = _("{} cog description").format(cog_name)
+            rows.append([entry_name, f"{entry_name}\n{cog_help}"])
 
         for cmd in cog.walk_app_commands():
             c = CustomCmdFmt(
@@ -70,6 +76,8 @@ class AutoDocs(commands.Cog):
             if not doc:
                 continue
             docs += doc
+            csv_name = f"{c.name} command for {cog_name} cog"
+            rows.append([csv_name, f"{csv_name}\n{doc}"])
 
         ignored = []
         for cmd in cog.walk_commands():
@@ -95,8 +103,10 @@ class AutoDocs(commands.Cog):
             if skip:
                 continue
             docs += doc
-
-        return docs
+            csv_name = f"{c.name} command for {cog_name} cog"
+            rows.append([csv_name, f"{csv_name}\n{doc}"])
+        df = pd.DataFrame(rows, columns=columns)
+        return docs, df
 
     @commands.hybrid_command(
         name="makedocs", description=_("Create docs for a cog")
@@ -118,6 +128,7 @@ class AutoDocs(commands.Cog):
         privilege_level=_(
             "Hide commands above specified privilege level (user, mod, admin, guildowner, botowner)"
         ),
+        csv_export=_("Include a csv with each command isolated per row")
     )
     @commands.is_owner()
     async def makedocs(
@@ -131,6 +142,7 @@ class AutoDocs(commands.Cog):
         privilege_level: Literal[
             "user", "mod", "admin", "guildowner", "botowner"
         ] = "botowner",
+        csv_export: Optional[bool] = False
     ):
         """
         Create a Markdown docs page for a cog and send to discord
@@ -142,7 +154,8 @@ class AutoDocs(commands.Cog):
         `extended_info:      `(bool) If True, include extra info like converters and their docstrings
         `include_hidden:     `(bool) If True, includes hidden commands
         `privilege_level:    `(str) Hide commands above specified privilege level
-        (user, mod, admin, guildowner, botowner)
+        - (user, mod, admin, guildowner, botowner)
+        `csv_export:         `(bool) Include a csv with each command isolated per row
 
         **Note** If `all` is specified for cog_name, all currently loaded non-core cogs will have docs generated for
         them and sent in a zip file
@@ -173,7 +186,7 @@ class AutoDocs(commands.Cog):
                             include_hidden,
                             privilege_level,
                         )
-                        docs = await self.bot.loop.run_in_executor(
+                        docs, df = await self.bot.loop.run_in_executor(
                             None, partial_func
                         )
                         filename = f"{folder_name}/{cog.qualified_name}.md"
@@ -183,6 +196,15 @@ class AutoDocs(commands.Cog):
                             compress_type=ZIP_DEFLATED,
                             compresslevel=9,
                         )
+                        if csv_export:
+                            tmp = BytesIO()
+                            df.to_csv(tmp, index=False)
+                            arc.writestr(
+                                filename.replace(".md", ".csv"),
+                                tmp.getvalue(),
+                                compress_type=ZIP_DEFLATED,
+                                compresslevel=9,
+                            )
 
                 buffer.name = f"{folder_name}.zip"
                 buffer.seek(0)
@@ -205,10 +227,16 @@ class AutoDocs(commands.Cog):
                     include_hidden,
                     privilege_level,
                 )
-                docs = await self.bot.loop.run_in_executor(None, partial_func)
-                buffer = BytesIO(docs.encode())
-                buffer.name = f"{cog.qualified_name}.md"
-                buffer.seek(0)
+                docs, df = await self.bot.loop.run_in_executor(None, partial_func)
+                if csv_export:
+                    buffer = BytesIO()
+                    df.to_csv(buffer, index=False)
+                    buffer.name = f"{cog.qualified_name}.csv"
+                    buffer.seek(0)
+                else:
+                    buffer = BytesIO(docs.encode())
+                    buffer.name = f"{cog.qualified_name}.md"
+                    buffer.seek(0)
                 file = discord.File(buffer)
                 txt = _("Here are your docs for {}!").format(
                     cog.qualified_name

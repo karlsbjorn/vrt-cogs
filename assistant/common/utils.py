@@ -6,10 +6,16 @@ from typing import Dict, List, Union
 import discord
 import openai
 import tiktoken
+from aiocache import cached
+from discord.app_commands import Choice
 from retry import retry
 
 log = logging.getLogger("red.vrt.assistant.utils")
 encoding = tiktoken.get_encoding("cl100k_base")
+
+@cached(ttl=120)
+async def get_embedding_names(embeddings: List[str], current: str) -> List[Choice]:
+    return [Choice(name=i, value=i) for i in embeddings if current.lower() in i.lower()]
 
 
 def get_attachments(message: discord.Message) -> List[discord.Attachment]:
@@ -105,7 +111,6 @@ def embedding_embeds(embeddings: Dict[str, dict], place: int):
         embed.set_footer(text=f"Page {page + 1}/{pages}")
         num = 0
         for i in range(start, stop):
-            # pos = min(place, stop - start - 1)
             em = embeddings[i]
             text = em[1]["text"]
             token_length = num_tokens_from_string(text)

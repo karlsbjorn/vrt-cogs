@@ -3,7 +3,7 @@ from io import BytesIO
 from typing import Union
 
 import discord
-from redbot.core import commands
+from redbot.core import app_commands, commands
 from redbot.core.utils.chat_formatting import humanize_list, humanize_number, pagify
 
 from ..abc import MixinMeta
@@ -12,6 +12,7 @@ from ..common.utils import (
     fetch_channel_history,
     get_attachments,
     get_embedding_async,
+    get_embedding_names,
     num_tokens_from_string,
 )
 from ..models import MODELS, Embedding
@@ -460,18 +461,6 @@ class Admin(MixinMeta):
         await ctx.send(f"The {model} model will now be used")
         await self.save_conf()
 
-    @assistant.command(name="embeddings", aliases=["embed"])
-    async def embeddings(self, ctx: commands.Context):
-        """Manage embeddings for training
-
-        Embeddings are used to optimize training of the assistant and minimize token usage.
-
-        By using this the bot can store vast amounts of contextual information without going over the token limit.
-        """
-        conf = self.db.get_conf(ctx.guild)
-        view = EmbeddingMenu(ctx, conf, self.save_conf)
-        await view.start()
-
     @assistant.command(name="resetembeddings")
     async def wipe_embeddings(self, ctx: commands.Context, yes_or_no: bool):
         """
@@ -561,3 +550,45 @@ class Admin(MixinMeta):
             conf.dynamic_embedding = True
             await ctx.send("Dynamic embedding is now **Enabled**")
         await self.save_conf()
+
+    @commands.hybrid_command(name="embeddings", aliases=["emenu"])
+    @app_commands.describe(query="Name of the embedding entry")
+    @commands.guild_only()
+    @commands.admin()
+    async def embeddings(self, ctx: commands.Context, *, query: str = ""):
+        """Manage embeddings for training
+
+        Embeddings are used to optimize training of the assistant and minimize token usage.
+
+        By using this the bot can store vast amounts of contextual information without going over the token limit.
+
+        **Note**
+        You can enter a search query with this command to bring up the menu and go directly to that embedding selection.
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if not conf.api_key:
+            return await ctx.send(f"No API key! Use `{ctx.prefix}assistant openaikey` to set your OpenAI key!")
+        view = EmbeddingMenu(ctx, conf, self.save_conf)
+        if not query:
+            return await view.start()
+        if ctx.interaction:
+            await ctx.interaction.response.defer()
+        for page_index, embed in enumerate(view.pages):
+            found = False
+            for place_index, field in enumerate(embed.fields):
+                name = field.name.replace("➣ ", "", 1)
+                if name != query:
+                    continue
+                view.page = page_index
+                view.place = place_index
+                view.pages = view.get_pages()
+                found = True
+                break
+            if found:
+                break
+        await view.start()
+
+    @embeddings.autocomplete("query")
+    async def embeddings_complete(self, interaction: discord.Interaction, current: str):
+        conf = self.db.get_conf(interaction.guild)
+        return await get_embedding_names(list(conf.embeddings.keys()), current)
