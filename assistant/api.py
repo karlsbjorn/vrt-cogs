@@ -7,7 +7,7 @@ from aiocache import cached
 from redbot.core.utils.chat_formatting import humanize_list
 
 from .abc import MixinMeta
-from .common.utils import get_chat, get_embedding
+from .common.utils import get_chat, get_embedding, num_tokens_from_string
 from .models import Conversation, GuildSettings
 
 log = logging.getLogger("red.vrt.assistant.api")
@@ -92,17 +92,22 @@ class API(MixinMeta):
         initial_prompt = conf.prompt.format(**params)
 
         embeddings = conf.get_related_embeddings(query_embedding)
+        context = ""
         if embeddings:
+            current_token_count = conversation.conversation_token_count(conf)
             context = "\nContext:\n"
             for i in embeddings:
                 context += f"{i[0]}\n---\n"
+                if num_tokens_from_string(context) + current_token_count > conf.max_tokens * 0.85:
+                    break
             if conf.dynamic_embedding:
                 initial_prompt += context.format(**params)
             else:
                 message = f"{context}\n\n{message}".strip()
+                conversation.update_messages(message, "user")
 
-        conversation.update_messages(conf, message, "user")
-        messages = conversation.prepare_chat(system_prompt, initial_prompt)
+        conversation.update_messages(message, "user")
+        messages = conversation.prepare_chat(conf, system_prompt, initial_prompt)
         reply = get_chat(model=conf.model, messages=messages, temperature=0, api_key=conf.api_key)
-        conversation.update_messages(conf, reply, "assistant")
+        conversation.update_messages(reply, "assistant")
         return reply
