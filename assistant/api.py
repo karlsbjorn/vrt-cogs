@@ -60,7 +60,6 @@ class API(MixinMeta):
                 "servercreated": created,
                 "server": author.guild.name,
                 "messages": len(conversation.messages),
-                "tokens": conversation.token_count(conf, message),
                 "retention": conf.max_retention,
                 "retentiontime": conf.max_retention_time,
             }
@@ -80,7 +79,6 @@ class API(MixinMeta):
                 "servercreated": created,
                 "server": "Jahaci Rumene Kadulje",
                 "messages": len(conversation.messages),
-                "tokens": conversation.token_count(conf, message),
                 "retention": conf.max_retention,
                 "retentiontime": conf.max_retention_time,
             }
