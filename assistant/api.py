@@ -1,9 +1,13 @@
 import asyncio
 import logging
+import sys
 from datetime import datetime
+from typing import Union
 
 import discord
+import pytz
 from aiocache import cached
+from redbot.core import version_info
 from redbot.core.utils.chat_formatting import humanize_list
 
 from .abc import MixinMeta
@@ -14,13 +18,19 @@ log = logging.getLogger("red.vrt.assistant.api")
 
 
 class API(MixinMeta):
-    @cached(ttl=120)
+    @cached(ttl=30)
     async def get_chat_response(
-        self, message: str, author: discord.Member, conf: GuildSettings
+        self,
+        message: str,
+        author: discord.Member,
+        channel: Union[discord.TextChannel, discord.Thread, discord.ForumChannel],
+        conf: GuildSettings,
     ) -> str:
-        conversation = self.chats.get_conversation(author)
+        conversation = self.chats.get_conversation(author, channel)
         try:
-            reply = await asyncio.to_thread(self.prepare_call, message, author, conf, conversation)
+            reply = await asyncio.to_thread(
+                self.prepare_call, message, author, channel, conf, conversation
+            )
         finally:
             conversation.cleanup(conf)
         return reply
@@ -29,6 +39,7 @@ class API(MixinMeta):
         self,
         message: str,
         author: discord.Member,
+        channel: Union[discord.TextChannel, discord.Thread, discord.ForumChannel],
         conf: GuildSettings,
         conversation: Conversation,
     ) -> str:
@@ -89,23 +100,28 @@ class API(MixinMeta):
         system_prompt = conf.system_prompt.format(**params)
         initial_prompt = conf.prompt.format(**params)
 
-        embeddings = conf.get_related_embeddings(query_embedding)
-        context = ""
-        if embeddings:
-            current_token_count = conversation.conversation_token_count(conf)
-            context = "\nContext:\n"
-            for i in embeddings:
-                context += f"{i[0]}\n---\n"
-                if num_tokens_from_string(context) + current_token_count > conf.max_tokens * 0.85:
-                    break
-            if conf.dynamic_embedding:
-                initial_prompt += context.format(**params)
-            else:
-                message = f"{context}\n\n{message}".strip()
-                conversation.update_messages(message, "user")
+        # Dynamically clean up the conversation to prevent going over token limit
+        max_usage = round(conf.max_tokens * 0.9)
+        prompt_tokens = num_tokens_from_string(system_prompt + initial_prompt)
+        while (conversation.token_count() + prompt_tokens) > max_usage:
+            conversation.messages.pop(0)
+
+        total_tokens = conversation.token_count() + prompt_tokens + num_tokens_from_string(message)
+
+        embedding_context = ""
+        has_context = False
+        for i in conf.get_related_embeddings(query_embedding):
+            if num_tokens_from_string(f"\nContext:\n{i[1]}\n\n") + total_tokens < max_usage:
+                embedding_context += f"{i[1]}\n\n"
+                has_context = True
+
+        if has_context and conf.dynamic_embedding:
+            initial_prompt += f"\nContext:\n{embedding_context}"
+        elif has_context and not conf.dynamic_embedding:
+            message = f"Context:\n{embedding_context}\n\n{author.display_name}: {message}"
 
         conversation.update_messages(message, "user")
-        messages = conversation.prepare_chat(conf, system_prompt, initial_prompt)
+        messages = conversation.prepare_chat(system_prompt, initial_prompt)
         reply = get_chat(model=conf.model, messages=messages, temperature=0, api_key=conf.api_key)
         conversation.update_messages(reply, "assistant")
         return reply

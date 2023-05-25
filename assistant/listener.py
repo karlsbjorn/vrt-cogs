@@ -47,6 +47,24 @@ class AssistantListener(MixinMeta):
         if random.random() > 0.2:
             return
 
+        for mention in message.mentions:
+            message.content = message.content.replace(
+                f"<@{mention.id}>", f"@{mention.display_name}"
+            )
+        for mention in message.channel_mentions:
+            message.content = message.content.replace(f"<#{mention.id}>", f"#{mention.name}")
+        for mention in message.role_mentions:
+            message.content = message.content.replace(f"<@&{mention.id}>", f"@{mention.name}")
+
+        content = message.content
+        mentions = [member.id for member in message.mentions]
+        if (
+            not content.endswith("?")
+            and conf.endswith_questionmark
+            and self.bot.user.id not in mentions
+        ):
+            return
+
         embed = message.embeds[0] if message.embeds else None
         if not embed:
             return
@@ -80,14 +98,14 @@ class AssistantListener(MixinMeta):
 
     async def try_replying(self, message: discord.Message, content: str, conf: GuildSettings):
         try:
-            reply = await self.get_chat_response(content, message.author, conf)
-            parts = [p for p in pagify(reply, page_length=2000)]
-            for index, p in enumerate(parts):
-                if not index:
-                    await message.reply(p, mention_author=conf.mention)
-                else:
-                    await message.channel.send(p)
-            return
+            reply = await self.get_chat_response(content, message.author, message.channel, conf)
+            if len(reply) < 2000:
+                return await message.reply(reply, mention_author=conf.mention)
+            embeds = [
+                discord.Embed(description=p)
+                for p in pagify(reply, page_length=4000, delims=("```", "\n"))
+            ]
+            await message.reply(embeds=embeds, mention_author=conf.mention)
         except InvalidRequestError as e:
             if error := e.error:
                 await message.reply(error["message"], mention_author=conf.mention)
@@ -95,3 +113,10 @@ class AssistantListener(MixinMeta):
         except Exception as e:
             await message.channel.send(f"**Error**\n```py\n{e}\n```")
             log.error("Listener Reply Error", exc_info=e)
+
+    @commands.Cog.listener("on_guild_remove")
+    async def cleanup(self, guild: discord.Guild):
+        if guild.id in self.db.configs:
+            log.info(f"Bot removed from {guild.name}, cleaning up...")
+            del self.db.configs[guild.id]
+            await self.save_conf()

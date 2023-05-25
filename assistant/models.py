@@ -1,18 +1,20 @@
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import discord
 import orjson
 from openai.embeddings_utils import cosine_similarity
 from pydantic import BaseModel
 
-from .common.utils import num_tokens_from_string, token_pagify
+from .common.utils import num_tokens_from_string
 
 MODELS = ["gpt-3.5-turbo", "gpt-4", "gpt-4-32k"]
 READ_EXTENSIONS = [".txt", ".py", ".json", ".xml", ".html", ".ini", ".css"]
 
 
 class Embedding(BaseModel):
+    """Text embeddings for search&ask efficient prompt training"""
+
     text: str
     embedding: List[float]
 
@@ -34,39 +36,49 @@ class GuildSettings(BaseModel):
     mention: bool = False
     enabled: bool = True
     model: str = "gpt-3.5-turbo"
+    timezone: str = "UTC"
 
     def get_related_embeddings(self, query_embedding: List[float]) -> List[Tuple[str, float]]:
         if not self.top_n or not query_embedding or not self.embeddings:
             return []
         strings_and_relatedness = [
-            (i.text, cosine_similarity(query_embedding, i.embedding))
-            for i in self.embeddings.values()
+            (name, i.text, cosine_similarity(query_embedding, i.embedding))
+            for name, i in self.embeddings.items()
         ]
         strings_and_relatedness = [
-            i for i in strings_and_relatedness if i[1] >= self.min_relatedness
+            i for i in strings_and_relatedness if i[2] >= self.min_relatedness
         ]
-        strings_and_relatedness.sort(key=lambda x: x[1], reverse=True)
+        strings_and_relatedness.sort(key=lambda x: x[2], reverse=True)
         return strings_and_relatedness[: self.top_n]
 
 
 class DB(BaseModel):
+    """Fully cached config on load"""
+
     configs: dict[int, GuildSettings] = {}
 
     class Config:
         json_loads = orjson.loads
         json_dumps = orjson.dumps
 
-    def get_conf(self, guild: discord.Guild) -> GuildSettings:
-        if guild.id in self.configs:
-            return self.configs[guild.id]
+    def get_conf(self, guild: Union[discord.Guild, int]) -> GuildSettings:
+        gid = guild if isinstance(guild, int) else guild.id
 
-        self.configs[guild.id] = GuildSettings()
-        return self.configs[guild.id]
+        if gid in self.configs:
+            return self.configs[gid]
+
+        self.configs[gid] = GuildSettings()
+        return self.configs[gid]
 
 
 class Conversation(BaseModel):
+    """Stored conversation between bot and user"""
+
     messages: list[dict[str, str]] = []
     last_updated: float = 0.0
+
+    def token_count(self) -> int:
+        return num_tokens_from_string("".join(message["content"] for message in self.messages))
 
     def user_token_count(self, message: str = "") -> int:
         messages = "".join(message["content"] for message in self.messages)
@@ -94,7 +106,6 @@ class Conversation(BaseModel):
         elif conf.max_retention:
             self.messages = self.messages[-conf.max_retention :]
 
-
     def reset(self):
         self.last_updated = datetime.now().timestamp()
         self.messages.clear()
@@ -112,32 +123,24 @@ class Conversation(BaseModel):
 
     def prepare_chat(
         self,
-        conf: GuildSettings,
         system_prompt: str = "",
         initial_prompt: str = "",
-        ) -> List[dict]:
+    ) -> List[dict]:
         prepared = []
         if system_prompt:
             prepared.append({"role": "system", "content": system_prompt})
         if initial_prompt:
             prepared.append({"role": "user", "content": initial_prompt})
-
-        # 4096 is max tokens for 3.5
-        while self.conversation_token_count(conf) > conf.max_tokens * 0.95 and len(self.messages) > 1:
-            self.messages.pop(0)
-
-        if self.conversation_token_count(conf) > conf.max_tokens * 0.9:
-            current_tokens = num_tokens_from_string(system_prompt) + num_tokens_from_string(initial_prompt)
-            max_tokens = round((conf.max_tokens - current_tokens) * 0.9)
-            chunks = [p for p in token_pagify(self.messages[0]["content"], max_tokens=max_tokens)]
-            self.messages[0]["content"] = chunks[0]
-
         prepared.extend(self.messages)
         return prepared
 
 
 class Conversations(BaseModel):
-    """Temporary conversation cache"""
+    """
+    Temporary conversation cache
+
+    Unique per member/channel/guild
+    """
 
     conversations: dict[int, Conversation] = {}
 
@@ -151,3 +154,11 @@ class Conversations(BaseModel):
 
         self.conversations[key] = Conversation()
         return self.conversations[key]
+
+
+class NoAPIKey(Exception):
+    """OpenAI Key no set"""
+
+
+class EmbeddingEntryExists(Exception):
+    """Entry name for embedding exits"""

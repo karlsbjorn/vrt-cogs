@@ -570,8 +570,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         pfp = None
         try:
             if self.dpy2:
-                if member.avatar:
-                    pfp = member.avatar.url
+                pfp = member.display_avatar.url
             else:
                 pfp = member.avatar_url
         except AttributeError:

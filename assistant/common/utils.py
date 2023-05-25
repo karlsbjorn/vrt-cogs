@@ -1,21 +1,16 @@
 import asyncio
 import logging
 import math
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 
 import discord
 import openai
 import tiktoken
 from aiocache import cached
-from discord.app_commands import Choice
 from retry import retry
 
 log = logging.getLogger("red.vrt.assistant.utils")
 encoding = tiktoken.get_encoding("cl100k_base")
-
-@cached(ttl=120)
-async def get_embedding_names(embeddings: List[str], current: str) -> List[Choice]:
-    return [Choice(name=i, value=i) for i in embeddings if current.lower() in i.lower()]
 
 
 def get_attachments(message: discord.Message) -> List[discord.Attachment]:
@@ -99,7 +94,7 @@ def token_pagify(text: str, max_tokens: int = 2000):
     return text_chunks
 
 
-def embedding_embeds(embeddings: Dict[str, dict], place: int):
+def embedding_embeds(embeddings: Dict[str, Any], place: int):
     embeddings = sorted(embeddings.items(), key=lambda x: x[0])
     embeds = []
     pages = math.ceil(len(embeddings) / 5)
@@ -112,7 +107,7 @@ def embedding_embeds(embeddings: Dict[str, dict], place: int):
         num = 0
         for i in range(start, stop):
             em = embeddings[i]
-            text = em[1]["text"]
+            text = em[1].text
             token_length = num_tokens_from_string(text)
             val = f"`Tokens: `{token_length}\n```\n{text[:30]}...\n```"
             embed.add_field(
@@ -133,11 +128,12 @@ def embedding_embeds(embeddings: Dict[str, dict], place: int):
     return embeds
 
 
+@cached(ttl=7200)
 async def get_embedding_async(text: str, api_key: str) -> List[float]:
     return await asyncio.to_thread(get_embedding, text, api_key)
 
 
-@retry(tries=3, delay=2)
+@retry(tries=4, delay=4)
 def get_embedding(text: str, api_key: str) -> List[float]:
     response = openai.Embedding.create(input=text, model="text-embedding-ada-002", api_key=api_key)
     return response["data"][0]["embedding"]

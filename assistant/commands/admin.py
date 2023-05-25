@@ -1,10 +1,26 @@
+import asyncio
 import logging
+from datetime import datetime
 from io import BytesIO
-from typing import Union
+from typing import List, Union
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import discord
+import orjson
+import pandas as pd
+import pytz
+from aiocache import cached
+from discord.app_commands import Choice
+from pydantic import ValidationError
+from rapidfuzz import fuzz
 from redbot.core import app_commands, commands
-from redbot.core.utils.chat_formatting import humanize_list, humanize_number, pagify
+from redbot.core.utils.chat_formatting import (
+    box,
+    escape,
+    humanize_list,
+    humanize_number,
+    pagify,
+)
 
 from ..abc import MixinMeta
 from ..common.utils import (
@@ -12,7 +28,6 @@ from ..common.utils import (
     fetch_channel_history,
     get_attachments,
     get_embedding_async,
-    get_embedding_names,
     num_tokens_from_string,
 )
 from ..models import MODELS, Embedding
@@ -46,6 +61,7 @@ class Admin(MixinMeta):
         prompt_tokens = num_tokens_from_string(conf.prompt)
         desc = (
             f"`Enabled:           `{conf.enabled}\n"
+            f"`Timezone:          `{conf.timezone}\n"
             f"`Channel:           `{channel}\n"
             f"`? Required:        `{conf.endswith_questionmark}\n"
             f"`Mentions:          `{conf.mention}\n"
@@ -115,6 +131,23 @@ class Admin(MixinMeta):
         conf = self.db.get_conf(ctx.guild)
         conf.api_key = key
         await msg.edit(content="OpenAI key has been set!", embed=None, view=None)
+        await self.save_conf()
+
+    @assistant.command(name="timezone")
+    async def set_timezone(self, ctx: commands.Context, timezone: str):
+        """Set the timezone used for prompt placeholders"""
+        timezone = timezone.lower()
+        try:
+            tz = pytz.timezone(timezone)
+        except pytz.UnknownTimeZoneError:
+            likely_match = sorted(
+                pytz.common_timezones, key=lambda x: fuzz.ratio(timezone, x.lower()), reverse=True
+            )[0]
+            return await ctx.send(f"Invalid Timezone, did you mean `{likely_match}`?")
+        time = datetime.now(tz).strftime("%I:%M %p")  # Convert to 12-hour format
+        await ctx.send(f"Timezone set to **{timezone}** (Time: `{time}`)")
+        conf = self.db.get_conf(ctx.guild)
+        conf.timezone = timezone
         await self.save_conf()
 
     @assistant.command(name="train")
@@ -191,7 +224,8 @@ class Admin(MixinMeta):
         `timestamp` - the current time in Discord's timestamp format
         `day` - the current day of the week
         `date` - todays date (Month, Day, Year)
-        `time` - current time in 12hr format (HH:MM AM/PM Timezone)
+        `time` - current time in 12hr format (HH:MM AM/PM)
+        `timetz` - current time in 12hr format (HH:MM AM/PM Timezone)
         `members` - current member count of the server
         `user` - the current user asking the question
         `roles` - the names of the user's roles
@@ -203,6 +237,13 @@ class Admin(MixinMeta):
         `tokens` - the token count of the current conversation
         `retention` - max retention number
         `retentiontime` - max retention time seconds
+        `py` - python version
+        `dpy` - discord.py version
+        `red` - red version
+        `cogs` - list of currently loaded cogs
+        `channelname` - name of the channel the conversation is taking place in
+        `channelmention` - current channel mention
+        `topic` - topic of current channel (if not forum or thread)
         """
         attachments = get_attachments(ctx.message)
         if attachments:
@@ -259,7 +300,8 @@ class Admin(MixinMeta):
         `timestamp` - the current time in Discord's timestamp format
         `day` - the current day of the week
         `date` - todays date (Month, Day, Year)
-        `time` - current time in 12hr format (HH:MM AM/PM Timezone)
+        `time` - current time in 12hr format (HH:MM AM/PM)
+        `timetz` - current time in 12hr format (HH:MM AM/PM Timezone)
         `members` - current member count of the server
         `user` - the current user asking the question
         `roles` - the names of the user's roles
@@ -271,6 +313,13 @@ class Admin(MixinMeta):
         `tokens` - the token count of the current conversation
         `retention` - max retention number
         `retentiontime` - max retention time seconds
+        `py` - python version
+        `dpy` - discord.py version
+        `red` - red version
+        `cogs` - list of currently loaded cogs
+        `channelname` - name of the channel the conversation is taking place in
+        `channelmention` - current channel mention
+        `topic` - topic of current channel (if not forum or thread)
         """
         attachments = get_attachments(ctx.message)
         if attachments:
@@ -452,7 +501,7 @@ class Admin(MixinMeta):
         """
         Set the GPT model to use
 
-        Valid models are `gpt-3.5-turbo`, `gpt-4`, and `gpt-4-32k
+        Valid models are `gpt-3.5-turbo`, `gpt-4`, and `gpt-4-32k`
         """
         if model not in MODELS:
             return await ctx.send("Invalid model type!")
@@ -526,9 +575,11 @@ class Admin(MixinMeta):
                 return await ctx.send(
                     "No embeddings could be related to this query with the current settings"
                 )
-            for em, score in embeddings:
+            for name, em, score in embeddings:
                 for p in pagify(em, page_length=4000):
-                    embed = discord.Embed(description=f"`Score: `{score}\n```\n{p}\n```")
+                    embed = discord.Embed(
+                        description=f"`Name: `{name}\n`Score: `{score}\n{box(escape(p))}"
+                    )
                     await ctx.send(embed=embed)
 
     @assistant.command(name="dynamicembedding")
@@ -551,6 +602,204 @@ class Admin(MixinMeta):
             await ctx.send("Dynamic embedding is now **Enabled**")
         await self.save_conf()
 
+    @assistant.command(name="importcsv")
+    async def import_embeddings_csv(self, ctx: commands.Context, overwrite: bool):
+        """Import embeddings to use with the assistant
+
+        Args:
+            overwrite (bool): overwrite embeddings with existing entry names
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if not conf.api_key:
+            return await ctx.send("No API key set!")
+        attachments = get_attachments(ctx.message)
+        if not attachments:
+            return await ctx.send(
+                "You must attach **.csv** files to this command or reference a message that has them!"
+            )
+        frames = []
+        files = []
+        for attachment in attachments:
+            file_bytes = await attachment.read()
+            try:
+                df = pd.read_csv(BytesIO(file_bytes))
+            except Exception as e:
+                log.error("Error reading uploaded file", exc_info=e)
+                await ctx.send(f"Error reading **{attachment.filename}**: {box(str(e))}")
+                continue
+            invalid = ["name" not in df.columns, "text" not in df.columns]
+            if any(invalid):
+                await ctx.send(
+                    f"**{attachment.filename}** contains invalid formatting, columns must be ['name', 'text']",
+                )
+                continue
+            frames.append(df)
+            files.append(attachment.filename)
+
+        if not frames:
+            return await ctx.send("There are no valid files to import!")
+
+        message_text = (
+            f"Processing the following files in the background\n{box(humanize_list(files))}"
+        )
+        message = await ctx.send(message_text)
+
+        df = await asyncio.to_thread(pd.concat, frames)
+        imported = 0
+        for index, row in enumerate(df.values):
+            if pd.isna(row[0]) or pd.isna(row[1]):
+                continue
+            name = str(row[0])
+            proc = "processing"
+            if name in conf.embeddings:
+                proc = "overwriting"
+                if row[1] == conf.embeddings[name].text or not overwrite:
+                    continue
+            text = str(row[1])[:4000]
+
+            if index and (index + 1) % 5 == 0:
+                await message.edit(
+                    content=f"{message_text}\n`Currently {proc}: `**{name}** ({index + 1}/{len(df)})"
+                )
+            embedding = await get_embedding_async(text, conf.api_key)
+            if not embedding:
+                await ctx.send(f"Failed to process embedding: `{name}`")
+                continue
+
+            conf.embeddings[name] = Embedding(text=text, embedding=embedding)
+            imported += 1
+        await message.edit(content=f"{message_text}\n**COMPLETE**")
+        await ctx.send(f"Successfully imported {humanize_number(imported)} embeddings!")
+        await self.save_conf()
+
+    @assistant.command(name="importjson")
+    async def import_embeddings_json(self, ctx: commands.Context, overwrite: bool):
+        """Import embeddings to use with the assistant
+
+        Args:
+            overwrite (bool): overwrite embeddings with existing entry names
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if not conf.api_key:
+            return await ctx.send("No API key set!")
+        attachments = get_attachments(ctx.message)
+        if not attachments:
+            return await ctx.send(
+                "You must attach **.json** files to this command or reference a message that has them!"
+            )
+
+        imported = 0
+        files = []
+        async with ctx.typing():
+            for attachment in attachments:
+                file_bytes: bytes = await attachment.read()
+                try:
+                    embeddings = orjson.loads(file_bytes)
+                except Exception as e:
+                    log.error("Error reading uploaded file", exc_info=e)
+                    await ctx.send(f"Error reading **{attachment.filename}**: {box(str(e))}")
+                    continue
+                try:
+                    for name, em in embeddings.items():
+                        if not overwrite and name in conf.embeddings:
+                            continue
+                        conf.embeddings[name] = Embedding.parse_obj(em)
+                        conf.embeddings[name].text = conf.embeddings[name].text[:4000]
+                        imported += 1
+                except ValidationError:
+                    await ctx.send(
+                        f"Failed to import **{attachment.filename}** because it contains invalid formatting!"
+                    )
+                    continue
+                files.append(attachment.filename)
+            await ctx.send(
+                f"Imported the following files: `{humanize_list(files)}`\n{humanize_number(imported)} embeddings imported"
+            )
+
+    @assistant.command(name="exportcsv")
+    async def export_embeddings_csv(self, ctx: commands.Context):
+        """Export embeddings to a .csv file
+
+        **Note:** csv exports do not include the embedding values
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if not conf.embeddings:
+            return await ctx.send("There are no embeddings to export!")
+        async with ctx.typing():
+            columns = ["name", "text"]
+            rows = []
+            for name, em in conf.embeddings.items():
+                rows.append([name, em.text])
+            df = pd.DataFrame(rows, columns=columns)
+            df_buffer = BytesIO()
+            df.to_csv(df_buffer, index=False)
+            df_buffer.seek(0)
+            file = discord.File(df_buffer, filename="embeddings_export.csv")
+
+            try:
+                await ctx.send("Here is your embeddings export!", file=file)
+                return
+            except discord.HTTPException:
+                await ctx.send("File too large, attempting to compress...")
+
+            def zip_file() -> discord.File:
+                zip_buffer = BytesIO()
+                with ZipFile(zip_buffer, "w", compression=ZIP_DEFLATED, compresslevel=9) as arc:
+                    arc.writestr(
+                        "embeddings_export.csv",
+                        df_buffer.getvalue(),
+                        compress_type=ZIP_DEFLATED,
+                        compresslevel=9,
+                    )
+                zip_buffer.seek(0)
+                file = discord.File(zip_buffer, filename="embeddings_csv_export.zip")
+                return file
+
+            file = await asyncio.to_thread(zip_file)
+            try:
+                await ctx.send("Here is your embeddings export!", file=file)
+                return
+            except discord.HTTPException:
+                await ctx.send("File is still too large even with compression!")
+
+    @assistant.command(name="exportjson")
+    async def export_embeddings_json(self, ctx: commands.Context):
+        """Export embeddings to a json file"""
+        conf = self.db.get_conf(ctx.guild)
+        if not conf.embeddings:
+            return await ctx.send("There are no embeddings to export!")
+
+        async with ctx.typing():
+            dump = {name: em.dict() for name, em in conf.embeddings.items()}
+            json_buffer = BytesIO(orjson.dumps(dump))
+            file = discord.File(json_buffer, filename="embeddings_export.json")
+
+            try:
+                await ctx.send("Here is your embeddings export!", file=file)
+                return
+            except discord.HTTPException:
+                await ctx.send("File too large, attempting to compress...")
+
+            def zip_file() -> discord.File:
+                zip_buffer = BytesIO()
+                with ZipFile(zip_buffer, "w", compression=ZIP_DEFLATED, compresslevel=9) as arc:
+                    arc.writestr(
+                        "embeddings_export.json",
+                        json_buffer.getvalue(),
+                        compress_type=ZIP_DEFLATED,
+                        compresslevel=9,
+                    )
+                zip_buffer.seek(0)
+                file = discord.File(zip_buffer, filename="embeddings_json_export.zip")
+                return file
+
+            file = await asyncio.to_thread(zip_file)
+            try:
+                await ctx.send("Here is your embeddings export!", file=file)
+                return
+            except discord.HTTPException:
+                await ctx.send("File is still too large even with compression!")
+
     @commands.hybrid_command(name="embeddings", aliases=["emenu"])
     @app_commands.describe(query="Name of the embedding entry")
     @commands.guild_only()
@@ -567,28 +816,41 @@ class Admin(MixinMeta):
         """
         conf = self.db.get_conf(ctx.guild)
         if not conf.api_key:
-            return await ctx.send(f"No API key! Use `{ctx.prefix}assistant openaikey` to set your OpenAI key!")
-        view = EmbeddingMenu(ctx, conf, self.save_conf)
-        if not query:
-            return await view.start()
+            return await ctx.send(
+                f"No API key! Use `{ctx.prefix}assistant openaikey` to set your OpenAI key!"
+            )
         if ctx.interaction:
             await ctx.interaction.response.defer()
+
+        view = EmbeddingMenu(ctx, conf, self.save_conf)
+        await view.get_pages()
+        if not query:
+            return await view.start()
+
         for page_index, embed in enumerate(view.pages):
             found = False
             for place_index, field in enumerate(embed.fields):
                 name = field.name.replace("➣ ", "", 1)
                 if name != query:
                     continue
+                view.change_place(place_index)
                 view.page = page_index
-                view.place = place_index
-                view.pages = view.get_pages()
                 found = True
                 break
             if found:
                 break
+
         await view.start()
 
     @embeddings.autocomplete("query")
     async def embeddings_complete(self, interaction: discord.Interaction, current: str):
-        conf = self.db.get_conf(interaction.guild)
-        return await get_embedding_names(list(conf.embeddings.keys()), current)
+        return await self.get_matches(interaction.guild_id, current)
+
+    @cached(ttl=120)
+    async def get_embedding_entries(self, guild_id: int) -> List[str]:
+        return list(self.db.get_conf(guild_id).embeddings.keys())
+
+    @cached(ttl=30)
+    async def get_matches(self, guild_id: int, current: str) -> List[Choice]:
+        entries = await self.get_embedding_entries(guild_id)
+        return [Choice(name=i, value=i) for i in entries if current.lower() in i.lower()][:25]
