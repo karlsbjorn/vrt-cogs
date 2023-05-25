@@ -57,7 +57,7 @@ class Base(MixinMeta):
         if not user:
             user = ctx.author
         conf = self.db.get_conf(ctx.guild)
-        conversation = self.chats.get_conversation(user, ctx.channel)
+        conversation = self.chats.get_conversation(user)
         messages = len(conversation.messages)
         embed = discord.Embed(
             description=(
@@ -78,6 +78,6 @@ class Base(MixinMeta):
 
         This will clear all message history between you and the bot for this channel
         """
-        conversation = self.chats.get_conversation(ctx.author, ctx.channel)
+        conversation = self.chats.get_conversation(ctx.author)
         conversation.reset()
         await ctx.tick()
