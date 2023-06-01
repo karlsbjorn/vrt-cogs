@@ -19,7 +19,7 @@ import tabulate
 from aiohttp import ClientSession
 from discord.ext import tasks
 from redbot.core import Config, commands
-from redbot.core.data_manager import bundled_data_path
+from redbot.core.data_manager import bundled_data_path, cog_data_path
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils import AsyncIter
 from redbot.core.utils.chat_formatting import box, humanize_list, humanize_number
@@ -70,7 +70,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
     """Your friendly neighborhood leveling system"""
 
     __author__ = "Vertyco#0117"
-    __version__ = "2.23.1"
+    __version__ = "2.24.1"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -1357,6 +1357,79 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         await self.save_cache()
         await ctx.send(_("Config restored from backup file!"))
 
+    @admin_group.command(name="importmalarne")
+    @commands.is_owner()
+    async def import_from_malarne(
+        self,
+        ctx: commands.Context,
+        import_by: str,
+        replace: bool,
+        i_agree: bool,
+    ):
+        """
+        Import levels and exp from Malarne's Leveler cog
+
+        **Arguments**
+        `export_by` - which stat to prioritize (`level` or `exp`)
+        If exp is entered, it will import their experience and base their new level off of that.
+        If level is entered, it will import their level and calculate their exp based off of that.
+        `replace` - (True/False) if True, it will replace the user's exp or level, otherwise it will add it
+        `i_agree` - (Yes/No) Just an extra option to make sure you want to execute this command
+        """
+        if not i_agree:
+            return await ctx.send(_("Not importing levels"))
+        path = cog_data_path(self).parent / "UserProfile" / "settings.json"
+        if not path.exists():
+            return await ctx.send(_("No config found for Malarne's Leveler cog!"))
+
+        data = json.loads(path.read_text())["1099710897114110101"]["MEMBER"]
+        imported = 0
+        async with ctx.typing():
+            for guild in self.bot.guilds:
+                if guild.id not in self.data:
+                    continue
+                base = self.data[guild.id]["base"]
+                exp = self.data[guild.id]["exp"]
+                source_profiles = data.get(str(guild.id))
+                if not source_profiles:
+                    continue
+                for user_id, data in source_profiles.items():
+                    user = guild.get_member(int(user_id))
+                    if not user:
+                        continue
+                    if user_id not in self.data[guild.id]["users"]:
+                        self.init_user(guild.id, user_id)
+
+                    old_level = data.get("level", 0)
+                    old_exp = data.get("exp", 0)
+                    if replace:
+                        if "l" in import_by.lower():
+                            self.data[guild.id]["users"][user_id]["level"] = old_level
+                            new_xp = get_xp(old_level, base, exp)
+                            self.data[guild.id]["users"][user_id]["xp"] = new_xp
+                        else:
+                            self.data[guild.id]["users"][user_id]["xp"] = old_exp
+                            new_lvl = get_level(old_exp, base, exp)
+                            self.data[guild.id]["users"][user_id]["level"] = new_lvl
+                    else:
+                        if "l" in import_by.lower():
+                            self.data[guild.id]["users"][user_id]["level"] += old_level
+                            new_xp = get_xp(
+                                self.data[guild.id]["users"][user_id]["level"], base, exp
+                            )
+                            self.data[guild.id]["users"][user_id]["xp"] = new_xp
+                        else:
+                            self.data[guild.id]["users"][user_id]["xp"] += old_exp
+                            new_lvl = get_level(
+                                self.data[guild.id]["users"][user_id]["xp"], base, exp
+                            )
+                            self.data[guild.id]["users"][user_id]["level"] = new_lvl
+                    imported += 1
+        if not imported:
+            return await ctx.send(_("There were no profiles to import"))
+        txt = _("Imported {} profile(s)").format(imported)
+        await ctx.send(txt)
+
     @admin_group.command(name="importmee6")
     @commands.guildowner()
     async def import_from_mee6(
@@ -1462,9 +1535,9 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
                     txt += f" ({failed} " + _("failed") + ")"
                 await ctx.send(txt)
 
-    @admin_group.command(name="importleveler")
+    @admin_group.command(name="importfixator")
     @commands.is_owner()
-    async def import_from_leveler(self, ctx: commands.Context, yes_or_no: str):
+    async def import_from_fixator(self, ctx: commands.Context, yes_or_no: str):
         """
         Import data from Fixator's Leveler cog
 

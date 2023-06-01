@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import logging
+import re
 from datetime import datetime
 from io import BytesIO
 from typing import List, Union
@@ -27,8 +29,8 @@ from ..common.utils import (
     extract_message_content,
     fetch_channel_history,
     get_attachments,
-    get_embedding_async,
     num_tokens_from_string,
+    request_embedding,
 )
 from ..models import MODELS, Embedding
 from ..views import EmbeddingMenu, SetAPI
@@ -75,7 +77,7 @@ class Admin(MixinMeta):
             f"`Embeddings:        `{humanize_number(len(conf.embeddings))}\n"
             f"`Top N Embeddings:  `{conf.top_n}\n"
             f"`Min Relatedness:   `{conf.min_relatedness}\n"
-            f"`Dynamic Embedding: `{conf.dynamic_embedding}"
+            f"`Embedding Method:  `{conf.embed_method}"
         )
         system_file = (
             discord.File(
@@ -102,6 +104,12 @@ class Admin(MixinMeta):
                 value=conf.api_key if conf.api_key else "Not Set",
                 inline=False,
             )
+
+        if conf.regex_blacklist:
+            joined = "\n".join(conf.regex_blacklist)
+            for p in pagify(joined, page_length=1000):
+                embed.add_field(name="Regex Blacklist", value=box(p), inline=False)
+
         embed.set_footer(text=f"Showing settings for {ctx.guild.name}")
         files = []
         if system_file:
@@ -145,7 +153,7 @@ class Admin(MixinMeta):
             )[0]
             return await ctx.send(f"Invalid Timezone, did you mean `{likely_match}`?")
         time = datetime.now(tz).strftime("%I:%M %p")  # Convert to 12-hour format
-        await ctx.send(f"Timezone set to **{timezone}** (Time: `{time}`)")
+        await ctx.send(f"Timezone set to **{timezone}** (`{time}`)")
         conf = self.db.get_conf(ctx.guild)
         conf.timezone = timezone
         await self.save_conf()
@@ -195,7 +203,7 @@ class Admin(MixinMeta):
                         if content := extract_message_content(message):
                             text += content
                             key = f"{channel.name}-{message.id}"
-                            embedding = await get_embedding_async(text, conf.api_key)
+                            embedding = await request_embedding(text, conf.api_key)
                             if not embedding:
                                 continue
                             conf.embeddings[key] = Embedding(text=text, embedding=embedding)
@@ -556,6 +564,22 @@ class Admin(MixinMeta):
         await ctx.tick()
         await self.save_conf()
 
+    @assistant.command(name="regexblacklist")
+    async def regex_blacklist(self, ctx: commands.Context, *, regex: str):
+        """Remove certain words/phrases in the bot's responses"""
+        try:
+            re.compile(regex)
+        except re.error:
+            return await ctx.send("That regex is invalid")
+        conf = self.db.get_conf(ctx.guild)
+        if regex in conf.regex_blacklist:
+            conf.regex_blacklist.remove(regex)
+            await ctx.send(f"`{regex}` has been **Removed** from the blacklist")
+        else:
+            conf.regex_blacklist.append(regex)
+            await ctx.send(f"`{regex}` has been **Added** to the blacklist")
+        await self.save_conf()
+
     @assistant.command(name="embeddingtest", aliases=["etest"])
     async def test_embedding_response(self, ctx: commands.Context, *, question: str):
         """
@@ -567,7 +591,7 @@ class Admin(MixinMeta):
         if not conf.embeddings:
             return await ctx.send("You do not have any embeddings configured!")
         async with ctx.typing():
-            query = await get_embedding_async(question, conf.api_key)
+            query = await request_embedding(question, conf.api_key)
             if not query:
                 return await ctx.send("Failed to get embedding for your query")
             embeddings = conf.get_related_embeddings(query)
@@ -582,24 +606,30 @@ class Admin(MixinMeta):
                     )
                     await ctx.send(embed=embed)
 
-    @assistant.command(name="dynamicembedding")
-    async def toggle_dynamic_embeddings(self, ctx: commands.Context):
+    @assistant.command(name="embedmethod")
+    async def toggle_embedding_method(self, ctx: commands.Context):
         """
-        Toggle whether embeddings are dynamic
+        Cycle between embedding methods
 
-        Dynamic embeddings mean that the embeddings pulled are dynamically appended to the initial prompt for each individual question.
+        **Dynamic** embeddings mean that the embeddings pulled are dynamically appended to the initial prompt for each individual question.
         When each time the user asks a question, the previous embedding is replaced with embeddings pulled from the current question, this reduces token usage significantly
 
-        Dynamic embeddings are helpful for Q&A, but not so much for chat when you need to retain the context pulled from the embeddings.
-        Turning this off will instead append the embedding context in front of the user's question, thus retaining all pulled embeddings during the conversation.
+        **Static** embeddings are applied in front of each user message and get stored with the conversation instead of being replaced with each question.
+
+        **Hybrid** embeddings are a combination, with the first embedding being stored in the conversation and the rest being dynamic, this saves a bit on token usage
+
+        Dynamic embeddings are helpful for Q&A, but not so much for chat when you need to retain the context pulled from the embeddings. The hybrid method is a good middle ground
         """
         conf = self.db.get_conf(ctx.guild)
-        if conf.dynamic_embedding:
-            conf.dynamic_embedding = False
-            await ctx.send("Dynamic embedding is now **Disabled**")
-        else:
-            conf.dynamic_embedding = True
-            await ctx.send("Dynamic embedding is now **Enabled**")
+        if conf.embed_method == "dynamic":
+            conf.embed_method = "static"
+            await ctx.send("Embedding method has been set to **Static**")
+        elif conf.embed_method == "static":
+            conf.embed_method = "hybrid"
+            await ctx.send("Embedding method has been set to **Hybrid**")
+        else:  # Conf is hybrid
+            conf.embed_method = "dynamic"
+            await ctx.send("Embedding method has been set to **Dynamic**")
         await self.save_conf()
 
     @assistant.command(name="importcsv")
@@ -608,6 +638,8 @@ class Admin(MixinMeta):
 
         Args:
             overwrite (bool): overwrite embeddings with existing entry names
+
+        This will read excel files too
         """
         conf = self.db.get_conf(ctx.guild)
         if not conf.api_key:
@@ -622,7 +654,10 @@ class Admin(MixinMeta):
         for attachment in attachments:
             file_bytes = await attachment.read()
             try:
-                df = pd.read_csv(BytesIO(file_bytes))
+                if attachment.filename.lower().endswith(".csv"):
+                    df = pd.read_csv(BytesIO(file_bytes))
+                else:
+                    df = pd.read_excel(BytesIO(file_bytes))
             except Exception as e:
                 log.error("Error reading uploaded file", exc_info=e)
                 await ctx.send(f"Error reading **{attachment.filename}**: {box(str(e))}")
@@ -658,10 +693,11 @@ class Admin(MixinMeta):
             text = str(row[1])[:4000]
 
             if index and (index + 1) % 5 == 0:
-                await message.edit(
-                    content=f"{message_text}\n`Currently {proc}: `**{name}** ({index + 1}/{len(df)})"
-                )
-            embedding = await get_embedding_async(text, conf.api_key)
+                with contextlib.suppress(discord.DiscordServerError):
+                    await message.edit(
+                        content=f"{message_text}\n`Currently {proc}: `**{name}** ({index + 1}/{len(df)})"
+                    )
+            embedding = await request_embedding(text, conf.api_key)
             if not embedding:
                 await ctx.send(f"Failed to process embedding: `{name}`")
                 continue

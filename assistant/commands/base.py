@@ -32,7 +32,9 @@ class Base(MixinMeta):
                     text = await i.read()
                     question += f"\n\nUploaded [{i.filename}]: {text.decode()}"
             try:
-                reply = await self.get_chat_response(question, ctx.author, ctx.channel, conf)
+                reply = await self.get_chat_response(
+                    question, ctx.author, ctx.guild, ctx.channel, conf
+                )
                 if len(reply) < 2000:
                     return await ctx.reply(reply, mention_author=conf.mention)
 
@@ -53,11 +55,17 @@ class Base(MixinMeta):
         Check the token and message count of yourself or another user's conversation for this channel
 
         Conversations are *Per* user *Per* channel, meaning a conversation you have in one channel will be kept in memory separately from another conversation in a separate channel
+
+        Conversations are only stored in memory until the bot restarts or the cog reloads
         """
         if not user:
             user = ctx.author
         conf = self.db.get_conf(ctx.guild)
+<<<<<<< HEAD
         conversation = self.chats.get_conversation(user)
+=======
+        conversation = self.chats.get_conversation(user.id, ctx.channel.id, ctx.guild.id)
+>>>>>>> main
         messages = len(conversation.messages)
         embed = discord.Embed(
             description=(
@@ -78,6 +86,10 @@ class Base(MixinMeta):
 
         This will clear all message history between you and the bot for this channel
         """
+<<<<<<< HEAD
         conversation = self.chats.get_conversation(ctx.author)
+=======
+        conversation = self.chats.get_conversation(ctx.author.id, ctx.channel.id, ctx.guild.id)
+>>>>>>> main
         conversation.reset()
         await ctx.tick()

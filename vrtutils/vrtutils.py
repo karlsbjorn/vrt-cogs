@@ -5,10 +5,11 @@ import logging
 import math
 import os
 import platform
+import random
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from io import StringIO
+from io import BytesIO
 from sys import executable
 from typing import Optional, Union
 
@@ -61,7 +62,7 @@ class VrtUtils(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "1.6.2"
+    __version__ = "1.6.5"
 
     def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
@@ -106,10 +107,10 @@ class VrtUtils(commands.Cog):
         cmd = f"{executable} -m {command}"
 
         def exe():
-            results = subprocess.run(cmd, stdout=subprocess.PIPE, shell=True).stdout.decode(
-                "utf-8"
+            results = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
             )
-            return results
+            return results.stdout.decode("utf-8") or results.stderr.decode("utf-8")
 
         res = await self.bot.loop.run_in_executor(self.threadpool, exe)
         return res
@@ -517,12 +518,11 @@ class VrtUtils(commands.Cog):
     @commands.is_owner()
     async def usersjson(self, ctx: commands.Context):
         """Get a json file containing all usernames/ID's in this guild"""
-        members = {}
-        for member in ctx.guild.members:
-            members[str(member.id)] = member.name
-        iofile = StringIO(json.dumps(members))
-        filename = "users.json"
-        file = discord.File(iofile, filename=filename)
+        members = {str(member.id): member.name for member in ctx.guild.members}
+        buffer = BytesIO(json.dumps(members).encode())
+        buffer.name = "users.json"
+        buffer.seek(0)
+        file = discord.File(buffer)
         await ctx.send("Here are all usernames and their ID's for this guild", file=file)
 
     @commands.command()
@@ -936,3 +936,11 @@ class VrtUtils(commands.Cog):
             await ctx.send(text)
         except ValueError:
             await ctx.send("I could not convert that binary string to text :(")
+
+    @commands.command(name="randomnum", aliases=["rnum"])
+    async def random_number(self, ctx: commands.Context, minimum: int = 1, maximum: int = 100):
+        """Generate a random number between the numbers specified"""
+        if minimum >= maximum:
+            return await ctx.send("Minimum needs to be lower than maximum!")
+        num = random.randint(minimum, maximum)
+        await ctx.send(f"Result: `{num}`")

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Literal, Tuple, Union
 
 import discord
 import orjson
@@ -9,7 +9,35 @@ from pydantic import BaseModel
 from .common.utils import num_tokens_from_string
 
 MODELS = ["gpt-3.5-turbo", "gpt-4", "gpt-4-32k"]
-READ_EXTENSIONS = [".txt", ".py", ".json", ".xml", ".html", ".ini", ".css"]
+READ_EXTENSIONS = [
+    ".txt",
+    ".py",
+    ".json",
+    ".xml",
+    ".html",
+    ".ini",
+    ".css",
+    ".toml",
+    ".md",
+    ".ini",
+    ".conf",
+    ".go",
+    ".cfg",
+    ".java",
+    ".c",
+    ".php",
+    ".swift",
+    ".vb",
+    ".xhtml",
+    ".rss",
+    ".css",
+    ".asp",
+    ".js",
+    ".ts",
+    ".cs",
+    ".c++",
+    ".cc",
+]
 
 
 class Embedding(BaseModel):
@@ -25,7 +53,7 @@ class GuildSettings(BaseModel):
     embeddings: Dict[str, Embedding] = {}
     top_n: int = 3
     min_relatedness: float = 0.75
-    dynamic_embedding: bool = True
+    embed_method: Literal["dynamic", "static", "hybrid"] = "dynamic"
     channel_id: int = 0
     api_key: str = ""
     endswith_questionmark: bool = False
@@ -37,6 +65,8 @@ class GuildSettings(BaseModel):
     enabled: bool = True
     model: str = "gpt-3.5-turbo"
     timezone: str = "UTC"
+    temperature: float = 0.0
+    regex_blacklist: List[str] = [r"^As an AI language model,"]
 
     def get_related_embeddings(self, query_embedding: List[float]) -> List[Tuple[str, float]]:
         if not self.top_n or not query_embedding or not self.embeddings:
@@ -144,11 +174,21 @@ class Conversations(BaseModel):
 
     conversations: dict[int, Conversation] = {}
 
+<<<<<<< HEAD
     def get_conversation(self, member: discord.Member) -> Conversation:
         try:
             key = f"{member.id}{member.guild.id}"
         except AttributeError:
             key = f"{member.id}0"
+=======
+    def get_conversation(
+        self,
+        member_id: int,
+        channel_id: int,
+        guild_id: int,
+    ) -> Conversation:
+        key = f"{member_id}-{channel_id}-{guild_id}"
+>>>>>>> main
         if key in self.conversations:
             return self.conversations[key]
 
