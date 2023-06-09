@@ -5,7 +5,7 @@ import discord
 from discord.ext.commands.cog import CogMeta
 from redbot.core.bot import Red
 
-from .models import DB, Conversations, GuildSettings
+from .models import DB, GuildSettings
 
 
 class CompositeMetaClass(CogMeta, ABCMeta):
@@ -17,7 +17,6 @@ class MixinMeta(metaclass=ABCMeta):
 
     bot: Red
     db: DB
-    chats: Conversations
 
     @abstractmethod
     async def get_chat_response(
@@ -41,5 +40,11 @@ class MixinMeta(metaclass=ABCMeta):
         author: Union[discord.Member, int],
         guild: discord.Guild,
         channel: Union[discord.TextChannel, discord.Thread, discord.ForumChannel, int],
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def handle_message(
+        self, message: discord.Message, question: str, conf: GuildSettings, listener: bool = False
     ) -> str:
         raise NotImplementedError

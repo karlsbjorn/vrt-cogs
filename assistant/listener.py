@@ -1,14 +1,16 @@
 import logging
 
 import discord
-from openai.error import InvalidRequestError
 from redbot.core import commands
-from redbot.core.utils.chat_formatting import pagify
 
 from .abc import MixinMeta
+<<<<<<< HEAD
 from .common.utils import get_attachments
 from .models import READ_EXTENSIONS, GuildSettings
 import random
+=======
+from .common.utils import can_use
+>>>>>>> main
 
 log = logging.getLogger("red.vrt.assistant.listener")
 
@@ -44,6 +46,7 @@ class AssistantListener(MixinMeta):
         channel = message.channel
         if channel.id != conf.channel_id:
             return
+<<<<<<< HEAD
         if random.random() > 0.2:
             return
 
@@ -57,13 +60,18 @@ class AssistantListener(MixinMeta):
             message.content = message.content.replace(f"<@&{mention.id}>", f"@{mention.name}")
 
         content = message.content
+=======
+        if not await can_use(message, conf.blacklist, respond=False):
+            return
+>>>>>>> main
         mentions = [member.id for member in message.mentions]
         if (
-            not content.endswith("?")
+            not message.content.endswith("?")
             and conf.endswith_questionmark
             and self.bot.user.id not in mentions
         ):
             return
+<<<<<<< HEAD
 
         embed = message.embeds[0] if message.embeds else None
         if not embed:
@@ -95,26 +103,14 @@ class AssistantListener(MixinMeta):
 
         async with channel.typing():
             await self.try_replying(message, content, conf)
+=======
 
-    async def try_replying(self, message: discord.Message, content: str, conf: GuildSettings):
-        try:
-            reply = await self.get_chat_response(
-                content, message.author, message.author.guild, message.channel, conf
-            )
-            if len(reply) < 2000:
-                return await message.reply(reply, mention_author=conf.mention)
-            embeds = [
-                discord.Embed(description=p)
-                for p in pagify(reply, page_length=4000, delims=("```", "\n"))
-            ]
-            await message.reply(embeds=embeds, mention_author=conf.mention)
-        except InvalidRequestError as e:
-            if error := e.error:
-                await message.reply(error["message"], mention_author=conf.mention)
-            log.error("Invalid Request Error", exc_info=e)
-        except Exception as e:
-            await message.channel.send(f"**Error**\n```py\n{e}\n```")
-            log.error("Listener Reply Error", exc_info=e)
+        if len(message.content.strip()) < conf.min_length:
+            return
+>>>>>>> main
+
+        async with channel.typing():
+            await self.handle_message(message, message.content, conf, listener=True)
 
     @commands.Cog.listener("on_guild_remove")
     async def cleanup(self, guild: discord.Guild):

@@ -238,6 +238,7 @@ class SupportButton(Button):
     async def create_ticket(self, interaction: Interaction):
         guild = interaction.guild
         user = interaction.user
+        channel = interaction.channel
         roles = [r.id for r in user.roles]
         conf = await self.view.config.guild(guild).all()
         blacklist = conf["blacklist"]
@@ -333,10 +334,19 @@ class SupportButton(Button):
                     )
 
         can_read_send = discord.PermissionOverwrite(
-            read_messages=True, send_messages=True, attach_files=True
+            read_messages=True,
+            read_message_history=True,
+            send_messages=True,
+            attach_files=True,
+            embed_links=True,
+            use_application_commands=True,
         )
         read_and_manage = discord.PermissionOverwrite(
-            read_messages=True, send_messages=True, manage_channels=True
+            read_messages=True,
+            send_messages=True,
+            attach_files=True,
+            embed_links=True,
+            manage_channels=True,
         )
 
         support_roles = []
@@ -384,7 +394,6 @@ class SupportButton(Button):
         channel_name = name_fmt.format(**params) if name_fmt else user.name
         try:
             if panel.get("threads"):
-                channel = interaction.channel
                 if alt_cid := panel.get("alt_channel"):
                     alt_channel = guild.get_channel(alt_cid)
                     if alt_channel and isinstance(alt_channel, discord.TextChannel):
@@ -458,12 +467,14 @@ class SupportButton(Button):
         )
         if messages:
             embeds = []
-            for einfo in messages:
+            for index, einfo in enumerate(messages):
                 em = discord.Embed(
                     title=einfo["title"].format(**params) if einfo["title"] else None,
                     description=einfo["desc"].format(**params),
                     color=user.color,
                 )
+                if index == 0:
+                    em.set_thumbnail(url=user.display_avatar.url)
                 if einfo["footer"]:
                     em.set_footer(text=einfo["footer"].format(**params))
                 embeds.append(em)
@@ -472,16 +483,23 @@ class SupportButton(Button):
                 content=content, embeds=embeds, allowed_mentions=allowed_mentions, view=close_view
             )
         else:
+            # Default message
             em = discord.Embed(description=default_message, color=user.color)
-            if user.avatar:
-                em.set_thumbnail(url=user.display_avatar.url)
+            em.set_thumbnail(url=user.display_avatar.url)
             msg = await channel_or_thread.send(
                 content=content, embed=em, allowed_mentions=allowed_mentions, view=close_view
             )
 
         if len(form_embed.fields) > 0:
             form_msg = await channel_or_thread.send(embed=form_embed)
-            await form_msg.pin(reason=_("Ticket form questions"))
+            try:
+                await form_msg.pin(reason=_("Ticket form questions"))
+            except discord.Forbidden:
+                await channel_or_thread.send(
+                    _(
+                        "I tried to pin the response message but don't have the manage messages permissions!"
+                    )
+                )
 
         desc = _("Your ticket channel has been created, **[CLICK HERE]({})**").format(msg.jump_url)
         em = discord.Embed(description=desc, color=user.color)

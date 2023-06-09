@@ -8,7 +8,30 @@ from pydantic import BaseModel
 
 from .common.utils import num_tokens_from_string
 
-MODELS = ["gpt-3.5-turbo", "gpt-4", "gpt-4-32k"]
+MODELS = {
+    "gpt-3.5-turbo": 4096,
+    "gpt-4": 8192,
+    "gpt-4-32k": 32768,
+    "code-davinci-002": 8001,
+    "text-davinci-003": 4097,
+    "text-davinci-002": 4097,
+    "text-curie-001": 2049,
+    "text-babbage-001": 2049,
+    "text-ada-001": 2049,
+}
+CHAT = [
+    "gpt-3.5-turbo",
+    "gpt-4",
+    "gpt-4-32k",
+    "code-davinci-002",
+]
+COMPLETION = [
+    "text-davinci-003",
+    "text-davinci-002",
+    "text-curie-001",
+    "text-babbage-001",
+    "text-ada-001",
+]
 READ_EXTENSIONS = [
     ".txt",
     ".py",
@@ -37,14 +60,20 @@ READ_EXTENSIONS = [
     ".cs",
     ".c++",
     ".cc",
+    ".ps1",
+    ".bat",
+    ".batch",
+    ".shell",
 ]
 
 
 class Embedding(BaseModel):
-    """Text embeddings for search&ask efficient prompt training"""
-
     text: str
     embedding: List[float]
+
+    class Config:
+        json_loads = orjson.loads
+        json_dumps = orjson.dumps
 
 
 class GuildSettings(BaseModel):
@@ -67,6 +96,13 @@ class GuildSettings(BaseModel):
     timezone: str = "UTC"
     temperature: float = 0.0
     regex_blacklist: List[str] = [r"^As an AI language model,"]
+    blacklist: List[int] = []  # Channel/Role/User IDs
+    image_tools: bool = True
+    image_size: Literal["256x256", "512x512", "1024x1024"] = "1024x1024"
+
+    class Config:
+        json_loads = orjson.loads
+        json_dumps = orjson.dumps
 
     def get_related_embeddings(self, query_embedding: List[float]) -> List[Tuple[str, float]]:
         if not self.top_n or not query_embedding or not self.embeddings:
@@ -82,30 +118,13 @@ class GuildSettings(BaseModel):
         return strings_and_relatedness[: self.top_n]
 
 
-class DB(BaseModel):
-    """Fully cached config on load"""
-
-    configs: dict[int, GuildSettings] = {}
+class Conversation(BaseModel):
+    messages: list[dict[str, str]] = []
+    last_updated: float = 0.0
 
     class Config:
         json_loads = orjson.loads
         json_dumps = orjson.dumps
-
-    def get_conf(self, guild: Union[discord.Guild, int]) -> GuildSettings:
-        gid = guild if isinstance(guild, int) else guild.id
-
-        if gid in self.configs:
-            return self.configs[gid]
-
-        self.configs[gid] = GuildSettings()
-        return self.configs[gid]
-
-
-class Conversation(BaseModel):
-    """Stored conversation between bot and user"""
-
-    messages: list[dict[str, str]] = []
-    last_updated: float = 0.0
 
     def token_count(self) -> int:
         return num_tokens_from_string("".join(message["content"] for message in self.messages))
@@ -152,27 +171,37 @@ class Conversation(BaseModel):
         self.last_updated = datetime.now().timestamp()
 
     def prepare_chat(
-        self,
-        system_prompt: str = "",
-        initial_prompt: str = "",
+        self, user_message: str, initial_prompt: str, system_prompt: str
     ) -> List[dict]:
         prepared = []
-        if system_prompt:
-            prepared.append({"role": "system", "content": system_prompt})
         if initial_prompt:
             prepared.append({"role": "user", "content": initial_prompt})
         prepared.extend(self.messages)
+        if system_prompt:
+            prepared.append({"role": "system", "content": system_prompt})
+        user_message = {"role": "user", "content": user_message}
+        prepared.append(user_message)
+        self.messages.append(user_message)
         return prepared
 
 
-class Conversations(BaseModel):
-    """
-    Temporary conversation cache
+class DB(BaseModel):
+    configs: dict[int, GuildSettings] = {}
+    conversations: dict[str, Conversation] = {}
+    persistent_conversations: bool = False
 
-    Unique per member/channel/guild
-    """
+    class Config:
+        json_loads = orjson.loads
+        json_dumps = orjson.dumps
 
-    conversations: dict[int, Conversation] = {}
+    def get_conf(self, guild: Union[discord.Guild, int]) -> GuildSettings:
+        gid = guild if isinstance(guild, int) else guild.id
+
+        if gid in self.configs:
+            return self.configs[gid]
+
+        self.configs[gid] = GuildSettings()
+        return self.configs[gid]
 
 <<<<<<< HEAD
     def get_conversation(self, member: discord.Member) -> Conversation:

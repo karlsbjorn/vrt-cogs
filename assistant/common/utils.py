@@ -1,6 +1,7 @@
 import logging
 import math
-from typing import Any, Dict, List, Union
+import re
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import discord
 import openai
@@ -31,6 +32,49 @@ def get_attachments(message: discord.Message) -> List[discord.Attachment]:
         except AttributeError:
             pass
     return attachments
+
+
+async def can_use(message: discord.Message, blacklist: list, respond: bool = True) -> bool:
+    allowed = True
+    if message.author.id in blacklist:
+        if respond:
+            await message.channel.send("You have been blacklisted from using this command!")
+        allowed = False
+    elif any(role.id in blacklist for role in message.author.roles):
+        if respond:
+            await message.channel.send("You have a blacklisted role and cannot use this command!")
+        allowed = False
+    elif message.channel.id in blacklist:
+        if respond:
+            await message.channel.send("You cannot use that command in this channel!")
+        allowed = False
+    elif message.channel.category_id in blacklist:
+        if respond:
+            await message.channel.send(
+                "You cannot use that command in any channels under this category"
+            )
+        allowed = False
+    return allowed
+
+
+def extract_code_blocks(content: str) -> List[str]:
+    code_blocks = re.findall(r"```(?:\w+)(.*?)```", content, re.DOTALL)
+    if not code_blocks:
+        code_blocks = re.findall(r"```(.*?)```", content, re.DOTALL)
+    return [block.strip() for block in code_blocks]
+
+
+def extract_code_blocks_with_lang(content: str) -> List[Tuple[str, str]]:
+    code_blocks = re.findall(r"```(\w+)(.*?)```", content, re.DOTALL)
+    if not code_blocks:
+        code_blocks = re.findall(r"```(.*?)```", content, re.DOTALL)
+        return [("", block.strip()) for block in code_blocks]
+    return [(block[0], block[1].strip()) for block in code_blocks]
+
+
+def remove_code_blocks(content: str) -> str:
+    content = re.sub(r"```(?:\w+)(.*?)```", "[Code Removed]", content, flags=re.DOTALL).strip()
+    return re.sub(r"```(.*?)```", "[Code Removed]", content, flags=re.DOTALL).strip()
 
 
 def num_tokens_from_string(string: str) -> int:
@@ -99,6 +143,22 @@ def token_pagify(text: str, max_tokens: int = 2000):
     return text_chunks
 
 
+def token_cut(message: str, max_tokens: int):
+    cut_tokens = encoding.encode(message)[:max_tokens]
+    return encoding.decode(cut_tokens)
+
+
+def compile_messages(messages: List[dict]) -> str:
+    """Compile messages list into a single string"""
+    text = ""
+    for message in messages:
+        role = message["role"]
+        content = message["content"]
+        text += f"{role}: {content}\n"
+    text += "\n"
+    return text
+
+
 def embedding_embeds(embeddings: Dict[str, Any], place: int):
     embeddings = sorted(embeddings.items(), key=lambda x: x[0])
     embeds = []
@@ -154,9 +214,69 @@ async def request_embedding(text: str, api_key: str) -> List[float]:
     reraise=True,
 )
 async def request_chat_response(
-    model: str, messages: List[dict], api_key: str, temperature: float = 0.0
+    model: str, messages: List[dict], api_key: str, temperature: float
 ) -> str:
     response = await openai.ChatCompletion.acreate(
-        model=model, messages=messages, temperature=temperature, api_key=api_key, timeout=30
+        model=model, messages=messages, temperature=temperature, api_key=api_key, timeout=60
     )
     return response["choices"][0]["message"]["content"]
+
+
+@retry(
+    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError]),
+    wait=wait_random_exponential(min=1, max=5),
+    stop=stop_after_delay(120),
+    reraise=True,
+)
+async def request_completion_response(
+    model: str, message: str, api_key: str, temperature: float, max_tokens: int
+) -> str:
+    response = await openai.Completion.acreate(
+        model=model,
+        prompt=message,
+        temperature=temperature,
+        api_key=api_key,
+        max_tokens=max_tokens,
+    )
+    return response["choices"][0]["text"]
+
+
+@retry(
+    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError]),
+    wait=wait_random_exponential(min=1, max=5),
+    stop=stop_after_delay(120),
+    reraise=True,
+)
+async def request_image_create(prompt: str, api_key: str, size: str, user_id: str) -> str:
+    response = await openai.Image.acreate(api_key=api_key, prompt=prompt, size=size, user=user_id)
+    return response["data"][0]["url"]
+
+
+@retry(
+    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError]),
+    wait=wait_random_exponential(min=1, max=5),
+    stop=stop_after_delay(120),
+    reraise=True,
+)
+async def request_image_edit(
+    prompt: str, api_key: str, size: str, user_id: str, image: bytes, mask: Optional[bytes]
+) -> str:
+    response = await openai.Image.create_edit(
+        api_key=api_key, prompt=prompt, size=size, user=user_id, image=image, mask=mask
+    )
+    return response["data"][0]["url"]
+
+
+@retry(
+    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError]),
+    wait=wait_random_exponential(min=1, max=5),
+    stop=stop_after_delay(120),
+    reraise=True,
+)
+async def request_image_variant(
+    prompt: str, api_key: str, size: str, user_id: str, image: bytes
+) -> str:
+    response = await openai.Image.create_variation(
+        api_key=api_key, prompt=prompt, size=size, user=user_id, image=image
+    )
+    return response["data"][0]["url"]

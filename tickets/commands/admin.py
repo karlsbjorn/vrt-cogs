@@ -827,7 +827,7 @@ class AdminCommands(MixinMeta):
         if not panels:
             return await ctx.send(
                 _("There are no panels available!\nUse ")
-                + f"`{ctx.prefix}sset addpanel` "
+                + f"`{ctx.prefix}tset addpanel` "
                 + _("to create one.")
             )
         embeds = []
@@ -990,6 +990,7 @@ class AdminCommands(MixinMeta):
                 if i[0] == role.id:
                     roles.remove(i)
                     await ctx.send(_("{} has been removed from support roles").format(role.name))
+                    break
             else:
                 roles.append(entry)
                 await ctx.send(role.name + _(" has been added to support roles"))
@@ -1079,7 +1080,7 @@ class AdminCommands(MixinMeta):
         If the panel uses threads, this needs to be a normal text channel.
         If the panel uses channels, this needs to be a category.
 
-        If the panel is a channel type and a channel is used, the bot will use the category associated wit the channel.
+        If the panel is a channel type and a channel is used, the bot will use the category associated with the channel.
 
         To remove the alt channel, specify the existing one
         """

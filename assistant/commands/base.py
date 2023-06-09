@@ -2,17 +2,15 @@ import logging
 
 import discord
 from redbot.core import commands
-from redbot.core.utils.chat_formatting import pagify
 
 from ..abc import MixinMeta
-from ..common.utils import get_attachments
-from ..models import READ_EXTENSIONS
+from ..common.utils import can_use
 
 log = logging.getLogger("red.vrt.assistant.base")
 
 
 class Base(MixinMeta):
-    @commands.command(name="chat")
+    @commands.command(name="chat", aliases=["ask"])
     @commands.guild_only()
     @commands.cooldown(1, 6, commands.BucketType.user)
     async def ask_question(self, ctx: commands.Context, *, question: str):
@@ -20,33 +18,24 @@ class Base(MixinMeta):
         Chat with [botname]!
 
         Conversations are *Per* user *Per* channel, meaning a conversation you have in one channel will be kept in memory separately from another conversation in a separate channel
+
+        **Optional Arguments**
+        `--outputfile <filename>` - uploads a file with the reply instead (no spaces)
+        `--extract` - extracts code blocks from the reply
+
+        **Example**
+        `[p]chat write a python script that prints "Hello World!"`
+        - Including `--outputfile hello.py` will output a file containing the whole response.
+        - Including `--outputfile hello.py --extract` will output a file containing just the code blocks and send the rest as text.
+        - Including `--extract` will send the code separately from the reply
         """
         conf = self.db.get_conf(ctx.guild)
         if not conf.api_key:
             return await ctx.send("This command requires an API key from OpenAI to be configured!")
+        if not await can_use(ctx.message, conf.blacklist):
+            return
         async with ctx.typing():
-            if attachments := get_attachments(ctx.message):
-                for i in attachments:
-                    if not any(i.filename.lower().endswith(ext) for ext in READ_EXTENSIONS):
-                        continue
-                    text = await i.read()
-                    question += f"\n\nUploaded [{i.filename}]: {text.decode()}"
-            try:
-                reply = await self.get_chat_response(
-                    question, ctx.author, ctx.guild, ctx.channel, conf
-                )
-                if len(reply) < 2000:
-                    return await ctx.reply(reply, mention_author=conf.mention)
-
-                embeds = [
-                    discord.Embed(description=p)
-                    for p in pagify(reply, page_length=4000, delims=("```", "\n"))
-                ]
-                await ctx.reply(embeds=embeds, mention_author=conf.mention)
-
-            except Exception as e:
-                await ctx.send(f"**Error**\n```py\n{e}\n```")
-                log.error("Chat command failed", exc_info=e)
+            await self.handle_message(ctx.message, question, conf)
 
     @commands.command(name="convostats")
     @commands.guild_only()
@@ -62,9 +51,13 @@ class Base(MixinMeta):
             user = ctx.author
         conf = self.db.get_conf(ctx.guild)
 <<<<<<< HEAD
+<<<<<<< HEAD
         conversation = self.chats.get_conversation(user)
 =======
         conversation = self.chats.get_conversation(user.id, ctx.channel.id, ctx.guild.id)
+>>>>>>> main
+=======
+        conversation = self.db.get_conversation(user.id, ctx.channel.id, ctx.guild.id)
 >>>>>>> main
         messages = len(conversation.messages)
         embed = discord.Embed(
@@ -87,9 +80,13 @@ class Base(MixinMeta):
         This will clear all message history between you and the bot for this channel
         """
 <<<<<<< HEAD
+<<<<<<< HEAD
         conversation = self.chats.get_conversation(ctx.author)
 =======
         conversation = self.chats.get_conversation(ctx.author.id, ctx.channel.id, ctx.guild.id)
 >>>>>>> main
+=======
+        conversation = self.db.get_conversation(ctx.author.id, ctx.channel.id, ctx.guild.id)
+>>>>>>> main
         conversation.reset()
-        await ctx.tick()
+        await ctx.send("Your conversation in this channel has been reset!")

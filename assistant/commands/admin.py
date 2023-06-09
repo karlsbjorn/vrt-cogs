@@ -32,7 +32,7 @@ from ..common.utils import (
     num_tokens_from_string,
     request_embedding,
 )
-from ..models import MODELS, Embedding
+from ..models import CHAT, COMPLETION, Embedding
 from ..views import EmbeddingMenu, SetAPI
 
 log = logging.getLogger("red.vrt.assistant.admin")
@@ -71,6 +71,7 @@ class Admin(MixinMeta):
             f"`Retention Expire:  `{conf.max_retention_time}s\n"
             f"`Max Tokens:        `{conf.max_tokens}\n"
             f"`Min Length:        `{conf.min_length}\n"
+            f"`Temperature:       `{conf.temperature}\n"
             f"`System Message:    `{humanize_number(system_tokens)} tokens\n"
             f"`Initial Prompt:    `{humanize_number(prompt_tokens)} tokens\n"
             f"`Model:             `{conf.model}\n"
@@ -109,6 +110,27 @@ class Admin(MixinMeta):
             joined = "\n".join(conf.regex_blacklist)
             for p in pagify(joined, page_length=1000):
                 embed.add_field(name="Regex Blacklist", value=box(p), inline=False)
+
+        persist = (
+            "Conversations are stored persistently"
+            if self.db.persistent_conversations
+            else "conversations are stored in memory until reboot or reload"
+        )
+        embed.add_field(name="Persistent Conversations", value=persist, inline=False)
+
+        blacklist = []
+        for object_id in conf.blacklist:
+            discord_obj = (
+                ctx.guild.get_role(object_id)
+                or ctx.guild.get_member(object_id)
+                or ctx.guild.get_channel_or_thread(object_id)
+            )
+            if discord_obj:
+                blacklist.append(discord_obj.mention)
+            else:
+                blacklist.append(f"{object_id}?")
+        if blacklist:
+            embed.add_field(name="Blacklist", value=humanize_list(blacklist), inline=False)
 
         embed.set_footer(text=f"Showing settings for {ctx.guild.name}")
         files = []
@@ -156,6 +178,18 @@ class Admin(MixinMeta):
         await ctx.send(f"Timezone set to **{timezone}** (`{time}`)")
         conf = self.db.get_conf(ctx.guild)
         conf.timezone = timezone
+        await self.save_conf()
+
+    @assistant.command(name="persist")
+    @commands.is_owner()
+    async def toggle_persistent_conversations(self, ctx: commands.Context):
+        """Toggle persistent conversations"""
+        if self.db.persistent_conversations:
+            self.db.persistent_conversations = False
+            await ctx.send("Persistent conversations have been **Disabled**")
+        else:
+            self.db.persistent_conversations = True
+            await ctx.send("Persistent conversations have been **Enabled**")
         await self.save_conf()
 
     @assistant.command(name="train")
@@ -237,6 +271,7 @@ class Admin(MixinMeta):
         `members` - current member count of the server
         `user` - the current user asking the question
         `roles` - the names of the user's roles
+        `rolementions` - the mentions of the user's roles
         `avatar` - the user's avatar url
         `owner` - the owner of the server
         `servercreated` - the create date/time of the server
@@ -313,6 +348,7 @@ class Admin(MixinMeta):
         `members` - current member count of the server
         `user` - the current user asking the question
         `roles` - the names of the user's roles
+        `rolementions` - the mentions of the user's roles
         `avatar` - the user's avatar url
         `owner` - the owner of the server
         `servercreated` - the create date/time of the server
@@ -470,6 +506,20 @@ class Admin(MixinMeta):
             await ctx.tick()
         await self.save_conf()
 
+    @assistant.command(name="temperature")
+    async def set_temperature(self, ctx: commands.Context, temperature: float):
+        """
+        Set the temperature for the model (0.0 - 1.0)
+
+        Closer to 0 is more concise and accurate while closer to 1 is more imaginative
+        """
+        if not 0 <= temperature <= 1:
+            return await ctx.send("Temperature must be between 0.0 and 1.0")
+        conf = self.db.get_conf(ctx.guild)
+        conf.temperature = temperature
+        await self.save_conf()
+        await ctx.tick()
+
     @assistant.command(name="minlength")
     async def min_length(self, ctx: commands.Context, min_question_length: int):
         """
@@ -505,14 +555,28 @@ class Admin(MixinMeta):
         await self.save_conf()
 
     @assistant.command(name="model")
-    async def set_model(self, ctx: commands.Context, model: str):
+    async def set_model(self, ctx: commands.Context, model: str = None):
         """
         Set the GPT model to use
 
-        Valid models are `gpt-3.5-turbo`, `gpt-4`, and `gpt-4-32k`
+        Valid models and their context info:
+        `Model-Name`: MaxTokens, ModelType
+        `gpt-3.5-turbo`: 4096, chat
+        `gpt-4`: 8192, chat
+        `gpt-4-32k`: 32768, chat
+        `code-davinci-002`: 8001, chat
+        `text-davinci-003`: 4097, completion
+        `text-davinci-002`: 4097, completion
+        `text-curie-001`: 2049, completion
+        `text-babbage-001`: 2049, completion
+        `text-ada-001`: 2049, completion
         """
-        if model not in MODELS:
-            return await ctx.send("Invalid model type!")
+        valid = humanize_list(CHAT + COMPLETION)
+        if not model:
+            return await ctx.send(f"Valid models are `{valid}`")
+        model = model.lower().strip()
+        if model not in CHAT + COMPLETION:
+            return await ctx.send(f"Invalid model type! Valid model types are `{valid}`")
         conf = self.db.get_conf(ctx.guild)
         conf.model = model
         await ctx.send(f"The {model} model will now be used")
@@ -890,3 +954,43 @@ class Admin(MixinMeta):
     async def get_matches(self, guild_id: int, current: str) -> List[Choice]:
         entries = await self.get_embedding_entries(guild_id)
         return [Choice(name=i, value=i) for i in entries if current.lower() in i.lower()][:25]
+
+    @assistant.command(name="wipecog")
+    @commands.is_owner()
+    async def wipe_cog(self, ctx: commands.Context, confirm: bool):
+        """Wipe all settings and data for entire cog"""
+        if not confirm:
+            return await ctx.send("Not wiping cog")
+        self.db.configs.clear()
+        self.db.conversations.clear()
+        self.db.persistent_conversations = False
+        await self.save_conf()
+        await ctx.send("Cog has been wiped!")
+
+    @assistant.command(name="blacklist")
+    async def blacklist_settings(
+        self,
+        ctx: commands.Context,
+        *,
+        channel_role_member: Union[
+            discord.Member,
+            discord.Role,
+            discord.TextChannel,
+            discord.CategoryChannel,
+            discord.Thread,
+            discord.ForumChannel,
+        ],
+    ):
+        """
+        Add/Remove items from the blacklist
+
+        `channel_role_member` can be a member, role, channel, or category channel
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if channel_role_member.id in conf.blacklist:
+            conf.blacklist.remove(channel_role_member.id)
+            await ctx.send(f"{channel_role_member.name} has been removed from the blacklist")
+        else:
+            conf.blacklist.append(channel_role_member.id)
+            await ctx.send(f"{channel_role_member.name} has been added to the blacklist")
+        await self.save_conf()
