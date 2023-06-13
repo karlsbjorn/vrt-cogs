@@ -92,8 +92,13 @@ class API(MixinMeta):
                     await message.reply(error["message"], mention_author=conf.mention)
                 log.error(f"Invalid Request Error (From listener: {listener})", exc_info=e)
                 return
+            except KeyError as e:
+                await message.channel.send(
+                    f"**KeyError in prompt or system message**\n{box(str(e), 'py')}"
+                )
+                return
             except Exception as e:
-                await message.channel.send(f"**API Error**\n{box(str(e), 'py')}")
+                await message.channel.send(f"**Error**\n{box(str(e), 'py')}")
                 log.error(f"API Error (From listener: {listener})", exc_info=e)
                 return
 
@@ -369,21 +374,22 @@ class API(MixinMeta):
             "timetz": now.strftime("%I:%M %p %Z"),
             "members": guild.member_count,
             "username": author.name if author else "",
-            "user": display_name,
+            "user": author.name if author else "",
+            "displayname": display_name,
             "datetime": str(datetime.now()),
             "roles": humanize_list([role.name for role in roles]),
             "rolementions": humanize_list([role.mention for role in roles]),
             "avatar": author.display_avatar.url if author else "",
-            "owner": guild.owner,
+            "owner": guild.owner.name,
             "servercreated": f"<t:{round(guild.created_at.timestamp())}:F>",
             "server": guild.name,
             "messages": len(conversation.messages),
-            "tokens": conversation.user_token_count(message=message),
-            "retention": conf.max_retention,
-            "retentiontime": conf.max_retention_time,
+            "tokens": str(conversation.user_token_count(message=message)),
+            "retention": str(conf.max_retention),
+            "retentiontime": str(conf.max_retention_time),
             "py": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
             "dpy": discord.__version__,
-            "red": version_info,
+            "red": str(version_info),
             "cogs": humanize_list([self.bot.get_cog(cog).qualified_name for cog in self.bot.cogs]),
             "channelname": channel.name if channel else "",
             "channelmention": channel.mention if channel else "",
