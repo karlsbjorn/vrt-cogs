@@ -1,17 +1,22 @@
 from datetime import datetime
-from typing import Dict, List, Literal, Tuple, Union
+from typing import Callable, Dict, List, Literal, Tuple, Union
 
 import discord
 import orjson
 from openai.embeddings_utils import cosine_similarity
 from pydantic import BaseModel
 
-from .common.utils import num_tokens_from_string
+from .common.utils import compile_function, num_tokens_from_string
 
 MODELS = {
     "gpt-3.5-turbo": 4096,
+    "gpt-3.5-turbo-0613": 4096,
+    "gpt-3.5-turbo-16k": 16384,
+    "gpt-3.5-turbo-16k-0613": 16384,
     "gpt-4": 8192,
+    "gpt-4-0613": 8192,
     "gpt-4-32k": 32768,
+    "gpt-4-32k-0613": 32768,
     "code-davinci-002": 8001,
     "text-davinci-003": 4097,
     "text-davinci-002": 4097,
@@ -21,8 +26,13 @@ MODELS = {
 }
 CHAT = [
     "gpt-3.5-turbo",
+    "gpt-3.5-turbo-0613",
+    "gpt-3.5-turbo-16k",
+    "gpt-3.5-turbo-16k-0613",
     "gpt-4",
+    "gpt-4-0613",
     "gpt-4-32k",
+    "gpt-4-32k-0613",
     "code-davinci-002",
 ]
 COMPLETION = [
@@ -36,6 +46,8 @@ READ_EXTENSIONS = [
     ".txt",
     ".py",
     ".json",
+    ".yml",
+    ".yaml",
     ".xml",
     ".html",
     ".ini",
@@ -76,6 +88,15 @@ class Embedding(BaseModel):
         json_dumps = orjson.dumps
 
 
+class CustomFunction(BaseModel):
+    code: str
+    jsonschema: dict
+
+    class Config:
+        json_loads = orjson.loads
+        json_dumps = orjson.dumps
+
+
 class GuildSettings(BaseModel):
     system_prompt: str = "You are a helpful discord assistant named {botname}"
     prompt: str = "Current time: {timestamp}\nDiscord server you are chatting in: {server}"
@@ -97,8 +118,13 @@ class GuildSettings(BaseModel):
     temperature: float = 0.0
     regex_blacklist: List[str] = [r"^As an AI language model,"]
     blacklist: List[int] = []  # Channel/Role/User IDs
+    block_failed_regex: bool = False
+
     image_tools: bool = True
     image_size: Literal["256x256", "512x512", "1024x1024"] = "1024x1024"
+    use_function_calls: bool = False
+    max_function_calls: int = 10  # Max calls in a row
+    disabled_functions: List[str] = []
 
     class Config:
         json_loads = orjson.loads
@@ -130,15 +156,18 @@ class Conversation(BaseModel):
         return num_tokens_from_string("".join(message["content"] for message in self.messages))
 
     def user_token_count(self, message: str = "") -> int:
-        messages = "".join(message["content"] for message in self.messages)
-        if not self.messages:
-            messages = ""
+        if not self.messages and not message:
+            return 0
+        content = [m["content"] for m in self.messages]
+        messages = "".join(content)
         messages += message
+        if not messages:
+            return 0
         return num_tokens_from_string(messages)
 
-    def conversation_token_count(self, conf: GuildSettings) -> int:
-        initial = conf.system_prompt + conf.prompt
-        return num_tokens_from_string(initial) + self.user_token_count()
+    def conversation_token_count(self, conf: GuildSettings, message: str = "") -> int:
+        initial = conf.system_prompt + conf.prompt + (message if isinstance(message, str) else "")
+        return num_tokens_from_string(initial) + self.user_token_count(message)
 
     def is_expired(self, conf: GuildSettings):
         if not conf.max_retention_time:
@@ -159,7 +188,7 @@ class Conversation(BaseModel):
         self.last_updated = datetime.now().timestamp()
         self.messages.clear()
 
-    def update_messages(self, message: str, role: str) -> None:
+    def update_messages(self, message: str, role: str, name: str = None) -> None:
         """Update conversation cache
 
         Args:
@@ -167,18 +196,21 @@ class Conversation(BaseModel):
             role (str): 'system', 'user' or 'assistant'
             name (str): the name of the bot or user
         """
-        self.messages.append({"role": role, "content": message})
+        message = {"role": role, "content": message}
+        if name:
+            message["name"] = name
+        self.messages.append(message)
         self.last_updated = datetime.now().timestamp()
 
     def prepare_chat(
         self, user_message: str, initial_prompt: str, system_prompt: str
     ) -> List[dict]:
         prepared = []
+        if system_prompt:
+            prepared.append({"role": "system", "content": system_prompt})
         if initial_prompt:
             prepared.append({"role": "user", "content": initial_prompt})
         prepared.extend(self.messages)
-        if system_prompt:
-            prepared.append({"role": "system", "content": system_prompt})
         user_message = {"role": "user", "content": user_message}
         prepared.append(user_message)
         self.messages.append(user_message)
@@ -189,6 +221,7 @@ class DB(BaseModel):
     configs: dict[int, GuildSettings] = {}
     conversations: dict[str, Conversation] = {}
     persistent_conversations: bool = False
+    functions: Dict[str, CustomFunction] = {}
 
     class Config:
         json_loads = orjson.loads
@@ -223,6 +256,19 @@ class DB(BaseModel):
 
         self.conversations[key] = Conversation()
         return self.conversations[key]
+
+    def get_function_calls(self, conf: GuildSettings) -> List[dict]:
+        return [
+            i.jsonschema
+            for i in self.functions.values()
+            if i.jsonschema["name"] not in conf.disabled_functions
+        ]
+
+    def get_function_map(self) -> Dict[str, Callable]:
+        functions = {}
+        for function_name, function in self.functions.items():
+            functions[function_name] = compile_function(function_name, function.code)
+        return functions
 
 
 class NoAPIKey(Exception):

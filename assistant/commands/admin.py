@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import traceback
 from datetime import datetime
 from io import BytesIO
 from typing import List, Union
@@ -13,6 +14,7 @@ import pandas as pd
 import pytz
 from aiocache import cached
 from discord.app_commands import Choice
+from openai.version import VERSION
 from pydantic import ValidationError
 from rapidfuzz import fuzz
 from redbot.core import app_commands, commands
@@ -25,22 +27,16 @@ from redbot.core.utils.chat_formatting import (
 )
 
 from ..abc import MixinMeta
-from ..common.utils import (
-    extract_message_content,
-    fetch_channel_history,
-    get_attachments,
-    num_tokens_from_string,
-    request_embedding,
-)
+from ..common.utils import get_attachments, num_tokens_from_string, request_embedding
 from ..models import CHAT, COMPLETION, Embedding
-from ..views import EmbeddingMenu, SetAPI
+from ..views import CodeMenu, EmbeddingMenu, SetAPI
 
 log = logging.getLogger("red.vrt.assistant.admin")
 
 
 class Admin(MixinMeta):
     @commands.group(name="assistant", aliases=["ass"])
-    @commands.admin()
+    @commands.admin_or_permissions(administrator=True)
     @commands.guild_only()
     async def assistant(self, ctx: commands.Context):
         """
@@ -51,6 +47,7 @@ class Admin(MixinMeta):
         pass
 
     @assistant.command(name="view")
+    @commands.bot_has_permissions(embed_links=True)
     async def view_settings(self, ctx: commands.Context, private: bool = True):
         """
         View current settings
@@ -62,6 +59,7 @@ class Admin(MixinMeta):
         system_tokens = num_tokens_from_string(conf.system_prompt)
         prompt_tokens = num_tokens_from_string(conf.prompt)
         desc = (
+            f"`OpenAI Version:    `{VERSION}\n"
             f"`Enabled:           `{conf.enabled}\n"
             f"`Timezone:          `{conf.timezone}\n"
             f"`Channel:           `{channel}\n"
@@ -78,7 +76,9 @@ class Admin(MixinMeta):
             f"`Embeddings:        `{humanize_number(len(conf.embeddings))}\n"
             f"`Top N Embeddings:  `{conf.top_n}\n"
             f"`Min Relatedness:   `{conf.min_relatedness}\n"
-            f"`Embedding Method:  `{conf.embed_method}"
+            f"`Embedding Method:  `{conf.embed_method}\n"
+            f"`Function Calling:  `{conf.use_function_calls}\n"
+            f"`Maximum Recursion: `{conf.max_function_calls}"
         )
         system_file = (
             discord.File(
@@ -110,6 +110,11 @@ class Admin(MixinMeta):
             joined = "\n".join(conf.regex_blacklist)
             for p in pagify(joined, page_length=1000):
                 embed.add_field(name="Regex Blacklist", value=box(p), inline=False)
+            embed.add_field(
+                name="Regex Failure Blocking",
+                value=f"Block reply if regex replacement fails: **{conf.block_failed_regex}**",
+                inline=False,
+            )
 
         persist = (
             "Conversations are stored persistently"
@@ -149,6 +154,7 @@ class Admin(MixinMeta):
             await ctx.send(embed=embed, files=files)
 
     @assistant.command(name="openaikey", aliases=["key"])
+    @commands.bot_has_permissions(embed_links=True)
     async def set_openai_key(self, ctx: commands.Context):
         """Set your OpenAI key"""
         view = SetAPI(ctx.author)
@@ -192,109 +198,50 @@ class Admin(MixinMeta):
             await ctx.send("Persistent conversations have been **Enabled**")
         await self.save_conf()
 
-    @assistant.command(name="train")
-    async def create_training_prompt(
-        self,
-        ctx: commands.Context,
-        *channels: Union[discord.TextChannel, discord.Thread, discord.ForumChannel],
-    ):
-        """
-        Automatically create embedding data to train your assistant
-
-        **How to Use**
-        Include channels that give helpful info about your server, NOT normal chat channels.
-        The bot will scan all pinned messages in addition to the most recent 50 messages.
-        The idea is to have the bot compile the information, condense it and provide a usable training embeddings for your Q&A channel.
-
-        **Note:** This just meant to get you headed in the right direction, creating quality training data takes trial and error.
-        """
-        if not channels:
-            return await ctx.send_help()
-        conf = self.db.get_conf(ctx.guild)
-        loading = "https://i.imgur.com/l3p6EMX.gif"
-        color = ctx.author.color
-        channel_list = humanize_list([c.mention for c in channels])
-        embed = discord.Embed(
-            description="Scanning channels shortly, please wait...",
-            color=color,
-        )
-        embed.set_thumbnail(url=loading)
-        embed.add_field(name="Channels being trained", value=channel_list)
-        async with ctx.typing():
-            msg = await ctx.send(embed=embed)
-            created = 0
-            for channel in channels:
-                try:
-                    messages = []
-                    for i in await fetch_channel_history(channel, oldest=False, limit=50):
-                        messages.append(i)
-                    text = f"Channel name: {channel.name}\nChannel mention: {channel.mention}\n"
-                    if isinstance(channel, discord.TextChannel):
-                        text += f"Channel topic: {channel.topic}\n"
-                        for pin in await channel.pins():
-                            messages.append(pin)
-                    for message in messages:
-                        if content := extract_message_content(message):
-                            text += content
-                            key = f"{channel.name}-{message.id}"
-                            embedding = await request_embedding(text, conf.api_key)
-                            if not embedding:
-                                continue
-                            conf.embeddings[key] = Embedding(text=text, embedding=embedding)
-                            created += 1
-                except discord.Forbidden:
-                    await ctx.send(f"I dont have access to {channel.mention}")
-
-            if not created:
-                embed.description = "No content found!"
-                embed.clear_fields()
-                return await msg.edit(embed=embed)
-            embed.description = f"Training finished, {created} embedding entries created!"
-            embed.clear_fields()
-            await msg.edit(embed=embed)
-            await self.save_conf()
-
     @assistant.command(name="prompt", aliases=["pre"])
     async def set_initial_prompt(self, ctx: commands.Context, *, prompt: str = ""):
         """
         Set the initial prompt for GPT to use
 
-        **Tips**
-        You can use the following placeholders in your prompt for real-time info
-        To use a place holder simply format your prompt as "`some {placeholder} with text`"
-        `botname` - The bots display name
-        `timestamp` - the current time in Discord's timestamp format
-        `day` - the current day of the week
-        `date` - todays date (Month, Day, Year)
-        `time` - current time in 12hr format (HH:MM AM/PM)
-        `timetz` - current time in 12hr format (HH:MM AM/PM Timezone)
-        `members` - current member count of the server
-        `username` - username of the person chatting
-        `displayname` - display name of the person chatting
-        `roles` - the names of the user's roles
-        `rolementions` - the mentions of the user's roles
-        `avatar` - the user's avatar url
-        `owner` - the owner of the server
-        `servercreated` - the create date/time of the server
-        `server` - the name of the server
-        `messages` - count of messages between the user and bot
-        `tokens` - the token count of the current conversation
-        `retention` - max retention number
-        `retentiontime` - max retention time seconds
-        `py` - python version
-        `dpy` - discord.py version
-        `red` - red version
-        `cogs` - list of currently loaded cogs
-        `channelname` - name of the channel the conversation is taking place in
-        `channelmention` - current channel mention
-        `topic` - topic of current channel (if not forum or thread)
+        **Placeholders**
+        - **botname**: [botname]
+        - **timestamp**: discord timestamp
+        - **day**: Mon-Sun
+        - **date**: MM-DD-YYYY
+        - **time**: HH:MM AM/PM
+        - **timetz**: HH:MM AM/PM Timezone
+        - **members**: server member count
+        - **username**: user's name
+        - **displayname**: user's display name
+        - **roles**: the names of the user's roles
+        - **rolementions**: the mentions of the user's roles
+        - **avatar**: the user's avatar url
+        - **owner**: the owner of the server
+        - **servercreated**: the create date/time of the server
+        - **server**: the name of the server
+        - **py**: python version
+        - **dpy**: discord.py version
+        - **red**: red version
+        - **cogs**: list of currently loaded cogs
+        - **channelname**: name of the channel the conversation is taking place in
+        - **channelmention**: current channel mention
+        - **topic**: topic of current channel (if not forum or thread)
+        - **banktype**: whether the bank is global or not
+        - **currency**: currency name
+        - **bank**: bank name
+        - **balance**: the user's current balance
         """
         attachments = get_attachments(ctx.message)
         if attachments:
             try:
                 prompt = (await attachments[0].read()).decode()
             except Exception as e:
-                return await ctx.send(f"Error:```py\n{e}\n```")
+                await ctx.send(
+                    f"Failed to read `{attachments[0].filename}`, bot owner can use `{ctx.prefix}traceback` for more information"
+                )
+                log.error("Failed to parse initial prompt", exc_info=e)
+                self.bot._last_exception = traceback.format_exc()
+                return
 
         conf = self.db.get_conf(ctx.guild)
 
@@ -334,45 +281,45 @@ class Admin(MixinMeta):
         """
         Set the system prompt for GPT to use
 
-        **Note**
-        The current GPT-3.5-Turbo model doesn't really listen to the system prompt very well.
-
-        **Tips**
-        You can use the following placeholders in your prompt for real-time info
-        To use a place holder simply format your prompt as "`some {placeholder} with text`"
-        `botname` - The bots display name
-        `timestamp` - the current time in Discord's timestamp format
-        `day` - the current day of the week
-        `date` - todays date (Month, Day, Year)
-        `time` - current time in 12hr format (HH:MM AM/PM)
-        `timetz` - current time in 12hr format (HH:MM AM/PM Timezone)
-        `members` - current member count of the server
-        `username` - username of the person chatting
-        `displayname` - display name of the person chatting
-        `roles` - the names of the user's roles
-        `rolementions` - the mentions of the user's roles
-        `avatar` - the user's avatar url
-        `owner` - the owner of the server
-        `servercreated` - the create date/time of the server
-        `server` - the name of the server
-        `messages` - count of messages between the user and bot
-        `tokens` - the token count of the current conversation
-        `retention` - max retention number
-        `retentiontime` - max retention time seconds
-        `py` - python version
-        `dpy` - discord.py version
-        `red` - red version
-        `cogs` - list of currently loaded cogs
-        `channelname` - name of the channel the conversation is taking place in
-        `channelmention` - current channel mention
-        `topic` - topic of current channel (if not forum or thread)
+        **Placeholders**
+        - **botname**: [botname]
+        - **timestamp**: discord timestamp
+        - **day**: Mon-Sun
+        - **date**: MM-DD-YYYY
+        - **time**: HH:MM AM/PM
+        - **timetz**: HH:MM AM/PM Timezone
+        - **members**: server member count
+        - **username**: user's name
+        - **displayname**: user's display name
+        - **roles**: the names of the user's roles
+        - **rolementions**: the mentions of the user's roles
+        - **avatar**: the user's avatar url
+        - **owner**: the owner of the server
+        - **servercreated**: the create date/time of the server
+        - **server**: the name of the server
+        - **py**: python version
+        - **dpy**: discord.py version
+        - **red**: red version
+        - **cogs**: list of currently loaded cogs
+        - **channelname**: name of the channel the conversation is taking place in
+        - **channelmention**: current channel mention
+        - **topic**: topic of current channel (if not forum or thread)
+        - **banktype**: whether the bank is global or not
+        - **currency**: currency name
+        - **bank**: bank name
+        - **balance**: the user's current balance
         """
         attachments = get_attachments(ctx.message)
         if attachments:
             try:
                 system_prompt = (await attachments[0].read()).decode()
             except Exception as e:
-                return await ctx.send(f"Error:```py\n{e}\n```")
+                await ctx.send(
+                    f"Failed to read `{attachments[0].filename}`, bot owner can use `{ctx.prefix}traceback` for more information"
+                )
+                log.error("Failed to parse initial prompt", exc_info=e)
+                self.bot._last_exception = traceback.format_exc()
+                return
 
         conf = self.db.get_conf(ctx.guild)
 
@@ -522,6 +469,44 @@ class Admin(MixinMeta):
         await self.save_conf()
         await ctx.tick()
 
+    @assistant.command(name="functioncalls")
+    async def toggle_function_calls(self, ctx: commands.Context):
+        """Toggle whether GPT can call functions
+
+        Only the following models can call functions at the moment
+        - gpt-3.5-turbo-0613
+        - gpt-3.5-turbo-16k-0613
+        - gpt-4-0613
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if conf.use_function_calls:
+            conf.use_function_calls = False
+            await ctx.send("Assistant will not call functions")
+        else:
+            conf.use_function_calls = True
+            await ctx.send("Assistant will now call functions as needed")
+        await self.save_conf()
+
+    @assistant.command(name="maxrecursion")
+    async def set_max_recursion(self, ctx: commands.Context, recursion: int):
+        """Set the maximum function calls allowed in a row
+
+        This sets how many times the model can call functions in a row
+
+        Only the following models can call functions at the moment
+        - gpt-3.5-turbo-0613
+        - gpt-3.5-turbo-16k-0613
+        - gpt-4-0613
+        """
+        conf = self.db.get_conf(ctx.guild)
+        recursion = max(0, recursion)
+        if recursion == 0:
+            await ctx.send("Function calls will not be used since recursion is 0")
+        await ctx.send(
+            f"The model can now call various functions up to {recursion} times before returning a response"
+        )
+        conf.max_function_calls = recursion
+
     @assistant.command(name="minlength")
     async def min_length(self, ctx: commands.Context, min_question_length: int):
         """
@@ -562,16 +547,19 @@ class Admin(MixinMeta):
         Set the GPT model to use
 
         Valid models and their context info:
-        `Model-Name`: MaxTokens, ModelType
-        `gpt-3.5-turbo`: 4096, chat
-        `gpt-4`: 8192, chat
-        `gpt-4-32k`: 32768, chat
-        `code-davinci-002`: 8001, chat
-        `text-davinci-003`: 4097, completion
-        `text-davinci-002`: 4097, completion
-        `text-curie-001`: 2049, completion
-        `text-babbage-001`: 2049, completion
-        `text-ada-001`: 2049, completion
+        - Model-Name: MaxTokens, ModelType
+        - gpt-3.5-turbo: 4096, chat
+        - gpt-3.5-turbo-16k: 16384, chat
+        - gpt-4: 8192, chat
+        - gpt-4-32k: 32768, chat
+        - code-davinci-002: 8001, chat
+        - text-davinci-003: 4097, completion
+        - text-davinci-002: 4097, completion
+        - text-curie-001: 2049, completion
+        - text-babbage-001: 2049, completion
+        - text-ada-001: 2049, completion
+
+        Other sub-models are also included
         """
         valid = humanize_list(CHAT + COMPLETION)
         if not model:
@@ -596,6 +584,51 @@ class Admin(MixinMeta):
         conf = self.db.get_conf(ctx.guild)
         conf.embeddings = {}
         await ctx.send("All embedding data has been wiped!")
+        await self.save_conf()
+
+    @assistant.command(name="resetglobalembeddings")
+    @commands.is_owner()
+    async def wipe_global_embeddings(self, ctx: commands.Context, yes_or_no: bool):
+        """
+        Wipe saved embeddings for all servers
+
+        This will delete any and all saved embedding training data for the assistant.
+        """
+        if not yes_or_no:
+            return await ctx.send("Not wiping embedding data")
+        for conf in self.db.configs.values():
+            conf.embeddings = {}
+        await ctx.send("All embedding data has been wiped for all servers!")
+        await self.save_conf()
+
+    @assistant.command(name="resetconversations")
+    async def wipe_conversations(self, ctx: commands.Context, yes_or_no: bool):
+        """
+        Wipe saved conversations for the assistant in this server
+
+        This will delete any and all saved conversations for the assistant.
+        """
+        if not yes_or_no:
+            return await ctx.send("Not wiping conversations")
+        for key, convo in self.db.conversations.items():
+            if ctx.guild.id == int(key.split("-")[2]):
+                convo.messages.clear()
+        await ctx.send("Conversations have been wiped in this server!")
+        await self.save_conf()
+
+    @assistant.command(name="resetglobalconversations")
+    @commands.is_owner()
+    async def wipe_global_conversations(self, ctx: commands.Context, yes_or_no: bool):
+        """
+        Wipe saved conversations for the assistant in all servers
+
+        This will delete any and all saved conversations for the assistant.
+        """
+        if not yes_or_no:
+            return await ctx.send("Not wiping conversations")
+        for convo in self.db.conversations.values():
+            convo.messages.clear()
+        await ctx.send("Conversations have been wiped for all servers!")
         await self.save_conf()
 
     @assistant.command(name="topn")
@@ -646,7 +679,26 @@ class Admin(MixinMeta):
             await ctx.send(f"`{regex}` has been **Added** to the blacklist")
         await self.save_conf()
 
+    @assistant.command(name="regexfailblock")
+    @commands.is_owner()
+    async def toggle_regex_fail_blocking(self, ctx: commands.Context):
+        """
+        Toggle whether failed regex blocks the assistant's reply
+
+        Some regexes can cause [catastrophically backtracking](https://www.rexegg.com/regex-explosive-quantifiers.html)
+        The bot can safely handle if this happens and will either continue on, or block the response.
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if conf.block_failed_regex:
+            conf.block_failed_regex = False
+            await ctx.send("If a regex blacklist fails, the bots reply will be blocked")
+        else:
+            conf.block_failed_regex = True
+            await ctx.send("If a reges blacklist fails, the bot will still reply")
+        await self.save_conf()
+
     @assistant.command(name="embeddingtest", aliases=["etest"])
+    @commands.bot_has_permissions(embed_links=True)
     async def test_embedding_response(self, ctx: commands.Context, *, question: str):
         """
         Fetch related embeddings according to the current settings along with their scores
@@ -819,6 +871,7 @@ class Admin(MixinMeta):
             )
 
     @assistant.command(name="exportcsv")
+    @commands.bot_has_permissions(attach_files=True)
     async def export_embeddings_csv(self, ctx: commands.Context):
         """Export embeddings to a .csv file
 
@@ -865,6 +918,7 @@ class Admin(MixinMeta):
                 await ctx.send("File is still too large even with compression!")
 
     @assistant.command(name="exportjson")
+    @commands.bot_has_permissions(attach_files=True)
     async def export_embeddings_json(self, ctx: commands.Context):
         """Export embeddings to a json file"""
         conf = self.db.get_conf(ctx.guild)
@@ -905,7 +959,7 @@ class Admin(MixinMeta):
     @commands.hybrid_command(name="embeddings", aliases=["emenu"])
     @app_commands.describe(query="Name of the embedding entry")
     @commands.guild_only()
-    @commands.admin()
+    @commands.admin_or_permissions(administrator=True)
     async def embeddings(self, ctx: commands.Context, *, query: str = ""):
         """Manage embeddings for training
 
@@ -943,6 +997,42 @@ class Admin(MixinMeta):
                 break
 
         await view.start()
+
+    @commands.hybrid_command(name="customfunctions", aliases=["customfunction", "customfunc"])
+    @commands.guild_only()
+    @commands.guildowner()
+    async def custom_functions(self, ctx: commands.Context):
+        """
+        Add custom function calls for Assistant to use
+
+        **READ**
+        - [Function Call Docs](https://platform.openai.com/docs/guides/gpt/function-calling)
+        - [OpenAI Cookbook](https://github.com/openai/openai-cookbook/blob/main/examples/How_to_call_functions_with_chat_models.ipynb)
+        - [JSON Schema Reference](https://json-schema.org/understanding-json-schema/)
+
+        Only these two models can use function calls as of now:
+        - gpt-3.5-turbo-0613
+        - gpt-4-0613
+
+        The following objects are passed by default as keyword arguments.
+        - **user**: the user currently chatting with the bot (discord.Member)
+        - **channel**: channel the user is chatting in (TextChannel|Thread|ForumChannel)
+        - **guild**: current guild (discord.Guild)
+        - **bot**: the bot object (Red)
+        - **conf**: the config model for Assistant (GuildSettings)
+        - All functions **MUST** include `*args, **kwargs` in the params and return a string
+        ```python
+        # Can be either sync or async
+        async def func(*args, **kwargs) -> str:
+        ```
+        Only bot owner can manage this, guild owners can see descriptions but not code
+        """
+        if ctx.interaction:
+            await ctx.interaction.response.defer()
+
+        view = CodeMenu(ctx, self.db, self.registry, self.save_conf)
+        await view.get_pages()
+        return await view.start()
 
     @embeddings.autocomplete("query")
     async def embeddings_complete(self, interaction: discord.Interaction, current: str):

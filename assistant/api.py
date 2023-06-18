@@ -1,19 +1,30 @@
 import asyncio
+import functools
+import json
 import logging
+import multiprocessing as mp
 import re
 import sys
+import traceback
 from datetime import datetime
+from inspect import iscoroutinefunction
 from io import BytesIO
-from typing import List, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import discord
 import pytz
 from openai.error import InvalidRequestError
-from redbot.core import version_info
-from redbot.core.utils.chat_formatting import box, humanize_list, pagify
+from redbot.core import bank, version_info
+from redbot.core.utils.chat_formatting import (
+    box,
+    humanize_list,
+    humanize_number,
+    pagify,
+)
 
 from .abc import MixinMeta
 from .common.utils import (
+    compile_function,
     compile_messages,
     extract_code_blocks,
     extract_code_blocks_with_lang,
@@ -84,13 +95,37 @@ class API(MixinMeta):
             )
         else:
             try:
+                if conf.use_function_calls:
+                    function_calls = self.db.get_function_calls(conf)
+                    function_map = self.db.get_function_map()
+                    for cog_functions in self.registry.values():
+                        function_calls.extend(cog_functions)
+                        for function_name, function in cog_functions.items():
+                            function_map[function_name] = compile_function(
+                                function_name, function.code
+                            )
+
+                else:
+                    function_calls = []
+                    function_map = {}
                 reply = await self.get_chat_response(
-                    question, message.author, message.guild, message.channel, conf
+                    question,
+                    message.author,
+                    message.guild,
+                    message.channel,
+                    conf,
+                    function_calls,
+                    function_map,
                 )
             except InvalidRequestError as e:
                 if error := e.error:
+                    # OpenAI related error, doesn't need to be restricted to bot owner only
                     await message.reply(error["message"], mention_author=conf.mention)
-                log.error(f"Invalid Request Error (From listener: {listener})", exc_info=e)
+                    log.error(
+                        f"Invalid Request Error (From listener: {listener})\n{error}", exc_info=e
+                    )
+                else:
+                    log.error(f"Invalid Request Error (From listener: {listener})", exc_info=e)
                 return
             except KeyError as e:
                 await message.channel.send(
@@ -98,8 +133,12 @@ class API(MixinMeta):
                 )
                 return
             except Exception as e:
-                await message.channel.send(f"**Error**\n{box(str(e), 'py')}")
+                prefix = (await self.bot.get_valid_prefixes(message.guild))[0]
+                await message.channel.send(
+                    f"Uh oh, something went wrong! Bot owner can use `{prefix}traceback` to view the error."
+                )
                 log.error(f"API Error (From listener: {listener})", exc_info=e)
+                self.bot._last_exception = traceback.format_exc()
                 return
 
         files = None
@@ -139,82 +178,52 @@ class API(MixinMeta):
         files: Optional[List[discord.File]],
         reply: bool = False,
     ):
-        if reply:
-            if len(content) <= 2000:
-                try:
-                    return await message.reply(content, files=files, mention_author=conf.mention)
-                except discord.HTTPException:
-                    return await message.channel.send(content, files=files)
-            elif len(content) <= 4000:
+        embed_perms = message.channel.permissions_for(message.guild.me).embed_links
+        file_perms = message.channel.permissions_for(message.guild.me).attach_files
+        if files and not file_perms:
+            files = []
+            content += "\nMissing 'attach files' permissions!"
+        delims = ("```", "\n")
+
+        async def send(
+            content: Optional[str] = None,
+            embed: Optional[discord.Embed] = None,
+            embeds: Optional[List[discord.Embed]] = None,
+            files: Optional[List[discord.File]] = [],
+            mention: bool = False,
+        ):
+            if reply:
                 try:
                     return await message.reply(
-                        embed=discord.Embed(description=content),
+                        content=content,
+                        embed=embed,
+                        embeds=embeds,
                         files=files,
-                        mention_author=conf.mention,
+                        mention_author=mention,
                     )
                 except discord.HTTPException:
-                    return await message.channel.send(
-                        embed=discord.Embed(description=content), files=files
-                    )
+                    pass
+            return await message.channel.send(
+                content=content, embed=embed, embeds=embeds, files=files
+            )
+
+        if len(content) <= 2000:
+            await send(content, files=files, mention=conf.mention)
+        elif len(content) <= 4000 and embed_perms:
+            await send(embed=discord.Embed(description=content), files=files, mention=conf.mention)
+        elif embed_perms:
             embeds = [
                 discord.Embed(description=p)
-                for p in pagify(
-                    content,
-                    page_length=3950,
-                    delims=(
-                        "```",
-                        "\n",
-                    ),
-                )
+                for p in pagify(content, page_length=3900, delims=delims)
             ]
-            try:
-                await message.reply(embeds=embeds, files=files, mention_author=conf.mention)
-            except discord.HTTPException:
-                try:
-                    for index, embed in enumerate(embeds):
-                        if index == 0:
-                            await message.reply(
-                                embed=embed,
-                                files=files,
-                                mention_author=conf.mention,
-                            )
-                        else:
-                            await message.reply(embed=embed, mention_author=conf.mention)
-                except discord.HTTPException:
-                    for index, embed in enumerate(embeds):
-                        if index == 0:
-                            await message.channel.send(embed=embed, files=files)
-                        else:
-                            await message.channel.send(embed=embed)
+            await send(embeds=embeds, files=files, mention=conf.mention)
         else:
-            if len(content) <= 2000:
-                return await message.channel.send(content, files=files)
-            elif len(content) <= 4000:
-                return await message.channel.send(
-                    embed=discord.Embed(description=content), files=files
-                )
-            embeds = [
-                discord.Embed(description=p)
-                for p in pagify(
-                    content,
-                    page_length=3950,
-                    delims=(
-                        "```",
-                        "\n",
-                    ),
-                )
-            ]
-            try:
-                await message.channel.send(embeds=embeds, files=files)
-            except discord.HTTPException:
-                for index, embed in enumerate(embeds):
-                    if index == 0:
-                        await message.channel.send(
-                            embed=embed,
-                            files=files,
-                        )
-                    else:
-                        await message.channel.send(embed=embed)
+            pages = [p for p in pagify(content, page_length=2000, delims=delims)]
+            for index, p in enumerate(pages):
+                if index == 0:
+                    await send(content=p, files=files, mention=conf.mention)
+                else:
+                    await send(content=p)
 
     async def get_chat_response(
         self,
@@ -224,10 +233,16 @@ class API(MixinMeta):
         channel: Union[discord.TextChannel, discord.Thread, discord.ForumChannel, int],
         conf: GuildSettings,
 <<<<<<< HEAD
+<<<<<<< HEAD
     ) -> str:
         conversation = self.chats.get_conversation(author)
 =======
     ):
+=======
+        function_calls: Optional[List[dict]] = [],
+        function_map: Dict[str, Callable] = {},
+    ) -> str:
+>>>>>>> main
         """Call the API asynchronously"""
         conversation = self.db.get_conversation(
             author if isinstance(author, int) else author.id,
@@ -239,6 +254,7 @@ class API(MixinMeta):
             author = guild.get_member(author)
         if isinstance(channel, int):
             channel = guild.get_channel(channel)
+<<<<<<< HEAD
 >>>>>>> main
         try:
             query_embedding = await request_embedding(text=message, api_key=conf.api_key)
@@ -260,28 +276,168 @@ class API(MixinMeta):
                     messages=messages,
                     temperature=conf.temperature,
                     api_key=conf.api_key,
+=======
+
+        query_embedding = await request_embedding(text=message, api_key=conf.api_key)
+        if not query_embedding:
+            log.info(f"Could not get embedding for message: {message}")
+
+        params = {
+            "banktype": "global bank" if await bank.is_global() else "local bank",
+            "currency": await bank.get_currency_name(guild),
+            "bank": await bank.get_bank_name(guild),
+            "balance": humanize_number(
+                await bank.get_balance(
+                    guild.get_member(author) if isinstance(author, int) else author,
+>>>>>>> main
                 )
-            else:
-                max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
-                compiled = compile_messages(messages)
-                cut_message = token_cut(compiled, max_tokens)
-                tokens_to_use = round((max_tokens - num_tokens_from_string(cut_message)) * 0.8)
-                reply = await request_completion_response(
+            ),
+        }
+        messages = await asyncio.to_thread(
+            self.prepare_messages,
+            message,
+            guild,
+            conf,
+            conversation,
+            author,
+            channel,
+            query_embedding,
+            params,
+        )
+        if conf.model in CHAT:
+            reply = "Could not get reply!"
+            calls = 0
+            while True:
+                calls += 1
+                if calls >= conf.max_function_calls:
+                    function_calls = []
+                response = await request_chat_response(
                     model=conf.model,
-                    message=cut_message,
+                    messages=messages,
                     temperature=conf.temperature,
                     api_key=conf.api_key,
-                    max_tokens=tokens_to_use,
+                    functions=function_calls,
                 )
-                for i in ["Assistant:", "assistant:", "System:", "system:", "User:", "user:"]:
-                    reply = reply.replace(i, "").strip()
+                reply = response["content"]
+                function_call = response.get("function_call")
+                if reply and not function_call:
+                    break
+                elif function_call:
+                    if reply:
+                        conversation.update_messages(reply, "assistant")
+                        messages.append({"role": "assistant", "content": reply})
 
-            for regex in conf.regex_blacklist:
-                reply = re.sub(regex, "", reply).strip()
-            conversation.update_messages(reply, "assistant")
-        finally:
-            conversation.cleanup(conf)
+                    function_name = function_call["name"]
+                    arguments = function_call.get("arguments", "{}")
+                    try:
+                        params = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        params = {}
+                        log.error(
+                            f"Failed to parse parameters for custom function {function_name}\nArguments: {arguments}"
+                        )
+                    # Try continuing anyway
+                    if function_name not in function_map:
+                        log.error(f"GPT suggested a function not provided: {function_name}")
+                        reply = "Tried to call a function that doesnt exist, owner has been notified in logs."
+                        break
+                    extras = {
+                        "user": guild.get_member(author) if isinstance(author, int) else author,
+                        "channel": guild.get_channel_or_thread(channel)
+                        if isinstance(channel, int)
+                        else channel,
+                        "guild": guild,
+                        "bot": self.bot,
+                        "conf": conf,
+                    }
+                    kwargs = {**params, **extras}
+                    func = function_map[function_name]
+                    try:
+                        if iscoroutinefunction(func):
+                            result = await func(**kwargs)
+                        else:
+                            result = await asyncio.to_thread(func, **kwargs)
+                    except Exception as e:
+                        log.error(
+                            f"Custom function {function_name} failed to execute!\nArgs: {arguments}",
+                            exc_info=e,
+                        )
+                        reply = f"Tried to call function `{function_name}` and failed. Owner has been notified in logs."
+                        break
+
+                    if isinstance(result, bytes):
+                        result = result.decode()
+                    elif not isinstance(result, str):
+                        result = str(result)
+
+                    log.info(
+                        f"Called function {function_name}\nParams: {params}\nResult: {result}"
+                    )
+
+                    conversation.update_messages(result, "function", function_name)
+                    messages.append({"role": "function", "name": function_name, "content": result})
+                    max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
+                    while (
+                        conversation.conversation_token_count(conf, result) >= max_tokens
+                        and messages
+                    ):
+                        conversation.messages.pop(0)
+                        if conf.system_prompt and conf.prompt and len(messages) >= 3:
+                            messages.pop(2)
+                        elif conf.system_prompt or conf.prompt and len(messages) >= 2:
+                            messages.pop(1)
+                        else:
+                            messages.pop(0)
+                else:
+                    break
+            if calls > 1:
+                log.info(f"Made {calls} function calls in a row")
+        else:
+            max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
+            compiled = compile_messages(messages)
+            cut_message = token_cut(compiled, max_tokens)
+            tokens_to_use = round((max_tokens - num_tokens_from_string(cut_message)) * 0.8)
+            reply = await request_completion_response(
+                model=conf.model,
+                message=cut_message,
+                temperature=conf.temperature,
+                api_key=conf.api_key,
+                max_tokens=tokens_to_use,
+            )
+            for i in ["Assistant:", "assistant:", "System:", "system:", "User:", "user:"]:
+                reply = reply.replace(i, "").strip()
+
+        block = False
+        for regex in conf.regex_blacklist:
+            try:
+                # reply = re.sub(regex, "", reply).strip()
+                reply = await self.safe_regex(regex, reply)
+            except (asyncio.TimeoutError, mp.TimeoutError):
+                log.error(f"Regex {regex} in {guild.name} took too long to process. Skipping...")
+                if conf.block_failed_regex:
+                    block = True
+                continue
+
+        conversation.update_messages(reply, "assistant")
+        conversation.cleanup(conf)
+        if block:
+            reply = "Response failed due to invalid regex, check logs for more info."
         return reply
+
+    async def safe_regex(self, regex: str, content: str):
+        process = self.re_pool.apply_async(
+            re.sub,
+            args=(
+                regex,
+                "",
+                content,
+            ),
+        )
+        task = functools.partial(process.get, timeout=2)
+        loop = asyncio.get_running_loop()
+        new_task = loop.run_in_executor(None, task)
+        subbed = await asyncio.wait_for(new_task, timeout=5)
+        return subbed
 
     def prepare_messages(
         self,
@@ -292,6 +448,7 @@ class API(MixinMeta):
         author: Optional[discord.Member],
         channel: Optional[Union[discord.TextChannel, discord.Thread, discord.ForumChannel]],
         query_embedding: List[float],
+<<<<<<< HEAD
     ) -> str:
 <<<<<<< HEAD
         timestamp = f"<t:{round(datetime.now().timestamp())}:F>"
@@ -349,6 +506,10 @@ class API(MixinMeta):
         if not query_embedding:
             log.info(f"Could not get embedding for message: {message}")
 =======
+=======
+        params: dict,
+    ) -> List[dict]:
+>>>>>>> main
         """Prepare content for calling the GPT API
 
         Args:
@@ -358,14 +519,17 @@ class API(MixinMeta):
             conversation (Conversation): user's conversation object for chat history
             author (Optional[discord.Member]): user chatting with the bot
             channel (Optional[Union[discord.TextChannel, discord.Thread, discord.ForumChannel]]): channel for context
+            query_embedding List[float]: message embedding weights
 
         Returns:
-            str: the response from ChatGPT
+            List[dict]: list of messages prepped for api
         """
         now = datetime.now().astimezone(pytz.timezone(conf.timezone))
         roles = [role for role in author.roles if "everyone" not in role.name] if author else []
         display_name = author.display_name if author else ""
+
         params = {
+            **params,
             "botname": self.bot.user.name,
             "timestamp": f"<t:{round(now.timestamp())}:F>",
             "day": now.strftime("%A"),
@@ -402,11 +566,11 @@ class API(MixinMeta):
         max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
 
         # Dynamically clean up the conversation to prevent going over token limit
-        prompt_tokens = num_tokens_from_string(system_prompt + initial_prompt)
-        while (conversation.token_count() + prompt_tokens) > max_tokens * 0.85:
+        current_tokens = num_tokens_from_string(system_prompt + initial_prompt + message)
+        while (conversation.token_count() + current_tokens) > max_tokens:
             conversation.messages.pop(0)
 
-        total_tokens = conversation.token_count() + prompt_tokens + num_tokens_from_string(message)
+        total_tokens = conversation.token_count() + current_tokens
 
         embeddings = []
         for i in conf.get_related_embeddings(query_embedding):

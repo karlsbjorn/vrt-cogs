@@ -1,17 +1,31 @@
 import asyncio
+import json
 import logging
 from contextlib import suppress
-from typing import Callable, List
+from io import BytesIO
+from typing import Callable, Dict, List
 
 import discord
+import json5
 from rapidfuzz import fuzz
 from redbot.core import commands
-from redbot.core.utils.chat_formatting import pagify
+from redbot.core.utils.chat_formatting import box, pagify
 
-from .common.utils import embedding_embeds, request_embedding
-from .models import Embedding, GuildSettings
+from .common.utils import (
+    code_string_valid,
+    embedding_embeds,
+    extract_code_blocks,
+    function_embeds,
+    get_attachments,
+    json_schema_invalid,
+    request_embedding,
+    wait_message,
+)
+from .models import DB, CustomFunction, Embedding, GuildSettings
 
 log = logging.getLogger("red.vrt.assistant.views")
+ON_EMOJI = "\N{ON WITH EXCLAMATION MARK WITH LEFT RIGHT ARROW ABOVE}"
+OFF_EMOJI = "\N{MOBILE PHONE OFF}"
 
 
 class APIModal(discord.ui.Modal):
@@ -369,3 +383,367 @@ class EmbeddingMenu(discord.ui.View):
         self.page %= len(self.pages)
         self.place = min(self.place, len(self.pages[self.page].fields) - 1)
         await self.message.edit(embed=self.pages[self.page], view=self)
+
+
+class CodeModal(discord.ui.Modal):
+    def __init__(self, schema: str, code: str):
+        super().__init__(title="Function Edit", timeout=None)
+
+        self.schema = ""
+        self.code = ""
+
+        self.schema_field = discord.ui.TextInput(
+            label="JSON Schema",
+            style=discord.TextStyle.paragraph,
+            default=schema,
+            required=True,
+        )
+        self.add_item(self.schema_field)
+        self.code_field = discord.ui.TextInput(
+            label="Code",
+            style=discord.TextStyle.paragraph,
+            default=code,
+            required=True,
+        )
+        self.add_item(self.code_field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.schema = self.schema_field.value
+        self.code = self.code_field.value
+        await interaction.response.defer()
+        self.stop()
+
+
+class CodeMenu(discord.ui.View):
+    def __init__(
+        self,
+        ctx: commands.Context,
+        db: DB,
+        registry: Dict[commands.Cog, Dict[str, CustomFunction]],
+        save_func: Callable,
+    ):
+        super().__init__(timeout=600)
+        self.ctx = ctx
+        self.db = db
+        self.conf = db.get_conf(ctx.guild)
+        self.registry = registry
+        self.save = save_func
+
+        self.has_skip = True
+
+        self.page = 0
+        self.pages: List[discord.Embed] = []
+        self.message: discord.Message = None
+
+        if ctx.author.id not in ctx.bot.owner_ids:
+            self.remove_item(self.new_function)
+            self.remove_item(self.delete)
+            self.remove_item(self.edit)
+            self.remove_item(self.view_function)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This isn't your menu!", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        with suppress(discord.HTTPException):
+            await self.message.edit(view=None)
+        return await super().on_timeout()
+
+    async def get_pages(self) -> None:
+        owner = self.ctx.author.id in self.ctx.bot.owner_ids
+        self.pages = await asyncio.to_thread(
+            function_embeds, self.db.functions, self.registry, owner
+        )
+        if len(self.pages) > 30 and not self.has_skip:
+            self.add_item(self.left10)
+            self.add_item(self.right10)
+            self.close.row = 2
+            self.has_skip = True
+        elif len(self.pages) <= 30 and self.has_skip:
+            self.remove_item(self.left10)
+            self.remove_item(self.right10)
+            self.close.row = 0
+            self.has_skip = False
+
+    async def start(self):
+        self.message = await self.ctx.send(embed=self.pages[self.page], view=self)
+        self.update_button()
+
+    def test_func(self, function_string: str) -> bool:
+        try:
+            compile(function_string, "<string>", "exec")
+            return True
+        except SyntaxError:
+            return False
+
+    def schema_valid(self, schema: dict) -> str:
+        missing = ""
+        if "name" not in schema:
+            missing += "- `name`\n"
+        if "description" not in schema:
+            missing += "- `description`\n"
+        if "parameters" not in schema:
+            missing += "- `parameters`\n"
+        if "parameters" in schema:
+            if "type" not in schema["parameters"]:
+                missing += "- `type` in **parameters**\n"
+            if "properties" not in schema["parameters"]:
+                missing = "- `properties` in **parameters**\n"
+        return missing
+
+    def update_button(self):
+        if not self.pages[self.page].fields:
+            return
+        function_name = self.pages[self.page].description
+        if function_name in self.conf.disabled_functions:
+            self.toggle.emoji = OFF_EMOJI
+            self.toggle.style = discord.ButtonStyle.secondary
+        else:
+            self.toggle.emoji = ON_EMOJI
+            self.toggle.style = discord.ButtonStyle.success
+
+    @discord.ui.button(
+        style=discord.ButtonStyle.secondary, emoji="\N{BLACK LEFT-POINTING DOUBLE TRIANGLE}"
+    )
+    async def left10(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.page -= 10
+        self.page %= len(self.pages)
+        self.update_button()
+        await self.message.edit(embed=self.pages[self.page], view=self)
+
+    @discord.ui.button(
+        style=discord.ButtonStyle.secondary,
+        emoji="\N{LEFTWARDS BLACK ARROW}\N{VARIATION SELECTOR-16}",
+    )
+    async def left(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.page -= 1
+        self.page %= len(self.pages)
+        self.update_button()
+        await self.message.edit(embed=self.pages[self.page], view=self)
+
+    @discord.ui.button(style=discord.ButtonStyle.secondary, emoji="\N{CROSS MARK}")
+    async def close(self, interaction: discord.Interaction, button: discord.Button):
+        await interaction.response.defer()
+        await self.message.delete()
+        self.stop()
+
+    @discord.ui.button(
+        style=discord.ButtonStyle.secondary,
+        emoji="\N{BLACK RIGHTWARDS ARROW}\N{VARIATION SELECTOR-16}",
+    )
+    async def right(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.page += 1
+        self.page %= len(self.pages)
+        self.update_button()
+        await self.message.edit(embed=self.pages[self.page], view=self)
+
+    @discord.ui.button(
+        style=discord.ButtonStyle.secondary, emoji="\N{BLACK RIGHT-POINTING DOUBLE TRIANGLE}"
+    )
+    async def right10(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.page += 10
+        self.page %= len(self.pages)
+        self.update_button()
+        await self.message.edit(embed=self.pages[self.page], view=self)
+
+    @discord.ui.button(
+        style=discord.ButtonStyle.primary, emoji="\N{PRINTER}\N{VARIATION SELECTOR-16}", row=1
+    )
+    async def view_function(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.pages[self.page].fields:
+            return await interaction.response.send_message("No code to inspect!", ephemeral=True)
+        function_name = self.pages[self.page].description
+        if function_name in self.db.functions:
+            entry = self.db.functions[function_name]
+        else:
+            for functions in self.registry.values():
+                if function_name in functions:
+                    entry = functions[function_name]
+                    break
+            else:
+                return await interaction.response.send_message("Cannot find function!")
+        files = [
+            discord.File(
+                BytesIO(json.dumps(entry.jsonschema, indent=2).encode()),
+                filename=f"{function_name}.json",
+            ),
+            discord.File(BytesIO(entry.code.encode()), filename=f"{function_name}.py"),
+        ]
+        await interaction.response.send_message("Here are your custom functions", files=files)
+
+    @discord.ui.button(style=discord.ButtonStyle.success, emoji="\N{SQUARED NEW}", row=1)
+    async def new_function(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            description=(
+                "Reply to this message with the json schema for your function\n"
+                "- [Example Functions](https://github.com/vertyco/vrt-cogs/tree/main/assistant/example-funcs)"
+            ),
+            color=discord.Color.blue(),
+        )
+        await interaction.response.send_message(embed=embed)
+        message = await wait_message(self.ctx)
+        if not message:
+            return
+        attachments = get_attachments(message)
+        try:
+            if attachments:
+                text = (await attachments[0].read()).decode()
+            else:
+                text = message.content
+            if extracted := extract_code_blocks(text):
+                schema = json5.loads(extracted[0].strip())
+            else:
+                schema = json5.loads(text.strip())
+        except Exception as e:
+            return await interaction.followup.send(f"SchemaError\n{box(str(e), 'py')}")
+        if not schema:
+            return await interaction.followup.send("Empty schema!")
+
+        if missing := json_schema_invalid(schema):
+            return await interaction.followup.send(f"Invalid schema!\n**Missing**\n{missing}")
+
+        function_name = schema["name"]
+        embed = discord.Embed(
+            description="Reply to this message with the custom code",
+            color=discord.Color.blue(),
+        )
+        await interaction.followup.send(embed=embed)
+        message = await wait_message(self.ctx)
+        if not message:
+            return
+        attachments = get_attachments(message)
+        if attachments:
+            code = (await attachments[0].read()).decode()
+        else:
+            code = message.content.strip()
+        if extracted := extract_code_blocks(code):
+            code = extracted[0]
+        if not code_string_valid(code):
+            return await interaction.followup.send("Invalid function")
+
+        entry = CustomFunction(code=code, jsonschema=schema)
+        if function_name in self.db.functions:
+            await interaction.followup.send(f"`{function_name}` has been overwritten!")
+        else:
+            await interaction.followup.send(f"`{function_name}` has been created!")
+        self.db.functions[function_name] = entry
+        await self.get_pages()
+        self.page = len(self.pages) - 1
+        self.update_button()
+        await self.message.edit(embed=self.pages[self.page], view=self)
+        await self.save()
+
+    @discord.ui.button(style=discord.ButtonStyle.primary, emoji="\N{MEMO}")
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.pages[self.page].fields:
+            return await interaction.response.send_message("No code to edit!", ephemeral=True)
+
+        function_name = self.pages[self.page].description
+        if function_name not in self.db.functions:
+            for cog, functions in self.registry.items():
+                if function_name in functions:
+                    break
+            else:
+                return await interaction.response.send_message(
+                    "Could not find function!", ephemeral=True
+                )
+            return await interaction.response.send_message(
+                f"This function is managed by the `{cog.qualified_name}` cog and cannot be edited",
+                ephemeral=True,
+            )
+        entry = self.db.functions[function_name]
+        if len(json.dumps(entry.jsonschema, indent=2)) > 4000:
+            return await interaction.response.send_message(
+                "The json schema for this function is too long, you'll need to re-upload it to modify",
+                ephemeral=True,
+            )
+        if len(entry.code) > 4000:
+            return await interaction.response.send_message(
+                "The code for this function is too long, you'll need to re-upload it to modify",
+                ephemeral=True,
+            )
+
+        modal = CodeModal(json.dumps(entry.jsonschema, indent=2), entry.code)
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        if not modal.schema or not modal.code:
+            return
+        text = modal.schema
+        try:
+            schema = json5.loads(text.strip())
+        except Exception as e:
+            return await interaction.followup.send(
+                f"SchemaError\n{box(str(e), 'py')}", ephemeral=True
+            )
+        if not schema:
+            return await interaction.followup.send("Empty schema!")
+        if missing := json_schema_invalid(schema):
+            return await interaction.followup.send(
+                f"Invalid schema!\n**Missing**\n{missing}", ephemeral=True
+            )
+        new_name = schema["name"]
+
+        code = modal.code
+        if not code_string_valid(code):
+            return await interaction.followup.send("Invalid function", ephemeral=True)
+
+        if function_name != new_name:
+            self.db.functions[new_name] = CustomFunction(code=code, jsonschema=schema)
+            del self.db.functions[function_name]
+        else:
+            self.db.functions[function_name].code = code
+            self.db.functions[function_name].jsonschema = schema
+        await interaction.followup.send(f"`{function_name}` function updated!", ephemeral=True)
+        await self.get_pages()
+        await self.message.edit(embed=self.pages[self.page], view=self)
+        await self.save()
+
+    @discord.ui.button(
+        style=discord.ButtonStyle.danger, emoji="\N{WASTEBASKET}\N{VARIATION SELECTOR-16}", row=2
+    )
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.pages[self.page].fields:
+            return await interaction.response.send_message("No code to delete!", ephemeral=True)
+        function_name = self.pages[self.page].description
+        if function_name not in self.db.functions:
+            for cog, functions in self.registry.items():
+                if function_name in functions:
+                    break
+            else:
+                return await interaction.response.send_message(
+                    "Could not find function!", ephemeral=True
+                )
+            return await interaction.response.send_message(
+                f"This function is managed by the `{cog.qualified_name}` cog and cannot be deleted",
+                ephemeral=True,
+            )
+        del self.db.functions[function_name]
+        await self.get_pages()
+        self.page %= len(self.pages)
+        self.update_button()
+        await interaction.response.send_message(
+            f"`{function_name}` has been deleted!", ephemeral=True
+        )
+        await self.message.edit(embed=self.pages[self.page], view=self)
+        await self.save()
+
+    @discord.ui.button(style=discord.ButtonStyle.success, emoji=ON_EMOJI, row=2)
+    async def toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.pages[self.page].fields:
+            return await interaction.response.send_message("No code to toggle!", ephemeral=True)
+        await interaction.response.defer()
+        function_name = self.pages[self.page].description
+        if function_name in self.conf.disabled_functions:
+            self.conf.disabled_functions.remove(function_name)
+        else:
+            self.conf.disabled_functions.append(function_name)
+        self.update_button()
+        await self.message.edit(view=self)
+        await self.save()
