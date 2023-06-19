@@ -1,15 +1,18 @@
 import functools
 import logging
 from io import BytesIO
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Tuple, Union
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import discord
 import pandas as pd
 from aiocache import cached
 from discord import app_commands
+from discord.app_commands.commands import Command as SlashCommand
+from discord.ext.commands.hybrid import HybridAppCommand
 from redbot.core import commands
 from redbot.core.bot import Red
+from redbot.core.commands.commands import HybridCommand, HybridGroup
 from redbot.core.i18n import Translator, cog_i18n
 
 from .formatter import HELP, IGNORE, CustomCmdFmt
@@ -244,3 +247,99 @@ class AutoDocs(commands.Cog):
     @makedocs.autocomplete("cog_name")
     async def get_cog_names(self, inter: discord.Interaction, current: str):
         return await self.get_coglist(current)
+
+    async def get_command_doc(
+        self,
+        guild: discord.Guild,
+        command: Union[
+            HybridGroup,
+            HybridCommand,
+            HybridAppCommand,
+            SlashCommand,
+            commands.Command,
+        ],
+    ):
+        prefixes = await self.bot.get_valid_prefixes(guild)
+        c = CustomCmdFmt(self.bot, command, prefixes[0], True, False, "guildowner", True)
+        return c.get_doc()
+
+    @commands.Cog.listener()
+    async def on_assistant_cog_add(self, cog: commands.Cog):
+        """Registers a command with Assistant enabling it to access to command docs"""
+
+        async def get_command_info(
+            bot: Red, guild: discord.Guild, command_name: str, *args, **kwargs
+        ) -> str:
+            cog = bot.get_cog("AutoDocs")
+            if not cog:
+                return "Cog not loaded!"
+            command = bot.get_command(command_name)
+            if not command:
+                return "Command not found, try running the get_command_names function to get valid commands"
+            doc = await cog.get_command_doc(guild, command)
+            if not doc:
+                return "Failed to fetch info for that command!"
+            return f"Cog name: {cog.qualified_name}\nCommand:\n{doc}"
+
+        schema = {
+            "name": "get_command_info",
+            "description": "Get info about a specific discord bot command",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command_name": {
+                        "type": "string",
+                        "description": "the name of the command (Hint: Use the get_command_names function first to fetch valid names)",
+                    },
+                },
+                "required": ["command_name"],
+            },
+        }
+
+        await cog.register_function(self, schema, get_command_info)
+
+        async def get_command_names(bot: Red, cog_name: str = None, *args, **kwargs):
+            from redbot.core.utils.chat_formatting import humanize_list
+
+            if cog_name:
+                cog = bot.get_cog(cog_name)
+                if not cog:
+                    return "Could not find that cog, try searching a different cog or not including a cog name when searching"
+                names = [i.qualified_name for i in cog.walk_app_commands()] + [
+                    i.qualified_name for i in cog.walk_commands()
+                ]
+            else:
+                names = [i.qualified_name for i in bot.walk_commands()]
+            return humanize_list(names)
+
+        schema = {
+            "name": "get_command_names",
+            "description": "Get a list of available discord bot commands, (Hint: Use this before using the get_command_info function)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cog_name": {
+                        "type": "string",
+                        "description": "the name of the cog, case sensitive (Hint: Use the get_cog_list function to get valid cog names)",
+                    }
+                },
+            },
+        }
+
+        await cog.register_function(self, schema, get_command_names)
+
+        async def get_cog_list(bot: Red, *args, **kwargs):
+            from redbot.core.utils.chat_formatting import humanize_list
+
+            return humanize_list([i for i in bot.cogs])
+
+        schema = {
+            "name": "get_cog_list",
+            "description": "Get a list of currently loaded cogs, use this to help search for commands",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        }
+
+        await cog.register_function(self, schema, get_cog_list)

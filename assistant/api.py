@@ -34,6 +34,7 @@ from .common.utils import (
     request_chat_response,
     request_completion_response,
     request_embedding,
+    safe_message_prep,
     token_cut,
 )
 from .models import CHAT, MODELS, READ_EXTENSIONS, Conversation, GuildSettings
@@ -95,27 +96,8 @@ class API(MixinMeta):
             )
         else:
             try:
-                if conf.use_function_calls:
-                    function_calls = self.db.get_function_calls(conf)
-                    function_map = self.db.get_function_map()
-                    for cog_functions in self.registry.values():
-                        function_calls.extend(cog_functions)
-                        for function_name, function in cog_functions.items():
-                            function_map[function_name] = compile_function(
-                                function_name, function.code
-                            )
-
-                else:
-                    function_calls = []
-                    function_map = {}
                 reply = await self.get_chat_response(
-                    question,
-                    message.author,
-                    message.guild,
-                    message.channel,
-                    conf,
-                    function_calls,
-                    function_map,
+                    question, message.author, message.guild, message.channel, conf
                 )
             except InvalidRequestError as e:
                 if error := e.error:
@@ -234,16 +216,29 @@ class API(MixinMeta):
         conf: GuildSettings,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     ) -> str:
         conversation = self.chats.get_conversation(author)
 =======
     ):
 =======
         function_calls: Optional[List[dict]] = [],
+=======
+        function_calls: List[dict] = [],
+>>>>>>> main
         function_map: Dict[str, Callable] = {},
+        extend_function_calls: bool = True,
     ) -> str:
 >>>>>>> main
         """Call the API asynchronously"""
+        if conf.use_function_calls and extend_function_calls:
+            function_calls.extend(self.db.get_function_calls(conf))
+            function_map.update(self.db.get_function_map())
+            for cog_functions in self.registry.values():
+                for function_name, function in cog_functions.items():
+                    function_calls.append(function.jsonschema)
+                    function_map[function_name] = compile_function(function_name, function.code)
+
         conversation = self.db.get_conversation(
             author if isinstance(author, int) else author.id,
             channel if isinstance(channel, int) else channel.id,
@@ -293,6 +288,13 @@ class API(MixinMeta):
                 )
             ),
         }
+
+        def pop_schema(name: str):
+            for func in function_calls:
+                if func["name"] == name:
+                    function_calls.remove(func)
+                    break
+
         messages = await asyncio.to_thread(
             self.prepare_messages,
             message,
@@ -304,13 +306,17 @@ class API(MixinMeta):
             query_embedding,
             params,
         )
+        last_function_response = ""
+        last_function = ""
         if conf.model in CHAT:
             reply = "Could not get reply!"
             calls = 0
             while True:
-                calls += 1
-                if calls >= conf.max_function_calls:
+                if calls >= conf.max_function_calls or conversation.function_count() >= 64:
                     function_calls = []
+                # Safely prep messages
+                max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
+                messages = safe_message_prep(messages, function_calls, max_tokens)
                 response = await request_chat_response(
                     model=conf.model,
                     messages=messages,
@@ -322,74 +328,73 @@ class API(MixinMeta):
                 function_call = response.get("function_call")
                 if reply and not function_call:
                     break
-                elif function_call:
-                    if reply:
-                        conversation.update_messages(reply, "assistant")
-                        messages.append({"role": "assistant", "content": reply})
+                if not function_call:
+                    continue
+                calls += 1
+                if reply:
+                    conversation.update_messages(reply, "assistant")
+                    messages.append({"role": "assistant", "content": reply})
 
-                    function_name = function_call["name"]
-                    arguments = function_call.get("arguments", "{}")
-                    try:
-                        params = json.loads(arguments)
-                    except json.JSONDecodeError:
-                        params = {}
-                        log.error(
-                            f"Failed to parse parameters for custom function {function_name}\nArguments: {arguments}"
-                        )
-                    # Try continuing anyway
-                    if function_name not in function_map:
-                        log.error(f"GPT suggested a function not provided: {function_name}")
-                        reply = "Tried to call a function that doesnt exist, owner has been notified in logs."
-                        break
-                    extras = {
-                        "user": guild.get_member(author) if isinstance(author, int) else author,
-                        "channel": guild.get_channel_or_thread(channel)
-                        if isinstance(channel, int)
-                        else channel,
-                        "guild": guild,
-                        "bot": self.bot,
-                        "conf": conf,
-                    }
-                    kwargs = {**params, **extras}
-                    func = function_map[function_name]
-                    try:
-                        if iscoroutinefunction(func):
-                            result = await func(**kwargs)
-                        else:
-                            result = await asyncio.to_thread(func, **kwargs)
-                    except Exception as e:
-                        log.error(
-                            f"Custom function {function_name} failed to execute!\nArgs: {arguments}",
-                            exc_info=e,
-                        )
-                        reply = f"Tried to call function `{function_name}` and failed. Owner has been notified in logs."
-                        break
-
-                    if isinstance(result, bytes):
-                        result = result.decode()
-                    elif not isinstance(result, str):
-                        result = str(result)
-
-                    log.info(
-                        f"Called function {function_name}\nParams: {params}\nResult: {result}"
+                function_name = function_call["name"]
+                arguments = function_call.get("arguments", "{}")
+                try:
+                    params = json.loads(arguments)
+                except json.JSONDecodeError:
+                    params = {}
+                    log.error(
+                        f"Failed to parse parameters for custom function {function_name}\nArguments: {arguments}"
                     )
+                # Try continuing anyway
+                if function_name not in function_map:
+                    log.error(f"GPT suggested a function not provided: {function_name}")
+                    pop_schema(function_name)
+                    continue
+                extras = {
+                    "user": guild.get_member(author) if isinstance(author, int) else author,
+                    "channel": guild.get_channel_or_thread(channel)
+                    if isinstance(channel, int)
+                    else channel,
+                    "guild": guild,
+                    "bot": self.bot,
+                    "conf": conf,
+                }
+                kwargs = {**params, **extras}
+                func = function_map[function_name]
+                try:
+                    if iscoroutinefunction(func):
+                        result = await func(**kwargs)
+                    else:
+                        result = await asyncio.to_thread(func, **kwargs)
+                except Exception as e:
+                    log.error(
+                        f"Custom function {function_name} failed to execute!\nArgs: {arguments}",
+                        exc_info=e,
+                    )
+                    pop_schema(function_name)
+                    continue
 
-                    conversation.update_messages(result, "function", function_name)
-                    messages.append({"role": "function", "name": function_name, "content": result})
-                    max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
-                    while (
-                        conversation.conversation_token_count(conf, result) >= max_tokens
-                        and messages
-                    ):
-                        conversation.messages.pop(0)
-                        if conf.system_prompt and conf.prompt and len(messages) >= 3:
-                            messages.pop(2)
-                        elif conf.system_prompt or conf.prompt and len(messages) >= 2:
-                            messages.pop(1)
-                        else:
-                            messages.pop(0)
-                else:
-                    break
+                if isinstance(result, bytes):
+                    result = result.decode()
+                elif not isinstance(result, str):
+                    result = str(result)
+
+                # Calling the same function and getting the same result repeatedly is just insanity GPT
+                if function_name == last_function and result == last_function_response:
+                    pop_schema(function_name)
+                    continue
+
+                last_function = function_name
+                last_function_response = result
+
+                max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
+                # Ensure response isnt too large
+                result = token_cut(result, max_tokens)
+
+                log.info(f"Called function {function_name}\nParams: {params}\nResult: {result}")
+
+                conversation.update_messages(result, "function", function_name)
+                messages.append({"role": "function", "name": function_name, "content": result})
+
             if calls > 1:
                 log.info(f"Made {calls} function calls in a row")
         else:
@@ -419,7 +424,6 @@ class API(MixinMeta):
                 continue
 
         conversation.update_messages(reply, "assistant")
-        conversation.cleanup(conf)
         if block:
             reply = "Response failed due to invalid regex, check logs for more info."
         return reply

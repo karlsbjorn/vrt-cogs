@@ -27,7 +27,12 @@ from redbot.core.utils.chat_formatting import (
 )
 
 from ..abc import MixinMeta
-from ..common.utils import get_attachments, num_tokens_from_string, request_embedding
+from ..common.utils import (
+    function_list_tokens,
+    get_attachments,
+    num_tokens_from_string,
+    request_embedding,
+)
 from ..models import CHAT, COMPLETION, Embedding
 from ..views import CodeMenu, EmbeddingMenu, SetAPI
 
@@ -35,7 +40,7 @@ log = logging.getLogger("red.vrt.assistant.admin")
 
 
 class Admin(MixinMeta):
-    @commands.group(name="assistant", aliases=["ass"])
+    @commands.group(name="assistant", aliases=["assist"])
     @commands.admin_or_permissions(administrator=True)
     @commands.guild_only()
     async def assistant(self, ctx: commands.Context):
@@ -58,6 +63,7 @@ class Admin(MixinMeta):
         channel = f"<#{conf.channel_id}>" if conf.channel_id else "Not Set"
         system_tokens = num_tokens_from_string(conf.system_prompt)
         prompt_tokens = num_tokens_from_string(conf.prompt)
+        func_tokens = function_list_tokens(self.db.get_function_calls(conf))
         desc = (
             f"`OpenAI Version:    `{VERSION}\n"
             f"`Enabled:           `{conf.enabled}\n"
@@ -78,7 +84,8 @@ class Admin(MixinMeta):
             f"`Min Relatedness:   `{conf.min_relatedness}\n"
             f"`Embedding Method:  `{conf.embed_method}\n"
             f"`Function Calling:  `{conf.use_function_calls}\n"
-            f"`Maximum Recursion: `{conf.max_function_calls}"
+            f"`Maximum Recursion: `{conf.max_function_calls}\n"
+            f"`Function Tokens:   `{humanize_number(func_tokens)}"
         )
         system_file = (
             discord.File(
@@ -477,6 +484,7 @@ class Admin(MixinMeta):
         - gpt-3.5-turbo-0613
         - gpt-3.5-turbo-16k-0613
         - gpt-4-0613
+        - gpt-4-32k-0613
         """
         conf = self.db.get_conf(ctx.guild)
         if conf.use_function_calls:
@@ -960,6 +968,7 @@ class Admin(MixinMeta):
     @app_commands.describe(query="Name of the embedding entry")
     @commands.guild_only()
     @commands.admin_or_permissions(administrator=True)
+    @commands.bot_has_permissions(attach_files=True, embed_links=True)
     async def embeddings(self, ctx: commands.Context, *, query: str = ""):
         """Manage embeddings for training
 
@@ -1000,7 +1009,7 @@ class Admin(MixinMeta):
 
     @commands.hybrid_command(name="customfunctions", aliases=["customfunction", "customfunc"])
     @commands.guild_only()
-    @commands.guildowner()
+    @commands.bot_has_permissions(attach_files=True, embed_links=True)
     async def custom_functions(self, ctx: commands.Context):
         """
         Add custom function calls for Assistant to use

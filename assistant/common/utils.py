@@ -135,6 +135,69 @@ def num_tokens_from_string(string: str) -> int:
     return num_tokens
 
 
+def function_list_tokens(functions: List[dict]) -> int:
+    if not functions:
+        return 0
+    dumps = [json.dumps(i) for i in functions]
+    joined = "".join(dumps)
+    return num_tokens_from_string(joined)
+
+
+def safe_message_prep(
+    messages: List[dict], function_list: List[dict], max_tokens: int
+) -> List[dict]:
+    """
+    Dynamically prevent sending too many tokens to a model
+
+    This can still not be enough if theres a big system prompt and a lot of functions
+    """
+
+    def count(msgs: List[dict], role: str = None):
+        func_tokens = function_list_tokens(function_list)
+        if not role:
+            return sum(num_tokens_from_string(i["content"]) for i in msgs) + func_tokens
+        return (
+            sum(num_tokens_from_string(i["content"]) for i in msgs if i["role"] == role)
+            + func_tokens
+        )
+
+    def pop_first(role: str = None):
+        if not messages:
+            return
+        if not role:
+            messages.pop(0)
+        for i in messages:
+            if i["role"] == role:
+                messages.remove(i)
+                break
+
+    # If conversation is okay then just return
+    if count(messages) <= max_tokens:
+        return messages
+
+    iters = 0
+    while count(messages) >= max_tokens and len(messages) > 1:
+        iters += 1
+        # First try popping first user message
+        if count(messages, "user") > 1:
+            pop_first("user")
+            if count(messages) <= max_tokens:
+                return messages
+        # Try popping first assistant message
+        if count(messages, "assistant") > 1:
+            pop_first("assistant")
+            if count(messages) <= max_tokens:
+                return messages
+        # Try popping first function response
+        pop_first("function")
+        if count(messages) <= max_tokens:
+            return messages
+
+        if iters > 100:
+            # Eh
+            return messages
+
+
 def token_pagify(text: str, max_tokens: int = 2000):
     """Pagify a long string by tokens rather than characters"""
     token_chunks = []
@@ -285,7 +348,13 @@ async def request_chat_response(
     functions: Optional[List[dict]] = [],
 ) -> dict:
     # response = await asyncio.to_thread(_chat, model, messages, api_key, temperature, functions)
-    if VERSION >= "0.27.6" and model in ["gpt-3.5-turbo-0613", "gpt-4-32k-0613"]:
+    function_able_models = [
+        "gpt-3.5-turbo-0613",
+        "gpt-3.5-turbo-16k-0613",
+        "gpt-4-0613",
+        "gpt-4-32k-0613",
+    ]
+    if VERSION >= "0.27.6" and model in function_able_models and functions:
         response = await openai.ChatCompletion.acreate(
             model=model,
             messages=messages,
