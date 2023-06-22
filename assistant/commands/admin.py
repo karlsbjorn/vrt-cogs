@@ -9,6 +9,7 @@ from typing import List, Union
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import discord
+import openai
 import orjson
 import pandas as pd
 import pytz
@@ -63,7 +64,15 @@ class Admin(MixinMeta):
         channel = f"<#{conf.channel_id}>" if conf.channel_id else "Not Set"
         system_tokens = num_tokens_from_string(conf.system_prompt)
         prompt_tokens = num_tokens_from_string(conf.prompt)
-        func_tokens = function_list_tokens(self.db.get_function_calls(conf))
+        third_party_funcs = [
+            i.jsonschema
+            for sublist in self.registry.values()
+            for i in sublist.values()
+            if i.jsonschema["name"] not in conf.disabled_functions
+        ]
+        func_tokens = function_list_tokens(
+            self.db.get_function_calls(conf)
+        ) + function_list_tokens(third_party_funcs)
         desc = (
             f"`OpenAI Version:    `{VERSION}\n"
             f"`Enabled:           `{conf.enabled}\n"
@@ -143,6 +152,14 @@ class Admin(MixinMeta):
                 blacklist.append(f"{object_id}?")
         if blacklist:
             embed.add_field(name="Blacklist", value=humanize_list(blacklist), inline=False)
+
+        if self.registry:
+            cogs = humanize_list(self.registry.keys())
+            embed.add_field(
+                name="Cog Registry",
+                value=f"The following cogs have registered functions with the assistant\n{box(cogs)}",
+                inline=False,
+            )
 
         embed.set_footer(text=f"Showing settings for {ctx.guild.name}")
         files = []
@@ -421,6 +438,8 @@ class Admin(MixinMeta):
         this only applies to any conversation between the user and bot after that.
 
         Set to 0 to disable conversation retention
+
+        **Note:** *actual message count may exceed the max retention during an API call*
         """
         if max_retention < 0:
             return await ctx.send("Max retention needs to be at least 0 or higher")
@@ -429,16 +448,8 @@ class Admin(MixinMeta):
         if max_retention == 0:
             await ctx.send("Conversation retention has been disabled")
         else:
-            await ctx.tick()
+            await ctx.send(f"Conversations can now retain up to **{max_retention}** messages")
         await self.save_conf()
-
-        if max_retention > 15:
-            await ctx.send(
-                (
-                    "**NOTE:** Setting message retention too high may result in going over the token limit, "
-                    "if this happens the bot may not respond until the retention is lowered."
-                )
-            )
 
     @assistant.command(name="maxtime")
     async def max_retention_time(self, ctx: commands.Context, retention_time: int):
@@ -459,7 +470,9 @@ class Admin(MixinMeta):
                 "Conversations will be stored until the bot restarts or the cog is reloaded"
             )
         else:
-            await ctx.tick()
+            await ctx.send(
+                f"Conversations will be considered active for **{retention_time}** seconds"
+            )
         await self.save_conf()
 
     @assistant.command(name="temperature")
@@ -470,11 +483,12 @@ class Admin(MixinMeta):
         Closer to 0 is more concise and accurate while closer to 1 is more imaginative
         """
         if not 0 <= temperature <= 1:
-            return await ctx.send("Temperature must be between 0.0 and 1.0")
+            return await ctx.send("Temperature must be between **0.0** and **1.0**")
+        temperature = round(temperature, 2)
         conf = self.db.get_conf(ctx.guild)
         conf.temperature = temperature
         await self.save_conf()
-        await ctx.tick()
+        await ctx.send(f"Temperature has been set to **{temperature}**")
 
     @assistant.command(name="functioncalls")
     async def toggle_function_calls(self, ctx: commands.Context):
@@ -529,7 +543,9 @@ class Admin(MixinMeta):
         if min_question_length == 0:
             await ctx.send(f"{ctx.bot.user.name} will respond regardless of message length")
         else:
-            await ctx.tick()
+            await ctx.send(
+                f"{ctx.bot.user.name} will respond to messages with more than **{min_question_length}** characters"
+            )
         await self.save_conf()
 
     @assistant.command(name="maxtokens")
@@ -572,10 +588,20 @@ class Admin(MixinMeta):
         valid = humanize_list(CHAT + COMPLETION)
         if not model:
             return await ctx.send(f"Valid models are `{valid}`")
+        conf = self.db.get_conf(ctx.guild)
+        if not conf.api_key:
+            return await ctx.send(
+                f"You must set an API key first with `{ctx.prefix}assist openaikey`"
+            )
+        try:
+            await openai.Model.aretrieve(model, api_key=conf.api_key)
+        except openai.InvalidRequestError:
+            return await ctx.send("This model is not available for the API key provided!")
+
         model = model.lower().strip()
         if model not in CHAT + COMPLETION:
             return await ctx.send(f"Invalid model type! Valid model types are `{valid}`")
-        conf = self.db.get_conf(ctx.guild)
+
         conf.model = model
         await ctx.send(f"The {model} model will now be used")
         await self.save_conf()
@@ -650,7 +676,10 @@ class Admin(MixinMeta):
             return await ctx.send("Top N must be between 0 and 10")
         conf = self.db.get_conf(ctx.guild)
         conf.top_n = top_n
-        await ctx.tick()
+        if not top_n:
+            await ctx.send("Embeddings will not be pulled during conversations")
+        else:
+            await ctx.send(f"Up to **{top_n}** embeddings will be pulled for each interaction")
         await self.save_conf()
 
     @assistant.command(name="relatedness")
@@ -668,7 +697,7 @@ class Admin(MixinMeta):
             return await ctx.send("Minimum relatedness must be between 0 and 1")
         conf = self.db.get_conf(ctx.guild)
         conf.min_relatedness = mimimum_relatedness
-        await ctx.tick()
+        await ctx.send(f"Minimum relatedness has been set to **{mimimum_relatedness}**")
         await self.save_conf()
 
     @assistant.command(name="regexblacklist")
@@ -1008,9 +1037,10 @@ class Admin(MixinMeta):
         await view.start()
 
     @commands.hybrid_command(name="customfunctions", aliases=["customfunction", "customfunc"])
+    @app_commands.describe(function_name="Name of the custom function")
     @commands.guild_only()
     @commands.bot_has_permissions(attach_files=True, embed_links=True)
-    async def custom_functions(self, ctx: commands.Context):
+    async def custom_functions(self, ctx: commands.Context, function_name: str = None):
         """
         Add custom function calls for Assistant to use
 
@@ -1021,7 +1051,9 @@ class Admin(MixinMeta):
 
         Only these two models can use function calls as of now:
         - gpt-3.5-turbo-0613
+        - gpt-3.5-turbo-16k-0613
         - gpt-4-0613
+        - gpt-4-32k-0613
 
         The following objects are passed by default as keyword arguments.
         - **user**: the user currently chatting with the bot (discord.Member)
@@ -1041,7 +1073,20 @@ class Admin(MixinMeta):
 
         view = CodeMenu(ctx, self.db, self.registry, self.save_conf)
         await view.get_pages()
-        return await view.start()
+        if not function_name:
+            return await view.start()
+
+        for page_index, embed in enumerate(view.pages):
+            name = embed.description
+            if name != function_name:
+                continue
+            view.page = page_index
+            break
+        await view.start()
+
+    @custom_functions.autocomplete("function_name")
+    async def custom_func_complete(self, interaction: discord.Interaction, current: str):
+        return await self.get_function_matches(current)
 
     @embeddings.autocomplete("query")
     async def embeddings_complete(self, interaction: discord.Interaction, current: str):
@@ -1054,6 +1099,14 @@ class Admin(MixinMeta):
     @cached(ttl=30)
     async def get_matches(self, guild_id: int, current: str) -> List[Choice]:
         entries = await self.get_embedding_entries(guild_id)
+        return [Choice(name=i, value=i) for i in entries if current.lower() in i.lower()][:25]
+
+    @cached(ttl=30)
+    async def get_function_matches(self, current: str) -> List[Choice]:
+        entries = [key for key in self.db.functions]
+        for functions in self.registry.values():
+            for key in functions:
+                entries.append(key)
         return [Choice(name=i, value=i) for i in entries if current.lower() in i.lower()][:25]
 
     @assistant.command(name="wipecog")

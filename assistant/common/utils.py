@@ -9,9 +9,16 @@ import discord
 import openai
 import tiktoken
 from aiocache import cached
-from openai.error import APIConnectionError, APIError, RateLimitError, Timeout
+from openai.error import (
+    APIConnectionError,
+    APIError,
+    RateLimitError,
+    ServiceUnavailableError,
+    Timeout,
+)
 from openai.version import VERSION
 from redbot.core import commands
+from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import box
 from tenacity import (
     retry,
@@ -98,6 +105,8 @@ def remove_code_blocks(content: str) -> str:
 
 def code_string_valid(code: str) -> bool:
     # True if function is good
+    if "*args, **kwargs" not in code:
+        return False
     try:
         compile(code, "<string>", "exec")
         return True
@@ -106,12 +115,13 @@ def code_string_valid(code: str) -> bool:
 
 
 def compile_function(function_name: str, code: str) -> Callable:
+    globals().update({"Red": Red, "discord": discord})
     exec(code, globals())
     return globals()[function_name]
 
 
 def json_schema_invalid(schema: dict) -> str:
-    # String will be empty if funciton is good
+    # String will be empty if function is good
     missing = ""
     if "name" not in schema:
         missing += "- `name`\n"
@@ -124,6 +134,8 @@ def json_schema_invalid(schema: dict) -> str:
             missing += "- `type` in **parameters**\n"
         if "properties" not in schema["parameters"]:
             missing = "- `properties` in **parameters**\n"
+        if "required" in schema["parameters"].get("properties", []):
+            missing += "- `required` key needs to be outside of properties!\n"
     return missing
 
 
@@ -145,57 +157,84 @@ def function_list_tokens(functions: List[dict]) -> int:
 
 def safe_message_prep(
     messages: List[dict], function_list: List[dict], max_tokens: int
-) -> List[dict]:
+) -> Tuple[List[dict], List[dict]]:
     """
-    Dynamically prevent sending too many tokens to a model
+    Iteratively decay the conversation until within token limit
 
-    This can still not be enough if theres a big system prompt and a lot of functions
+    This can still not be enough if there is a big system prompt and a lot of functions loaded
+
+    *It's also run in executor under normal since theres so much iteration*
     """
 
-    def count(msgs: List[dict], role: str = None):
+    def count(role: str = None):
         func_tokens = function_list_tokens(function_list)
         if not role:
-            return sum(num_tokens_from_string(i["content"]) for i in msgs) + func_tokens
+            return sum(num_tokens_from_string(i["content"]) for i in messages) + func_tokens
         return (
-            sum(num_tokens_from_string(i["content"]) for i in msgs if i["role"] == role)
+            sum(num_tokens_from_string(i["content"]) for i in messages if i["role"] == role)
             + func_tokens
         )
 
     def pop_first(role: str = None):
-        if not messages:
+        if len(messages) <= 1:
             return
         if not role:
             messages.pop(0)
-        for i in messages:
-            if i["role"] == role:
-                messages.remove(i)
-                break
+            return
+        for i in range(len(messages)):
+            if messages[i]["role"] == role:
+                del messages[i]
+                return
+
+    def sigmoid(x: float) -> float:
+        return 1 / (1 + math.exp(-x))
 
     # If conversation is okay then just return
-    if count(messages) <= max_tokens:
-        return messages
+    token_count = count()
+    if token_count <= max_tokens:
+        return messages, function_list
 
-    iters = 0
-    while count(messages) >= max_tokens and len(messages) > 1:
-        iters += 1
-        # First try popping first user message
-        if count(messages, "user") > 1:
-            pop_first("user")
-            if count(messages) <= max_tokens:
-                return messages
-        # Try popping first assistant message
-        if count(messages, "assistant") > 1:
-            pop_first("assistant")
-            if count(messages) <= max_tokens:
-                return messages
-        # Try popping first function response
-        pop_first("function")
-        if count(messages) <= max_tokens:
-            return messages
+    log.info("Compressing convo...")
+    # Define roles to pop in order
+    roles_to_pop = ["function", "assistant", "user"]
 
-        if iters > 100:
-            # Eh
-            return messages
+    # Iteratively degrade the conversation until tokens are just under specified limit
+    for try_num in range(50):
+        if token_count > max_tokens and len(messages) > 1:
+            for index, msg in enumerate(messages):
+                place = index + 1
+                # Never degrade system message
+                if msg["role"] == "system":
+                    continue
+                if len(msg["content"]) < 10:
+                    continue
+
+                x = (place / (len(messages) - 1)) * 10 - 5
+                ratio = 0.3 * sigmoid(x) + 0.7
+
+                char_slice = round(len(msg["content"]) * ratio)
+                messages[index]["content"] = msg["content"][:char_slice]
+                token_count = count()
+                if token_count <= max_tokens:
+                    return messages, function_list
+
+        if token_count > max_tokens and len(messages) > 1:
+            for role in roles_to_pop:
+                if count(role) > 1:
+                    pop_first(role)
+                    token_count = count()
+                    if token_count <= max_tokens:
+                        return messages, function_list
+
+        if len(function_list) > 0 and try_num > 10 and token_count > max_tokens:
+            popped = function_list.pop(0)
+            log.info(f"Popping function {popped['name']} to fit tokens")
+            token_count = count()
+            if token_count <= max_tokens:
+                return messages, function_list
+
+    # If conversation isn't sufficient by now then idk
+    return messages, function_list
 
 
 def token_pagify(text: str, max_tokens: int = 2000):
@@ -242,7 +281,7 @@ def function_embeds(
 ) -> List[discord.Embed]:
     main = {"Assistant": functions}
     for cog, funcs in registry.items():
-        main[cog.qualified_name] = funcs
+        main[cog] = funcs
     pages = sum(len(v) for v in main.values())
     page = 1
     embeds = []
@@ -321,7 +360,9 @@ def embedding_embeds(embeddings: Dict[str, Any], place: int) -> List[discord.Emb
 
 
 @retry(
-    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError]),
+    retry=retry_if_exception_type(
+        Union[Timeout, APIConnectionError, RateLimitError, ServiceUnavailableError]
+    ),
     wait=wait_random_exponential(min=1, max=5),
     stop=stop_after_delay(120),
     reraise=True,
@@ -335,11 +376,14 @@ async def request_embedding(text: str, api_key: str) -> List[float]:
 
 
 @retry(
-    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError, APIError]),
+    retry=retry_if_exception_type(
+        Union[Timeout, APIConnectionError, RateLimitError, APIError, ServiceUnavailableError]
+    ),
     wait=wait_random_exponential(min=1, max=5),
     stop=stop_after_delay(120),
     reraise=True,
 )
+@cached(ttl=30)
 async def request_chat_response(
     model: str,
     messages: List[dict],
@@ -362,7 +406,6 @@ async def request_chat_response(
             api_key=api_key,
             timeout=60,
             functions=functions,
-            function_call="auto" if functions else "none",
         )
     else:
         response = await openai.ChatCompletion.acreate(
@@ -391,11 +434,14 @@ def _chat(
 
 
 @retry(
-    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError, APIError]),
+    retry=retry_if_exception_type(
+        Union[Timeout, APIConnectionError, RateLimitError, APIError, ServiceUnavailableError]
+    ),
     wait=wait_random_exponential(min=1, max=5),
     stop=stop_after_delay(120),
     reraise=True,
 )
+@cached(ttl=30)
 async def request_completion_response(
     model: str, message: str, api_key: str, temperature: float, max_tokens: int
 ) -> str:
@@ -410,7 +456,9 @@ async def request_completion_response(
 
 
 @retry(
-    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError, APIError]),
+    retry=retry_if_exception_type(
+        Union[Timeout, APIConnectionError, RateLimitError, APIError, ServiceUnavailableError]
+    ),
     wait=wait_random_exponential(min=1, max=5),
     stop=stop_after_delay(120),
     reraise=True,
@@ -421,7 +469,9 @@ async def request_image_create(prompt: str, api_key: str, size: str, user_id: st
 
 
 @retry(
-    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError, APIError]),
+    retry=retry_if_exception_type(
+        Union[Timeout, APIConnectionError, RateLimitError, APIError, ServiceUnavailableError]
+    ),
     wait=wait_random_exponential(min=1, max=5),
     stop=stop_after_delay(120),
     reraise=True,
@@ -436,7 +486,9 @@ async def request_image_edit(
 
 
 @retry(
-    retry=retry_if_exception_type(Union[Timeout, APIConnectionError, RateLimitError, APIError]),
+    retry=retry_if_exception_type(
+        Union[Timeout, APIConnectionError, RateLimitError, APIError, ServiceUnavailableError]
+    ),
     wait=wait_random_exponential(min=1, max=5),
     stop=stop_after_delay(120),
     reraise=True,

@@ -24,10 +24,10 @@ from redbot.core.utils.chat_formatting import (
 
 from .abc import MixinMeta
 from .common.utils import (
-    compile_function,
     compile_messages,
     extract_code_blocks,
     extract_code_blocks_with_lang,
+    function_list_tokens,
     get_attachments,
     num_tokens_from_string,
     remove_code_blocks,
@@ -196,9 +196,13 @@ class API(MixinMeta):
         elif embed_perms:
             embeds = [
                 discord.Embed(description=p)
-                for p in pagify(content, page_length=3900, delims=delims)
+                for p in pagify(content, page_length=3950, delims=delims)
             ]
-            await send(embeds=embeds, files=files, mention=conf.mention)
+            for index, embed in enumerate(embeds):
+                if index == 0:
+                    await send(embed=embed, files=files, mention=conf.mention)
+                else:
+                    await send(embed=embed)
         else:
             pages = [p for p in pagify(content, page_length=2000, delims=delims)]
             for index, p in enumerate(pages):
@@ -237,14 +241,13 @@ class API(MixinMeta):
             for cog_functions in self.registry.values():
                 for function_name, function in cog_functions.items():
                     function_calls.append(function.jsonschema)
-                    function_map[function_name] = compile_function(function_name, function.code)
+                    function_map[function_name] = function.call
 
         conversation = self.db.get_conversation(
             author if isinstance(author, int) else author.id,
             channel if isinstance(channel, int) else channel.id,
             guild.id,
         )
-        conversation.cleanup(conf)
         if isinstance(author, int):
             author = guild.get_member(author)
         if isinstance(channel, int):
@@ -273,9 +276,13 @@ class API(MixinMeta):
                     api_key=conf.api_key,
 =======
 
-        query_embedding = await request_embedding(text=message, api_key=conf.api_key)
-        if not query_embedding:
-            log.info(f"Could not get embedding for message: {message}")
+        query_embedding = []
+        if conf.top_n:
+            # Save on tokens by only getting embeddings if theyre enabled
+            try:
+                query_embedding = await request_embedding(text=message, api_key=conf.api_key)
+            except Exception:
+                log.warning(f"Failed to get embedding for message in {guild.name}: {message}")
 
         params = {
             "banktype": "global bank" if await bank.is_global() else "local bank",
@@ -295,6 +302,7 @@ class API(MixinMeta):
                     function_calls.remove(func)
                     break
 
+        function_tokens = function_list_tokens(function_calls) if function_calls else 0
         messages = await asyncio.to_thread(
             self.prepare_messages,
             message,
@@ -305,28 +313,52 @@ class API(MixinMeta):
             channel,
             query_embedding,
             params,
+            function_tokens,
         )
         last_function_response = ""
         last_function = ""
         if conf.model in CHAT:
             reply = "Could not get reply!"
             calls = 0
+            repeats = 0
             while True:
                 if calls >= conf.max_function_calls or conversation.function_count() >= 64:
                     function_calls = []
                 # Safely prep messages
                 max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
-                messages = safe_message_prep(messages, function_calls, max_tokens)
-                response = await request_chat_response(
-                    model=conf.model,
-                    messages=messages,
-                    temperature=conf.temperature,
-                    api_key=conf.api_key,
-                    functions=function_calls,
-                )
+                if len(messages) > 2:
+                    messages, function_calls = safe_message_prep(
+                        messages, function_calls, max_tokens
+                    )
+                if not messages:
+                    log.error("Messages got pruned too aggressively, increase token limit!")
+                    break
+                try:
+                    response = await request_chat_response(
+                        model=conf.model,
+                        messages=messages,
+                        temperature=conf.temperature,
+                        api_key=conf.api_key,
+                        functions=function_calls,
+                    )
+                except InvalidRequestError as e:
+                    log.warning(
+                        f"Function response failed. functions: {len(function_calls)}", exc_info=e
+                    )
+                    response = await request_chat_response(
+                        model=conf.model,
+                        messages=messages,
+                        temperature=conf.temperature,
+                        api_key=conf.api_key,
+                    )
                 reply = response["content"]
                 function_call = response.get("function_call")
                 if reply and not function_call:
+                    if last_function_response:
+                        # Only keep most recent function response in convo
+                        conversation.update_messages(
+                            last_function_response, "function", last_function
+                        )
                     break
                 if not function_call:
                     continue
@@ -336,6 +368,18 @@ class API(MixinMeta):
                     messages.append({"role": "assistant", "content": reply})
 
                 function_name = function_call["name"]
+                if function_name not in function_map:
+                    log.error(f"GPT suggested a function not provided: {function_name}")
+                    pop_schema(function_name)  # Just in case
+                    messages.append(
+                        {
+                            "role": "function",
+                            "content": "this function doesnt exist, use something else.",
+                            "name": function_name,
+                        }
+                    )
+                    continue
+
                 arguments = function_call.get("arguments", "{}")
                 try:
                     params = json.loads(arguments)
@@ -345,10 +389,7 @@ class API(MixinMeta):
                         f"Failed to parse parameters for custom function {function_name}\nArguments: {arguments}"
                     )
                 # Try continuing anyway
-                if function_name not in function_map:
-                    log.error(f"GPT suggested a function not provided: {function_name}")
-                    pop_schema(function_name)
-                    continue
+
                 extras = {
                     "user": guild.get_member(author) if isinstance(author, int) else author,
                     "channel": guild.get_channel_or_thread(channel)
@@ -380,19 +421,25 @@ class API(MixinMeta):
 
                 # Calling the same function and getting the same result repeatedly is just insanity GPT
                 if function_name == last_function and result == last_function_response:
-                    pop_schema(function_name)
-                    continue
+                    repeats += 1
+                    if repeats > 3:
+                        pop_schema(function_name)
+                        log.info(f"Popping {function_name} to avoid GPT insanity")
+                        continue
+                else:
+                    repeats = 0
 
                 last_function = function_name
                 last_function_response = result
 
                 max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
                 # Ensure response isnt too large
-                result = token_cut(result, max_tokens)
+                result = token_cut(
+                    result,
+                    round(max_tokens - conversation.conversation_token_count(conf, message)),
+                )
 
                 log.info(f"Called function {function_name}\nParams: {params}\nResult: {result}")
-
-                conversation.update_messages(result, "function", function_name)
                 messages.append({"role": "function", "name": function_name, "content": result})
 
             if calls > 1:
@@ -426,6 +473,7 @@ class API(MixinMeta):
         conversation.update_messages(reply, "assistant")
         if block:
             reply = "Response failed due to invalid regex, check logs for more info."
+        conversation.cleanup(conf)
         return reply
 
     async def safe_regex(self, regex: str, content: str):
@@ -512,6 +560,7 @@ class API(MixinMeta):
 =======
 =======
         params: dict,
+        function_tokens: int,
     ) -> List[dict]:
 >>>>>>> main
         """Prepare content for calling the GPT API
@@ -569,36 +618,31 @@ class API(MixinMeta):
 
         max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
 
-        # Dynamically clean up the conversation to prevent going over token limit
-        current_tokens = num_tokens_from_string(system_prompt + initial_prompt + message)
-        while (conversation.token_count() + current_tokens) > max_tokens:
-            conversation.messages.pop(0)
-
-        total_tokens = conversation.token_count() + current_tokens
+        total_tokens = conversation.token_count()
 
         embeddings = []
+        # Be conservative with embeddings
         for i in conf.get_related_embeddings(query_embedding):
             if (
-                num_tokens_from_string(f"\n\nContext:\n{i[1]}\n\n") + total_tokens
+                num_tokens_from_string(f"\n\nContext:\n{i[1]}\n\n")
+                + total_tokens
+                + function_tokens
                 < max_tokens * 0.8
             ):
                 embeddings.append(f"{i[1]}")
 
         if embeddings:
             joined = "\n".join(embeddings)
-            prefix = display_name if display_name else "Chat"
-            if "{author}" in conf.prompt or "{author}" in conf.system_prompt:
-                prefix = "Chat"
 
             if conf.embed_method == "static":
-                message = f"Context:\n{joined}\n\n{prefix}: {message}"
+                conversation.update_messages(f"Context:\n{joined}", "user")
 
             elif conf.embed_method == "dynamic":
-                initial_prompt += f"\n\nContext:\n{joined}"
+                system_prompt += f"\n\nContext:\n{joined}"
 
             elif conf.embed_method == "hybrid" and len(embeddings) > 1:
-                initial_prompt += f"\n\nContext:\n{embeddings[1:]}"
-                message = f"Context:\n{embeddings[0]}\n\n{prefix}: {message}"
+                system_prompt += f"\n\nContext:\n{embeddings[1:]}"
+                conversation.update_messages(f"Context:\n{embeddings[0]}", "user")
 
         messages = conversation.prepare_chat(message, system_prompt, initial_prompt)
         return messages

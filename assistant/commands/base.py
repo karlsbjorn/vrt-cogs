@@ -61,14 +61,37 @@ class Base(MixinMeta):
         conversation = self.db.get_conversation(user.id, ctx.channel.id, ctx.guild.id)
 >>>>>>> main
         messages = len(conversation.messages)
+
+        def generate_color(index, limit):
+            if index > limit:
+                return (255, 0, 0)
+
+            # RGB for white is (255, 255, 255) and for red is (255, 0, 0)
+            # As we progress from white to red, we need to decrease the values of green and blue from 255 to 0
+
+            # Calculate the decrement in green and blue values
+            decrement = int((255 / limit) * index)
+
+            # Calculate the new green and blue values
+            green = blue = 255 - decrement
+
+            # Return the new RGB color
+            return (255, green, blue)
+
+        r, g, b = generate_color(messages, conf.max_retention)
+        color = discord.Color.from_rgb(r, g, b)
+
         embed = discord.Embed(
             description=(
-                f"**Conversation stats for {user.mention} in {ctx.channel.mention}**\n"
-                f"`Messages: `{messages}\n"
+                f"{ctx.channel.mention}\n"
+                f"`Messages: `{messages}/{conf.max_retention}\n"
                 f"`Tokens:   `{conversation.user_token_count()}\n"
                 f"`Expired:  `{conversation.is_expired(conf)}"
             ),
-            color=user.color,
+            color=color,
+        )
+        embed.set_author(
+            name=f"Conversation stats for {user.display_name}", icon_url=user.display_avatar
         )
         await ctx.send(embed=embed)
 
@@ -76,7 +99,7 @@ class Base(MixinMeta):
     @commands.guild_only()
     async def clear_convo(self, ctx: commands.Context):
         """
-        Reset your conversation
+        Reset your conversation with the bot
 
         This will clear all message history between you and the bot for this channel
         """

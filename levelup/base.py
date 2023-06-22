@@ -837,8 +837,12 @@ class UserCommands(MixinMeta, ABC):
 
         # Calculate remaining needed stats
         next_level = level + 1
+        xp_prev = get_xp(level, base=conf["base"], exp=conf["exp"])
         xp_needed = get_xp(next_level, base=conf["base"], exp=conf["exp"])
-        lvlbar = get_bar(xp, xp_needed, width=barlength)
+
+        user_xp_progress = xp - xp_prev
+        next_xp_diff = xp_needed - xp_prev
+        lvlbar = get_bar(user_xp_progress, next_xp_diff, width=barlength)
 
         async with ctx.typing():
             if not usepics:
@@ -848,7 +852,7 @@ class UserCommands(MixinMeta, ABC):
                 msg += f"⭐｜{humanize_number(stars)}" + _(" stars\n")
                 msg += f"💬｜{humanize_number(messages)}" + _(" messages sent\n")
                 msg += f"🎙｜{time_formatter(voice)}" + _(" in voice\n")
-                msg += f"💡｜{humanize_number(xp)}/{humanize_number(xp_needed)} Exp\n"
+                msg += f"💡｜{humanize_number(user_xp_progress)}/{humanize_number(next_xp_diff)} Exp ({humanize_number(xp)} total)\n"
                 if showbal:
                     msg += f"💰｜{humanize_number(bal)} {currency_name}"
                 em = discord.Embed(description=msg, color=user.color)
@@ -887,6 +891,7 @@ class UserCommands(MixinMeta, ABC):
                     "bg_image": bg_image,  # Background image link
                     "profile_image": pfp,  # User profile picture link
                     "level": level,  # User current level
+                    "prev_xp": xp_prev,  # Preveious levels cap
                     "user_xp": xp,  # User current xp
                     "next_xp": xp_needed,  # xp required for next level
                     "user_position": position,  # User position in leaderboard

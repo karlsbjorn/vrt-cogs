@@ -633,6 +633,7 @@ class CodeMenu(discord.ui.View):
             return await interaction.followup.send("Invalid function")
 
         entry = CustomFunction(code=code, jsonschema=schema)
+        entry.refresh()
         if function_name in self.db.functions:
             await interaction.followup.send(f"`{function_name}` has been overwritten!")
         else:
@@ -659,7 +660,7 @@ class CodeMenu(discord.ui.View):
                     "Could not find function!", ephemeral=True
                 )
             return await interaction.response.send_message(
-                f"This function is managed by the `{cog.qualified_name}` cog and cannot be edited",
+                f"This function is managed by the `{cog}` cog and cannot be edited",
                 ephemeral=True,
             )
         entry = self.db.functions[function_name]
@@ -701,9 +702,11 @@ class CodeMenu(discord.ui.View):
         if function_name != new_name:
             self.db.functions[new_name] = CustomFunction(code=code, jsonschema=schema)
             del self.db.functions[function_name]
+            self.db.functions[new_name].refresh()
         else:
             self.db.functions[function_name].code = code
             self.db.functions[function_name].jsonschema = schema
+            self.db.functions[function_name].refresh()
         await interaction.followup.send(f"`{function_name}` function updated!", ephemeral=True)
         await self.get_pages()
         await self.message.edit(embed=self.pages[self.page], view=self)
@@ -725,7 +728,7 @@ class CodeMenu(discord.ui.View):
                     "Could not find function!", ephemeral=True
                 )
             return await interaction.response.send_message(
-                f"This function is managed by the `{cog.qualified_name}` cog and cannot be deleted",
+                f"This function is managed by the `{cog}` cog and cannot be deleted",
                 ephemeral=True,
             )
         del self.db.functions[function_name]
