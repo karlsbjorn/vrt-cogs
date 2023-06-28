@@ -64,17 +64,13 @@ class Admin(MixinMeta):
         channel = f"<#{conf.channel_id}>" if conf.channel_id else "Not Set"
         system_tokens = num_tokens_from_string(conf.system_prompt)
         prompt_tokens = num_tokens_from_string(conf.prompt)
-        third_party_funcs = [
-            i.jsonschema
-            for sublist in self.registry.values()
-            for i in sublist.values()
-            if i.jsonschema["name"] not in conf.disabled_functions
-        ]
-        func_tokens = function_list_tokens(
-            self.db.get_function_calls(conf)
-        ) + function_list_tokens(third_party_funcs)
+        func_list, _ = self.db.prep_functions(self.bot, conf, self.registry)
+        func_tokens = function_list_tokens(func_list)
+        func_count = len(func_list)
+
         desc = (
             f"`OpenAI Version:    `{VERSION}\n"
+            f"`Model:             `{conf.model}\n"
             f"`Enabled:           `{conf.enabled}\n"
             f"`Timezone:          `{conf.timezone}\n"
             f"`Channel:           `{channel}\n"
@@ -87,33 +83,39 @@ class Admin(MixinMeta):
             f"`Temperature:       `{conf.temperature}\n"
             f"`System Message:    `{humanize_number(system_tokens)} tokens\n"
             f"`Initial Prompt:    `{humanize_number(prompt_tokens)} tokens\n"
-            f"`Model:             `{conf.model}\n"
-            f"`Embeddings:        `{humanize_number(len(conf.embeddings))}\n"
-            f"`Top N Embeddings:  `{conf.top_n}\n"
-            f"`Min Relatedness:   `{conf.min_relatedness}\n"
-            f"`Embedding Method:  `{conf.embed_method}\n"
-            f"`Function Calling:  `{conf.use_function_calls}\n"
-            f"`Maximum Recursion: `{conf.max_function_calls}\n"
-            f"`Function Tokens:   `{humanize_number(func_tokens)}"
         )
-        system_file = (
-            discord.File(
-                BytesIO(conf.system_prompt.encode()),
-                filename="SystemPrompt.txt",
-            )
-            if conf.system_prompt
-            else None
-        )
-        prompt_file = (
-            discord.File(BytesIO(conf.prompt.encode()), filename="InitialPrompt.txt")
-            if conf.prompt
-            else None
-        )
+
         embed = discord.Embed(
             title="Assistant Settings",
             description=desc,
             color=ctx.author.color,
         )
+        embedding_field = (
+            f"`Top N Embeddings:  `{conf.top_n}\n"
+            f"`Min Relatedness:   `{conf.min_relatedness}\n"
+            f"`Embedding Method:  `{conf.embed_method}\n"
+        )
+        embed.add_field(
+            name=f"Embeddings ({humanize_number(len(conf.embeddings))})",
+            value=embedding_field,
+            inline=False,
+        )
+
+        custom_func_field = (
+            f"`Function Calling:  `{conf.use_function_calls}\n"
+            f"`Maximum Recursion: `{conf.max_function_calls}\n"
+            f"`Function Tokens:   `{humanize_number(func_tokens)}\n"
+        )
+        if self.registry:
+            cogs = humanize_list([cog for cog in self.registry])
+            custom_func_field += f"The following cogs also have functions registered with the assistant\n{box(cogs)}"
+
+        embed.add_field(
+            name=f"Custom Functions ({humanize_number(func_count)})",
+            value=custom_func_field,
+            inline=False,
+        )
+
         send_key = [ctx.guild.owner_id == ctx.author.id, ctx.author.id in self.bot.owner_ids]
         if private and any(send_key):
             embed.add_field(
@@ -153,16 +155,70 @@ class Admin(MixinMeta):
         if blacklist:
             embed.add_field(name="Blacklist", value=humanize_list(blacklist), inline=False)
 
-        if self.registry:
-            cogs = humanize_list(self.registry.keys())
-            embed.add_field(
-                name="Cog Registry",
-                value=f"The following cogs have registered functions with the assistant\n{box(cogs)}",
-                inline=False,
-            )
+        if overrides := conf.model_role_overrides:
+            field = ""
+            roles = {ctx.guild.get_role(k): v for k, v in overrides.copy().items()}
+            sorted_roles = sorted(roles.items(), key=lambda x: x[0], reverse=True)
+            for role, model in sorted_roles:
+                if not role:
+                    continue
+                field += f"{role.mention}: `{model}`\n"
+            if field:
+                embed.add_field(name="Model Role Overrides", value=field, inline=False)
+
+        if overrides := conf.max_token_role_override:
+            field = ""
+            roles = {ctx.guild.get_role(k): v for k, v in overrides.copy().items()}
+            sorted_roles = sorted(roles.items(), key=lambda x: x[0], reverse=True)
+            for role, tokens in sorted_roles:
+                if not role:
+                    continue
+                field += f"{role.mention}: `{humanize_number(tokens)}`\n"
+            if field:
+                embed.add_field(name="Max Token Role Overrides", value=field, inline=False)
+
+        if overrides := conf.max_retention_role_override:
+            field = ""
+            roles = {ctx.guild.get_role(k): v for k, v in overrides.copy().items()}
+            sorted_roles = sorted(roles.items(), key=lambda x: x[0], reverse=True)
+            for role, retention in sorted_roles:
+                if not role:
+                    continue
+                field += f"{role.mention}: `{humanize_number(retention)}`\n"
+            if field:
+                embed.add_field(
+                    name="Max Message Retention Role Overrides", value=field, inline=False
+                )
+
+        if overrides := conf.max_time_role_override:
+            field = ""
+            roles = {ctx.guild.get_role(k): v for k, v in overrides.copy().items()}
+            sorted_roles = sorted(roles.items(), key=lambda x: x[0], reverse=True)
+            for role, retention_time in sorted_roles:
+                if not role:
+                    continue
+                field += f"{role.mention}: `{humanize_number(retention_time)}s`\n"
+            if field:
+                embed.add_field(
+                    name="Max Message Retention Time Role Overrides", value=field, inline=False
+                )
 
         embed.set_footer(text=f"Showing settings for {ctx.guild.name}")
+
         files = []
+        system_file = (
+            discord.File(
+                BytesIO(conf.system_prompt.encode()),
+                filename="SystemPrompt.txt",
+            )
+            if conf.system_prompt
+            else None
+        )
+        prompt_file = (
+            discord.File(BytesIO(conf.prompt.encode()), filename="InitialPrompt.txt")
+            if conf.prompt
+            else None
+        )
         if system_file:
             files.append(system_file)
         if prompt_file:
@@ -452,7 +508,7 @@ class Admin(MixinMeta):
         await self.save_conf()
 
     @assistant.command(name="maxtime")
-    async def max_retention_time(self, ctx: commands.Context, retention_time: int):
+    async def max_retention_time(self, ctx: commands.Context, retention_seconds: int):
         """
         Set the conversation expiration time
 
@@ -461,17 +517,17 @@ class Admin(MixinMeta):
 
         Set to 0 to store conversations indefinitely or until the bot restarts or cog is reloaded
         """
-        if retention_time < 0:
+        if retention_seconds < 0:
             return await ctx.send("Max retention time needs to be at least 0 or higher")
         conf = self.db.get_conf(ctx.guild)
-        conf.max_retention_time = retention_time
-        if retention_time == 0:
+        conf.max_retention_time = retention_seconds
+        if retention_seconds == 0:
             await ctx.send(
                 "Conversations will be stored until the bot restarts or the cog is reloaded"
             )
         else:
             await ctx.send(
-                f"Conversations will be considered active for **{retention_time}** seconds"
+                f"Conversations will be considered active for **{retention_seconds}** seconds"
             )
         await self.save_conf()
 
@@ -553,16 +609,22 @@ class Admin(MixinMeta):
         """
         Set the max tokens the model can use at once
 
-        For GPT3.5 use 4000 or less.
-        For GPT4 user 8000 or less (if 8k version).
+        **Tips**
+        - Max tokens are a soft cap, sometimes messages can be a little over
+        - If you set max tokens too high the cog will auto-adjust to 100 less than the models natural cap
+        - Ideally set max to 500 less than that models maximum, to allow adequate responses
 
         Using more than the model can handle will raise exceptions.
         """
         if max_tokens < 100:
-            return await ctx.send("Use at least 100 tokens for the model")
+            return await ctx.send("Use at least 100 tokens")
         conf = self.db.get_conf(ctx.guild)
         conf.max_tokens = max_tokens
-        await ctx.send(f"The max tokens the current model will use is {max_tokens}")
+        txt = (
+            f"The maximum amount of tokens sent in a payload will be {max_tokens}.\n"
+            "*Note that models with token limits lower than this will still be trimmed*"
+        )
+        await ctx.send(txt)
         await self.save_conf()
 
     @assistant.command(name="model")
@@ -588,6 +650,7 @@ class Admin(MixinMeta):
         valid = humanize_list(CHAT + COMPLETION)
         if not model:
             return await ctx.send(f"Valid models are `{valid}`")
+        model = model.lower().strip()
         conf = self.db.get_conf(ctx.guild)
         if not conf.api_key:
             return await ctx.send(
@@ -598,9 +661,10 @@ class Admin(MixinMeta):
         except openai.InvalidRequestError:
             return await ctx.send("This model is not available for the API key provided!")
 
-        model = model.lower().strip()
         if model not in CHAT + COMPLETION:
-            return await ctx.send(f"Invalid model type! Valid model types are `{valid}`")
+            return await ctx.send(
+                f"Assistant does not support this model yet! Valid model types are `{valid}`"
+            )
 
         conf.model = model
         await ctx.send(f"The {model} model will now be used")
@@ -1147,4 +1211,123 @@ class Admin(MixinMeta):
         else:
             conf.blacklist.append(channel_role_member.id)
             await ctx.send(f"{channel_role_member.name} has been added to the blacklist")
+        await self.save_conf()
+
+    @assistant.group(name="override")
+    async def override(self, ctx: commands.Context):
+        """Override settings for specific roles"""
+
+    @override.command(name="model")
+    async def model_role_override(self, ctx: commands.Context, model: str, *, role: discord.Role):
+        """
+        Assign a role to use a model
+
+        *Specify same role and model to remove the override*
+        """
+        model = model.lower().strip()
+        conf = self.db.get_conf(ctx.guild)
+        if not conf.api_key:
+            return await ctx.send(
+                f"You must set an API key first with `{ctx.prefix}assist openaikey`"
+            )
+        try:
+            await openai.Model.aretrieve(model, api_key=conf.api_key)
+        except openai.InvalidRequestError:
+            return await ctx.send("This model is not available for the API key provided!")
+
+        if model not in CHAT + COMPLETION:
+            valid = humanize_list(CHAT + COMPLETION)
+            return await ctx.send(
+                f"Assistant does not support this model yet! Valid model types are `{valid}`"
+            )
+
+        if role.id in conf.model_role_overrides:
+            if conf.model_role_overrides[role.id] == model:
+                del conf.model_role_overrides[role.id]
+                await ctx.send(f"Role override for {role.mention} removed!")
+            else:
+                conf.model_role_overrides[role.id] = model
+                await ctx.send(f"Role override for {role.mention} overwritten!")
+        else:
+            conf.model_role_overrides[role.id] = model
+            await ctx.send(f"Role override for {role.mention} added!")
+
+        await self.save_conf()
+
+    @override.command(name="maxtokens")
+    async def max_token_override(
+        self, ctx: commands.Context, max_tokens: int, *, role: discord.Role
+    ):
+        """
+        Assign a max token override to a role
+
+        *Specify same role and token count to remove the override*
+        """
+        if max_tokens < 100:
+            return await ctx.send("Use at least 100 tokens")
+        conf = self.db.get_conf(ctx.guild)
+
+        if role.id in conf.max_token_role_override:
+            if conf.max_token_role_override[role.id] == max_tokens:
+                del conf.max_token_role_override[role.id]
+                await ctx.send(f"Max token override for {role.mention} removed!")
+            else:
+                conf.max_token_role_override[role.id] = max_tokens
+                await ctx.send(f"Max token override for {role.mention} overwritten!")
+        else:
+            conf.max_token_role_override[role.id] = max_tokens
+            await ctx.send(f"Max token override for {role.mention} added!")
+
+        await self.save_conf()
+
+    @override.command(name="maxretention")
+    async def max_retention_override(
+        self, ctx: commands.Context, max_retention: int, *, role: discord.Role
+    ):
+        """
+        Assign a max message retention override to a role
+
+        *Specify same role and retention amount to remove the override*
+        """
+        if max_retention < 0:
+            return await ctx.send("Max retention needs to be at least 0 or higher")
+        conf = self.db.get_conf(ctx.guild)
+
+        if role.id in conf.max_retention_role_override:
+            if conf.max_retention_role_override[role.id] == max_retention:
+                del conf.max_retention_role_override[role.id]
+                await ctx.send(f"Max retention override for {role.mention} removed!")
+            else:
+                conf.max_retention_role_override[role.id] = max_retention
+                await ctx.send(f"Max retention override for {role.mention} overwritten!")
+        else:
+            conf.max_retention_role_override[role.id] = max_retention
+            await ctx.send(f"Max retention override for {role.mention} added!")
+
+        await self.save_conf()
+
+    @override.command(name="maxtime")
+    async def max_time_override(
+        self, ctx: commands.Context, retention_seconds: int, *, role: discord.Role
+    ):
+        """
+        Assign a max retention time override to a role
+
+        *Specify same role and time to remove the override*
+        """
+        if retention_seconds < 0:
+            return await ctx.send("Max retention time needs to be at least 0 or higher")
+        conf = self.db.get_conf(ctx.guild)
+
+        if role.id in conf.max_time_role_override:
+            if conf.max_time_role_override[role.id] == retention_seconds:
+                del conf.max_time_role_override[role.id]
+                await ctx.send(f"Max retention time override for {role.mention} removed!")
+            else:
+                conf.max_time_role_override[role.id] = retention_seconds
+                await ctx.send(f"Max retention time override for {role.mention} overwritten!")
+        else:
+            conf.max_time_role_override[role.id] = retention_seconds
+            await ctx.send(f"Max retention time override for {role.mention} added!")
+
         await self.save_conf()

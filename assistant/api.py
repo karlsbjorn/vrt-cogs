@@ -25,6 +25,7 @@ from redbot.core.utils.chat_formatting import (
 from .abc import MixinMeta
 from .common.utils import (
     compile_messages,
+    degrade_conversation,
     extract_code_blocks,
     extract_code_blocks_with_lang,
     function_list_tokens,
@@ -34,7 +35,6 @@ from .common.utils import (
     request_chat_response,
     request_completion_response,
     request_embedding,
-    safe_message_prep,
     token_cut,
 )
 from .models import CHAT, MODELS, READ_EXTENSIONS, Conversation, GuildSettings
@@ -236,12 +236,12 @@ class API(MixinMeta):
 >>>>>>> main
         """Call the API asynchronously"""
         if conf.use_function_calls and extend_function_calls:
-            function_calls.extend(self.db.get_function_calls(conf))
-            function_map.update(self.db.get_function_map())
-            for cog_functions in self.registry.values():
-                for function_name, function in cog_functions.items():
-                    function_calls.append(function.jsonschema)
-                    function_map[function_name] = function.call
+            # Prepare registry and custom functions
+            prepped_function_calls, prepped_function_map = self.db.prep_functions(
+                bot=self.bot, conf=conf, registry=self.registry
+            )
+            function_calls.extend(prepped_function_calls)
+            function_map.update(prepped_function_map)
 
         conversation = self.db.get_conversation(
             author if isinstance(author, int) else author.id,
@@ -296,11 +296,8 @@ class API(MixinMeta):
             ),
         }
 
-        def pop_schema(name: str):
-            for func in function_calls:
-                if func["name"] == name:
-                    function_calls.remove(func)
-                    break
+        def pop_schema(name: str, calls: List[dict]):
+            return [func for func in calls if func["name"] != name]
 
         function_tokens = function_list_tokens(function_calls) if function_calls else 0
         messages = await asyncio.to_thread(
@@ -316,26 +313,33 @@ class API(MixinMeta):
             function_tokens,
         )
         last_function_response = ""
-        last_function = ""
-        if conf.model in CHAT:
+        last_function_name = ""
+
+        model = conf.get_user_model(author)
+        max_tokens = min(conf.get_user_max_tokens(author), MODELS[model] - 100)
+
+        if model in CHAT:
             reply = "Could not get reply!"
             calls = 0
             repeats = 0
             while True:
                 if calls >= conf.max_function_calls or conversation.function_count() >= 64:
                     function_calls = []
-                # Safely prep messages
-                max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
-                if len(messages) > 2:
-                    messages, function_calls = safe_message_prep(
-                        messages, function_calls, max_tokens
+
+                if len(messages) > 1:
+                    # Iteratively degrade the conversation to ensure it is always under the token limit
+                    messages, function_calls, degraded = await asyncio.to_thread(
+                        degrade_conversation, messages, function_calls, max_tokens
                     )
+                    if degraded:
+                        conversation.overwrite(messages)
+
                 if not messages:
                     log.error("Messages got pruned too aggressively, increase token limit!")
                     break
                 try:
                     response = await request_chat_response(
-                        model=conf.model,
+                        model=model,
                         messages=messages,
                         temperature=conf.temperature,
                         api_key=conf.api_key,
@@ -346,7 +350,7 @@ class API(MixinMeta):
                         f"Function response failed. functions: {len(function_calls)}", exc_info=e
                     )
                     response = await request_chat_response(
-                        model=conf.model,
+                        model=model,
                         messages=messages,
                         temperature=conf.temperature,
                         api_key=conf.api_key,
@@ -357,7 +361,7 @@ class API(MixinMeta):
                     if last_function_response:
                         # Only keep most recent function response in convo
                         conversation.update_messages(
-                            last_function_response, "function", last_function
+                            last_function_response, "function", last_function_name
                         )
                     break
                 if not function_call:
@@ -370,11 +374,11 @@ class API(MixinMeta):
                 function_name = function_call["name"]
                 if function_name not in function_map:
                     log.error(f"GPT suggested a function not provided: {function_name}")
-                    pop_schema(function_name)  # Just in case
+                    function_calls = pop_schema(function_name, function_calls)  # Just in case
                     messages.append(
                         {
-                            "role": "function",
-                            "content": "this function doesnt exist, use something else.",
+                            "role": "system",
+                            "content": f"{function_name} is not a valid function",
                             "name": function_name,
                         }
                     )
@@ -411,7 +415,7 @@ class API(MixinMeta):
                         f"Custom function {function_name} failed to execute!\nArgs: {arguments}",
                         exc_info=e,
                     )
-                    pop_schema(function_name)
+                    function_calls = pop_schema(function_name, function_calls)
                     continue
 
                 if isinstance(result, bytes):
@@ -420,19 +424,18 @@ class API(MixinMeta):
                     result = str(result)
 
                 # Calling the same function and getting the same result repeatedly is just insanity GPT
-                if function_name == last_function and result == last_function_response:
+                if function_name == last_function_name and result == last_function_response:
                     repeats += 1
-                    if repeats > 3:
-                        pop_schema(function_name)
-                        log.info(f"Popping {function_name} to avoid GPT insanity")
+                    if repeats > 2:
+                        function_calls = pop_schema(function_name, function_calls)
+                        log.info(f"Popping {function_name} for repeats")
                         continue
                 else:
                     repeats = 0
 
-                last_function = function_name
+                last_function_name = function_name
                 last_function_response = result
 
-                max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
                 # Ensure response isnt too large
                 result = token_cut(
                     result,
@@ -445,12 +448,11 @@ class API(MixinMeta):
             if calls > 1:
                 log.info(f"Made {calls} function calls in a row")
         else:
-            max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
             compiled = compile_messages(messages)
             cut_message = token_cut(compiled, max_tokens)
             tokens_to_use = round((max_tokens - num_tokens_from_string(cut_message)) * 0.8)
             reply = await request_completion_response(
-                model=conf.model,
+                model=model,
                 message=cut_message,
                 temperature=conf.temperature,
                 api_key=conf.api_key,
@@ -473,7 +475,7 @@ class API(MixinMeta):
         conversation.update_messages(reply, "assistant")
         if block:
             reply = "Response failed due to invalid regex, check logs for more info."
-        conversation.cleanup(conf)
+        conversation.cleanup(conf, author)
         return reply
 
     async def safe_regex(self, regex: str, content: str):
@@ -602,8 +604,8 @@ class API(MixinMeta):
             "server": guild.name,
             "messages": len(conversation.messages),
             "tokens": str(conversation.user_token_count(message=message)),
-            "retention": str(conf.max_retention),
-            "retentiontime": str(conf.max_retention_time),
+            "retention": str(conf.get_user_max_retention(author)),
+            "retentiontime": str(conf.get_user_max_time(author)),
             "py": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
             "dpy": discord.__version__,
             "red": str(version_info),
@@ -616,7 +618,9 @@ class API(MixinMeta):
         system_prompt = conf.system_prompt.format(**params)
         initial_prompt = conf.prompt.format(**params)
 
-        max_tokens = min(conf.max_tokens, MODELS[conf.model] - 100)
+        max_tokens = min(
+            conf.get_user_max_tokens(author), MODELS[conf.get_user_model(author)] - 100
+        )
 
         total_tokens = conversation.token_count()
 

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import math
@@ -19,7 +20,7 @@ from openai.error import (
 from openai.version import VERSION
 from redbot.core import commands
 from redbot.core.bot import Red
-from redbot.core.utils.chat_formatting import box
+from redbot.core.utils.chat_formatting import box, humanize_number
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -115,7 +116,7 @@ def code_string_valid(code: str) -> bool:
 
 
 def compile_function(function_name: str, code: str) -> Callable:
-    globals().update({"Red": Red, "discord": discord})
+    globals().update({"discord": discord})
     exec(code, globals())
     return globals()[function_name]
 
@@ -155,86 +156,96 @@ def function_list_tokens(functions: List[dict]) -> int:
     return num_tokens_from_string(joined)
 
 
-def safe_message_prep(
+def degrade_conversation(
     messages: List[dict], function_list: List[dict], max_tokens: int
-) -> Tuple[List[dict], List[dict]]:
+) -> Tuple[List[dict], List[dict], bool]:
+    """Iteratively degrade a conversation payload, prioritizing more recent messages and critical context
+
+    Args:
+        messages (List[dict]): message entries sent to the api
+        function_list (List[dict]): list of json function schemas for the model
+        max_tokens (int): target tokens to keep conversation token count under
+
+    Returns:
+        Tuple[List[dict], List[dict], bool]: updated messages list, function list, and whether the conversation was degraded
     """
-    Iteratively decay the conversation until within token limit
+    # Calculate the initial total token count
+    total_tokens = sum(num_tokens_from_string(msg["content"]) for msg in messages) + sum(
+        num_tokens_from_string(json.dumps(func)) for func in function_list
+    )
+    # Check if the total token count is already under the max token limit
+    if total_tokens <= max_tokens:
+        return messages, function_list, False
 
-    This can still not be enough if there is a big system prompt and a lot of functions loaded
+    # Helper function to degrade a message
+    def degrade_message(msg: str) -> str:
+        words = msg.split()
+        if len(words) > 1:
+            return " ".join(words[:-1])
+        else:
+            return ""
 
-    *It's also run in executor under normal since theres so much iteration*
-    """
+    log.debug(f"Removing functions (total: {total_tokens}/max: {max_tokens})")
+    # Degrade function_list first
+    while total_tokens > max_tokens and len(function_list) > 0:
+        popped = function_list.pop(0)
+        total_tokens -= num_tokens_from_string(json.dumps(popped))
+        if total_tokens <= max_tokens:
+            return messages, function_list, True
 
-    def count(role: str = None):
-        func_tokens = function_list_tokens(function_list)
-        if not role:
-            return sum(num_tokens_from_string(i["content"]) for i in messages) + func_tokens
-        return (
-            sum(num_tokens_from_string(i["content"]) for i in messages if i["role"] == role)
-            + func_tokens
-        )
+    # Find the indices of the most recent messages for each role
+    most_recent_user = most_recent_function = most_recent_assistant = -1
+    for i, msg in enumerate(reversed(messages)):
+        if most_recent_user == -1 and msg["role"] == "user":
+            most_recent_user = len(messages) - 1 - i
+        if most_recent_function == -1 and msg["role"] == "function":
+            most_recent_function = len(messages) - 1 - i
+        if most_recent_assistant == -1 and msg["role"] == "assistant":
+            most_recent_assistant = len(messages) - 1 - i
+        if most_recent_user != -1 and most_recent_function != -1 and most_recent_assistant != -1:
+            break
 
-    def pop_first(role: str = None):
-        if len(messages) <= 1:
-            return
-        if not role:
-            messages.pop(0)
-            return
-        for i in range(len(messages)):
-            if messages[i]["role"] == role:
-                del messages[i]
-                return
+    log.debug(f"Degrading messages (total: {total_tokens}/max: {max_tokens})")
+    # Degrade the conversation except for the most recent user and function messages
+    i = 0
+    while total_tokens > max_tokens and i < len(messages):
+        if messages[i]["role"] == "system" or i == most_recent_user or i == most_recent_function:
+            i += 1
+            continue
 
-    def sigmoid(x: float) -> float:
-        return 1 / (1 + math.exp(-x))
+        degraded_content = degrade_message(messages[i]["content"])
+        if degraded_content:
+            token_diff = num_tokens_from_string(messages[i]["content"]) - num_tokens_from_string(
+                degraded_content
+            )
+            messages[i]["content"] = degraded_content
+            total_tokens -= token_diff
+        else:
+            total_tokens -= num_tokens_from_string(messages[i]["content"])
+            messages.pop(i)
 
-    # If conversation is okay then just return
-    token_count = count()
-    if token_count <= max_tokens:
-        return messages, function_list
+        if total_tokens <= max_tokens:
+            return messages, function_list, True
 
-    log.info("Compressing convo...")
-    # Define roles to pop in order
-    roles_to_pop = ["function", "assistant", "user"]
+    # Degrade the most recent user and function messages as the last resort
+    log.debug(f"Degrating user/function messages (total: {total_tokens}/max: {max_tokens})")
+    for i in [most_recent_function, most_recent_user]:
+        if total_tokens <= max_tokens:
+            return messages, function_list, True
+        while total_tokens > max_tokens:
+            degraded_content = degrade_message(messages[i]["content"])
+            if degraded_content:
+                token_diff = num_tokens_from_string(
+                    messages[i]["content"]
+                ) - num_tokens_from_string(degraded_content)
+                messages[i]["content"] = degraded_content
+                total_tokens -= token_diff
+            else:
+                total_tokens -= num_tokens_from_string(messages[i]["content"])
+                messages.pop(i)
+                break
 
-    # Iteratively degrade the conversation until tokens are just under specified limit
-    for try_num in range(50):
-        if token_count > max_tokens and len(messages) > 1:
-            for index, msg in enumerate(messages):
-                place = index + 1
-                # Never degrade system message
-                if msg["role"] == "system":
-                    continue
-                if len(msg["content"]) < 10:
-                    continue
-
-                x = (place / (len(messages) - 1)) * 10 - 5
-                ratio = 0.3 * sigmoid(x) + 0.7
-
-                char_slice = round(len(msg["content"]) * ratio)
-                messages[index]["content"] = msg["content"][:char_slice]
-                token_count = count()
-                if token_count <= max_tokens:
-                    return messages, function_list
-
-        if token_count > max_tokens and len(messages) > 1:
-            for role in roles_to_pop:
-                if count(role) > 1:
-                    pop_first(role)
-                    token_count = count()
-                    if token_count <= max_tokens:
-                        return messages, function_list
-
-        if len(function_list) > 0 and try_num > 10 and token_count > max_tokens:
-            popped = function_list.pop(0)
-            log.info(f"Popping function {popped['name']} to fit tokens")
-            token_count = count()
-            if token_count <= max_tokens:
-                return messages, function_list
-
-    # If conversation isn't sufficient by now then idk
-    return messages, function_list
+    return messages, function_list, True
 
 
 def token_pagify(text: str, max_tokens: int = 2000):
@@ -277,16 +288,29 @@ def compile_messages(messages: List[dict]) -> str:
 
 
 def function_embeds(
-    functions: Dict[str, Any], registry: Dict[commands.Cog, Dict[str, Any]], owner: bool
+    functions: Dict[str, dict], registry: Dict[str, Dict[str, dict]], owner: bool, bot: Red
 ) -> List[discord.Embed]:
     main = {"Assistant": functions}
-    for cog, funcs in registry.items():
-        main[cog] = funcs
+    for cog_name, function_schemas in registry.items():
+        cog = bot.get_cog(cog_name)
+        if not cog:
+            continue
+        for function_name, function_schema in function_schemas.items():
+            function_obj = getattr(cog, function_name, None)
+            if function_obj is None:
+                continue
+            if cog_name not in main:
+                main[cog_name] = {}
+            main[cog_name][function_name] = {
+                "code": inspect.getsource(function_obj),
+                "jsonschema": function_schema,
+            }
+
     pages = sum(len(v) for v in main.values())
     page = 1
     embeds = []
     for cog_name, functions in main.items():
-        for function_name, function in functions.items():
+        for function_name, func in functions.items():
             embed = discord.Embed(
                 title="Custom Functions", description=function_name, color=discord.Color.blue()
             )
@@ -296,22 +320,30 @@ def function_embeds(
                     value=f"This function is managed by the `{cog_name}` cog",
                     inline=False,
                 )
+            schema = json.dumps(func["jsonschema"], indent=2)
+            tokens = num_tokens_from_string(schema)
+            schema_text = (
+                f"This function consumes `{humanize_number(tokens)}` input tokens each call\n"
+            )
+
             if owner:
-                schema = json.dumps(function.jsonschema, indent=2)
                 if len(schema) > 1000:
-                    schema = f"{schema[:1000]}..."
-                embed.add_field(name="Schema", value=box(schema, "json"), inline=False)
-                code = box(function.code, "py")
-                if len(function.code) > 1000:
-                    code = f"{box(function.code[:1000], 'py')}..."
-                embed.add_field(name="Code", value=code, inline=False)
+                    schema_text += box(schema[:1000], "py") + "..."
+                else:
+                    schema_text += box(schema, "py")
+
+                if len(func["code"]) > 1000:
+                    code_text = box(func["code"][:1000], "py") + "..."
+                else:
+                    code_text = box(func["code"], "py")
+
             else:
-                embed.add_field(
-                    name="Schema",
-                    value=box(function.jsonschema["description"], "json"),
-                    inline=False,
-                )
-                embed.add_field(name="Code", value=box("Hidden..."), inline=False)
+                schema_text += box(func["jsonschema"]["description"], "json")
+                code_text = box("Hidden...")
+
+            embed.add_field(name="Schema", value=schema_text, inline=False)
+            embed.add_field(name="Code", value=code_text, inline=False)
+
             embed.set_footer(text=f"Page {page}/{pages}")
             embeds.append(embed)
             page += 1

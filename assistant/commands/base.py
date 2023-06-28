@@ -61,10 +61,11 @@ class Base(MixinMeta):
         conversation = self.db.get_conversation(user.id, ctx.channel.id, ctx.guild.id)
 >>>>>>> main
         messages = len(conversation.messages)
+        max_tokens = conf.get_user_max_tokens(ctx.author)
 
-        def generate_color(index, limit):
+        def generate_color(index: int, limit: int):
             if index > limit:
-                return (255, 0, 0)
+                return (0, 0)
 
             # RGB for white is (255, 255, 255) and for red is (255, 0, 0)
             # As we progress from white to red, we need to decrease the values of green and blue from 255 to 0
@@ -76,22 +77,28 @@ class Base(MixinMeta):
             green = blue = 255 - decrement
 
             # Return the new RGB color
-            return (255, green, blue)
+            return (green, blue)
 
-        r, g, b = generate_color(messages, conf.max_retention)
-        color = discord.Color.from_rgb(r, g, b)
+        g, b = generate_color(messages, conf.get_user_max_retention(ctx.author))
+        gg, bb = generate_color(conversation.user_token_count(), max_tokens)
+        # Whatever limit is more severe get that color
+        color = discord.Color.from_rgb(255, min(g, gg), min(b, bb))
 
         embed = discord.Embed(
             description=(
                 f"{ctx.channel.mention}\n"
-                f"`Messages: `{messages}/{conf.max_retention}\n"
-                f"`Tokens:   `{conversation.user_token_count()}\n"
-                f"`Expired:  `{conversation.is_expired(conf)}"
+                f"`Messages: `{messages}/{conf.get_user_max_retention(ctx.author)}\n"
+                f"`Tokens:   `{conversation.user_token_count()}/{max_tokens}\n"
+                f"`Expired:  `{conversation.is_expired(conf, ctx.author)}\n"
+                f"`Model:    `{conf.get_user_model(ctx.author)}"
             ),
             color=color,
         )
         embed.set_author(
             name=f"Conversation stats for {user.display_name}", icon_url=user.display_avatar
+        )
+        embed.set_footer(
+            text="Token limit is a soft cap and excess is trimmed before sending to the api"
         )
         await ctx.send(embed=embed)
 

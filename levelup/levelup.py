@@ -22,7 +22,12 @@ from redbot.core import Config, VersionInfo, commands, version_info
 from redbot.core.data_manager import bundled_data_path, cog_data_path
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils import AsyncIter
-from redbot.core.utils.chat_formatting import box, humanize_list, humanize_number
+from redbot.core.utils.chat_formatting import (
+    box,
+    humanize_list,
+    humanize_number,
+    humanize_timedelta,
+)
 from redbot.core.utils.predicates import MessagePredicate
 
 from levelup.utils.formatter import (
@@ -70,7 +75,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
     """Your friendly neighborhood leveling system"""
 
     __author__ = "Vertyco#0117"
-    __version__ = "3.0.2"
+    __version__ = "3.1.6"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -1461,7 +1466,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         **Make sure your guild's leaderboard is public!**
 
         **Arguments**
-        `export_by` - which stat to prioritize (`level` or `exp`)
+        `import_by` - which stat to prioritize (`level` or `exp`)
         If exp is entered, it will import their experience and base their new level off of that.
         If level is entered, it will import their level and calculate their exp based off of that.
         `replace` - (True/False) if True, it will replace the user's exp or level, otherwise it will add it
@@ -2401,7 +2406,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
                         f"Failed to assign the following roles to {user} in {guild}: {humanize_list([r.name for r in adding])}"
                     )
                 try:
-                    await user.add_roles(*removing)
+                    await user.remove_roles(*removing)
                     roles_removed += len(removing)
                 except discord.Forbidden:
                     log.warning(
@@ -2878,3 +2883,32 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         """Force save the cache"""
         await self.save_cache()
         await ctx.tick()
+
+    @commands.Cog.listener()
+    async def on_assistant_cog_add(self, cog: commands.Cog):
+        """Registers a command with Assistant enabling it to access to command docs"""
+        schema = {
+            "name": "get_user_profile",
+            "description": "get a users level, xp, voice time and other stats about their LevelUp profile in the discord",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        }
+        await cog.register_function("LevelUp", schema)
+
+    async def get_user_profile(self, user: discord.Member, *args, **kwargs):
+        if user.guild.id not in self.data:
+            return "The LevelUp cog has been loaded but doesnt have any data yet"
+        self.init_user(user.guild.id, str(user.id))
+        user_data = self.data[user.guild.id]["users"][str(user.id)].copy()
+        txt = (
+            f"Experience: {round(user_data['xp'])}\n"
+            f"Voice time: {humanize_timedelta(seconds=int(user_data['voice']))}\n"
+            f"Message count: {humanize_number(user_data['messages'])}\n"
+            f"Level: {user_data['level']}\n"
+            f"Prestige: {user_data['prestige']}\n"
+            f"Emoji: {user_data['emoji']}\n"
+            f"Stars: {humanize_number(user_data['stars'])}"
+        )
+        return txt

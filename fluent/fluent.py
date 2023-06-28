@@ -26,7 +26,7 @@ class Fluent(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "1.3.0"
+    __version__ = "1.3.1"
 
     def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
@@ -241,20 +241,6 @@ class Fluent(commands.Cog):
     @commands.Cog.listener()
     async def on_assistant_cog_add(self, cog: commands.Cog):
         """Registers a command with Assistant enabling it to access translations"""
-
-        async def get_translation(bot, message: str, to_language: str, *args, **kwargs) -> str:
-            cog = bot.get_cog("Fluent")
-            if not cog:
-                return "Cog not loaded!"
-            lang = await cog.converter(to_language)
-            if not lang:
-                return "Invalid target language"
-            try:
-                translation = await cog.translate(message, lang)
-                return f"{translation.text}\n({translation.src} -> {lang})"
-            except Exception as e:
-                return f"Error: {e}"
-
         schema = {
             "name": "get_translation",
             "description": "Translate text to another language",
@@ -270,4 +256,14 @@ class Fluent(commands.Cog):
                 "required": ["message", "to_language"],
             },
         }
-        await cog.register_function(self, schema, get_translation)
+        await cog.register_function(cog_name="Fluent", schema=schema)
+
+    async def get_translation(self, message: str, to_language: str, *args, **kwargs) -> str:
+        lang = await self.converter(to_language)
+        if not lang:
+            return "Invalid target language"
+        try:
+            translation = await self.translate(message, lang)
+            return f"{translation.text}\n({translation.src} -> {lang})"
+        except Exception as e:
+            return f"Error: {e}"

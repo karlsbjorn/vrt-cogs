@@ -2,32 +2,32 @@ msgid ""
 msgstr ""
 "Project-Id-Version: vrt-cogs\n"
 "POT-Creation-Date: 2023-06-24 21:55-0400\n"
-"PO-Revision-Date: 2023-06-25 03:08\n"
+"PO-Revision-Date: 2023-06-25 08:26\n"
 "Last-Translator: \n"
-"Language-Team: Spanish\n"
+"Language-Team: Korean\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: redgettext 3.4.2\n"
-"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
 "X-Crowdin-Project: vrt-cogs\n"
 "X-Crowdin-Project-ID: 550681\n"
-"X-Crowdin-Language: es-ES\n"
+"X-Crowdin-Language: ko\n"
 "X-Crowdin-File: /main/levelup/locales/messages.pot\n"
 "X-Crowdin-File-ID: 11\n"
-"Language: es_ES\n"
+"Language: ko_KR\n"
 
 #: base.py:81
 msgid "Uh Oh, looks like that is not a valid URL"
-msgstr ""
+msgstr "유효한 URL이 아닌 것 같습니다."
 
 #: base.py:92
 msgid "Uh Oh, looks like that is not a valid image, cannot identify the file"
-msgstr ""
+msgstr "유효한 이미지가 아닌 것 같습니다. 파일을 인식할 수 없습니다."
 
 #: base.py:97
 msgid "Uh Oh, looks like that is not a valid image"
-msgstr ""
+msgstr "유효한 이미지가 아닌 것 같습니다."
 
 #: base.py:174
 #, docstring
@@ -51,7 +51,7 @@ msgstr ""
 
 #: base.py:203
 msgid "You need to wait "
-msgstr ""
+msgstr "기다려야 합니다. "
 
 #: base.py:205
 msgid " before you can give more stars!"
@@ -144,7 +144,7 @@ msgstr ""
 
 #: base.py:347 base.py:407
 msgid "I was not able to get the file from Discord"
-msgstr ""
+msgstr "Discord에서 파일을 가져올 수 없습니다."
 
 #: base.py:354
 msgid "Your custom background has been saved as "
@@ -165,7 +165,7 @@ msgstr ""
 
 #: base.py:371
 msgid "Background `"
-msgstr ""
+msgstr "배경"
 
 #: base.py:371 base.py:431
 msgid "` Has been removed!"
@@ -225,7 +225,7 @@ msgstr ""
 
 #: base.py:458 base.py:487
 msgid "command"
-msgstr ""
+msgstr "명령어"
 
 #: base.py:462
 msgid "Could not send background collage, file size may be too large."
@@ -649,7 +649,7 @@ msgstr ""
 
 #: levelup.py:620
 msgid "Just reached level {level}!"
-msgstr ""
+msgstr "{level}로 레벨업하셨습니다!"
 
 #: levelup.py:653
 msgid "You just leveled up in "
