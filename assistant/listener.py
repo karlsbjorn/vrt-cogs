@@ -32,20 +32,37 @@ class AssistantListener(MixinMeta):
         # Ignore if channel doesn't exist
         if not message.channel:
             return
+<<<<<<< HEAD
         # Ignore references to other members
         # if hasattr(message, "reference") and message.reference:
         #     ref = message.reference.resolved
         #     if ref and ref.author.id != self.bot.user.id:
         #         return
+=======
+        # Check if cog is disabled
+        if await self.bot.cog_disabled_in_guild(self, message.guild):
+            return
+        # Check permissions
+        if not message.channel.permissions_for(message.guild.me).send_messages:
+            return
+        if not message.channel.permissions_for(message.guild.me).embed_links:
+            return
+>>>>>>> main
 
         conf = self.db.get_conf(message.guild)
         if not conf.enabled:
             return
-        if not conf.api_key:
+        no_api = [not conf.api_key, not conf.endpoint_override, not self.db.endpoint_override]
+        if all(no_api):
             return
+
         channel = message.channel
-        if channel.id != conf.channel_id:
+        mention_ids = [m.id for m in message.mentions]
+
+        # Ignore channels that arent a dedicated assistant channel
+        if self.bot.user.id not in mention_ids and channel.id != conf.channel_id:
             return
+<<<<<<< HEAD
 <<<<<<< HEAD
         if random.random() > 0.2:
             return
@@ -65,10 +82,21 @@ class AssistantListener(MixinMeta):
             return
 >>>>>>> main
         mentions = [member.id for member in message.mentions]
+=======
+
+        # Ignore references to other members unless bot is pinged
+        if hasattr(message, "reference") and message.reference:
+            ref = message.reference.resolved
+            if ref and ref.author.id != self.bot.user.id and self.bot.user.id not in mention_ids:
+                return
+
+        if not await can_use(message, conf.blacklist, respond=False):
+            return
+>>>>>>> main
         if (
             not message.content.endswith("?")
             and conf.endswith_questionmark
-            and self.bot.user.id not in mentions
+            and self.bot.user.id not in mention_ids
         ):
             return
 <<<<<<< HEAD

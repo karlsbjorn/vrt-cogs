@@ -72,10 +72,14 @@ async def confirm(ctx: commands.Context):
 
 @cog_i18n(_)
 class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClass):
-    """Your friendly neighborhood leveling system"""
+    """
+    Your friendly neighborhood leveling system
+
+    Earn experience by chatting in text and voice channels, compare levels with your friends, customize your profile and view various leaderboards!
+    """
 
     __author__ = "Vertyco#0117"
-    __version__ = "3.1.6"
+    __version__ = "3.2.1"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -520,6 +524,14 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             "messages": 0,
             "stars": 0,
         }
+
+    def give_star_to_user(self, guild: discord.Guild, user: discord.Member) -> bool:
+        if guild.id not in self.data:
+            return False
+        if str(user.id) not in self.data[guild.id]["users"]:
+            return False
+        self.data[guild.id]["users"][str(user.id)]["stars"] += 1
+        return True
 
     async def check_levelups(self, guild_id: int, user_id: str, message: discord.Message = None):
         base = self.data[guild_id]["base"]
@@ -2110,7 +2122,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             text = _(
                 "Embed profiles are disabled. Enable them to set the progress bar length with "
             )
-            text += f"`{ctx.prefix}levelset barlength`"
+            text += f"`{ctx.clean_prefix}levelset barlength`"
             return await ctx.send(text)
         if bar_length < 15 or bar_length > 50:
             return await ctx.send(

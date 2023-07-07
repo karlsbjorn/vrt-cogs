@@ -5,16 +5,19 @@ from time import perf_counter
 from typing import Callable, Dict, List, Optional, Union
 
 import discord
+import tiktoken
 from discord.ext import tasks
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
 from .abc import CompositeMetaClass
-from .api import API
 from .commands import AssistantCommands
-from .common.utils import json_schema_invalid, request_embedding
+from .common.api import API
+from .common.chat import ChatHandler
+from .common.constants import TUTOR_SCHEMA
+from .common.models import DB, Embedding, EmbeddingEntryExists, NoAPIKey
+from .common.utils import json_schema_invalid
 from .listener import AssistantListener
-from .models import DB, Embedding, EmbeddingEntryExists, NoAPIKey
 
 log = logging.getLogger("red.vrt.assistant")
 
@@ -23,6 +26,7 @@ class Assistant(
     AssistantCommands,
     AssistantListener,
     API,
+    ChatHandler,
     commands.Cog,
     metaclass=CompositeMetaClass,
 ):
@@ -35,10 +39,15 @@ class Assistant(
     - **[p]chat**: talk with the assistant
     - **[p]convostats**: view a user's token usage/conversation message count for the channel
     - **[p]clearconvo**: reset your conversation with the assistant in the channel
+
+    **Support for self-hosted endpoints!**
+    Assistant supports usage of **[Self-Hosted Models](https://github.com/vertyco/gpt-api)** via endpoint overrides.
+    To set a custom endpoint for example: `[p]assist endpoint http://localhost:8000/v1`
+    This will now make calls to your self-hosted api
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "3.6.1"
+    __version__ = "4.4.3"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -50,7 +59,9 @@ class Assistant(
         self.config = Config.get_conf(self, 117117117, force_registration=True)
         self.config.register_global(db={})
         self.db: DB = DB()
-        self.re_pool = Pool()
+        self.mp_pool = Pool()
+
+        self.tokenizer: tiktoken.core.Encoding = tiktoken.get_encoding("cl100k_base")
 
         # {cog_name: {function_name: {function_json_schema}}}
         self.registry: Dict[str, Dict[str, dict]] = {}
@@ -63,7 +74,7 @@ class Assistant(
 
     async def cog_unload(self):
         self.save_loop.cancel()
-        self.re_pool.close()
+        self.mp_pool.close()
         self.bot.dispatch("assistant_cog_remove")
 
     async def init_cog(self):
@@ -72,10 +83,14 @@ class Assistant(
         data = await self.config.db()
         self.db = await asyncio.to_thread(DB.parse_obj, data)
         log.info(f"Config loaded in {round((perf_counter() - start) * 1000, 2)}ms")
+        await asyncio.to_thread(self._cleanup_db)
+        await self.register_function(self.qualified_name, TUTOR_SCHEMA)
+
         logging.getLogger("openai").setLevel(logging.WARNING)
+        logging.getLogger("aiocache").setLevel(logging.WARNING)
         self.bot.dispatch("assistant_cog_add", self)
-        await asyncio.sleep(10)
-        await asyncio.to_thread(self._cleanup)
+
+        await asyncio.sleep(30)
         self.save_loop.start()
 
     async def save_conf(self):
@@ -88,9 +103,12 @@ class Assistant(
                 self.db.conversations.clear()
             dump = await asyncio.to_thread(self.db.dict)
             await self.config.db.set(dump)
+            txt = f"Config saved in {round((perf_counter() - start) * 1000, 2)}ms"
             if self.first_run:
-                log.info(f"Config saved in {round((perf_counter() - start) * 1000, 2)}ms")
+                log.info(txt)
                 self.first_run = False
+            else:
+                log.debug(txt)
         except Exception as e:
             log.error("Failed to save config", exc_info=e)
         finally:
@@ -161,12 +179,44 @@ class Assistant(
     async def save_loop(self):
         if not self.db.persistent_conversations:
             return
-        await asyncio.to_thread(self._cleanup_db)
         await self.save_conf()
+
+    async def knowledge_store(
+        self,
+        guild: discord.Guild,
+        user: discord.Member,
+        embedding_name: str,
+        embedding_text: str,
+        *args,
+        **kwargs,
+    ):
+        if len(embedding_name) > 45:
+            return "Error: embedding_name should be 45 characters or less!"
+        conf = self.db.get_conf(guild)
+        if not any([role.id in conf.tutors for role in user.roles]) and user.id not in conf.tutors:
+            return f"User {user.display_name} is not recognized as a tutor!"
+        try:
+            embedding = await self.add_embedding(
+                guild,
+                embedding_name,
+                embedding_text,
+                overwrite=False,
+                ai_created=True,
+            )
+            if embedding is None:
+                return "Failed to create embedding!"
+            return f"The {embedding_name} embedding entry has been created, you can now reference it later"
+        except EmbeddingEntryExists:
+            return "Error: embedding_name already exists!"
 
     # ------------------ 3rd PARTY ACCESSIBLE METHODS ------------------
     async def add_embedding(
-        self, guild: discord.Guild, name: str, text: str, overwrite: bool = False
+        self,
+        guild: discord.Guild,
+        name: str,
+        text: str,
+        overwrite: bool = False,
+        ai_created: bool = False,
     ) -> Optional[List[float]]:
         """
         Method for other cogs to access and add embeddings
@@ -186,14 +236,14 @@ class Assistant(
         """
 
         conf = self.db.get_conf(guild)
-        if not conf.api_key:
-            raise NoAPIKey("OpenAI key has not been set for this server!")
+
         if name in conf.embeddings and not overwrite:
             raise EmbeddingEntryExists(f"The entry name '{name}' already exists!")
-        embedding = await request_embedding(text, conf.api_key)
+
+        embedding = await self.request_embedding(text, conf)
         if not embedding:
             return None
-        conf.embeddings[name] = Embedding(text=text, embedding=embedding)
+        conf.embeddings[name] = Embedding(text=text, embedding=embedding, ai_created=ai_created)
         asyncio.create_task(self.save_conf())
         return embedding
 
@@ -228,7 +278,7 @@ class Assistant(
             str: the reply from ChatGPT (may need to be pagified)
         """
         conf = self.db.get_conf(guild)
-        if not conf.api_key:
+        if not self.can_call_llm(conf):
             raise NoAPIKey("OpenAI key has not been set for this server!")
         return await self.get_chat_response(
             message,
@@ -244,7 +294,10 @@ class Assistant(
     # ------------------ 3rd PARTY FUNCTION REGISTRY ------------------
     @commands.Cog.listener()
     async def on_cog_add(self, cog: commands.Cog):
-        self.bot.dispatch("assistant_cog_add", self)
+        event = "on_assistant_cog_add"
+        funcs = [func for event_name, func in cog.get_listeners() if event_name == event]
+        for func in funcs:
+            self.bot._schedule_event(func, event, self)
 
     @commands.Cog.listener()
     async def on_cog_remove(self, cog: commands.Cog):

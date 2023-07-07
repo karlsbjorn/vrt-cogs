@@ -3,12 +3,13 @@ import contextlib
 import logging
 import traceback
 from datetime import datetime
-from typing import Dict, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import discord
 import numpy as np
 from discord import ButtonStyle, Interaction, TextStyle
 from discord.ui import Button, Modal, TextInput, View
+from discord.ui.item import Item
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.i18n import Translator
@@ -154,7 +155,14 @@ class CloseView(View):
         self.owner_id = owner_id
         self.channel = channel
 
-        self.close_ticket.custom_id = f"{owner_id}|{channel.id}"
+        self.close_ticket.custom_id = str(channel.id)
+
+    async def on_error(self, interaction: Interaction, error: Exception, item: Item[Any]):
+        log.warning(
+            f"View failed for user ticket {self.owner_id} in channel {self.channel.name} in {self.channel.guild.name}",
+            exc_info=error,
+        )
+        return await super().on_error(interaction, error, item)
 
     @discord.ui.button(label="Close", style=ButtonStyle.danger)
     async def close_ticket(self, interaction: Interaction, button: Button):
@@ -435,6 +443,9 @@ class SupportButton(Button):
                     "There was an error while preparing your ticket, please contact an admin!\n{}"
                 ).format(box(str(e), "py")),
                 color=discord.Color.red(),
+            )
+            log.info(
+                f"Failed to create ticket for {user.display_name} in {guild.name}", exc_info=e
             )
             if modal:
                 return await interaction.followup.send(embed=em, ephemeral=True)

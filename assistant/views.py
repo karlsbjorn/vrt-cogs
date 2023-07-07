@@ -11,17 +11,14 @@ from rapidfuzz import fuzz
 from redbot.core import commands
 from redbot.core.utils.chat_formatting import box, pagify
 
+from .common.models import DB, CustomFunction, Embedding, GuildSettings
 from .common.utils import (
     code_string_valid,
-    embedding_embeds,
     extract_code_blocks,
-    function_embeds,
     get_attachments,
     json_schema_invalid,
-    request_embedding,
     wait_message,
 )
-from .models import DB, CustomFunction, Embedding, GuildSettings
 
 log = logging.getLogger("red.vrt.assistant.views")
 ON_EMOJI = "\N{ON WITH EXCLAMATION MARK WITH LEFT RIGHT ARROW ABOVE}"
@@ -29,13 +26,14 @@ OFF_EMOJI = "\N{MOBILE PHONE OFF}"
 
 
 class APIModal(discord.ui.Modal):
-    def __init__(self):
-        self.key = ""
+    def __init__(self, key: str = None):
+        self.key = key
         super().__init__(title="Set OpenAI Key", timeout=120)
         self.field = discord.ui.TextInput(
             label="Enter your OpenAI Key below",
             style=discord.TextStyle.short,
-            required=True,
+            default=self.key,
+            required=False,
         )
         self.add_item(self.field)
 
@@ -46,9 +44,9 @@ class APIModal(discord.ui.Modal):
 
 
 class SetAPI(discord.ui.View):
-    def __init__(self, author: discord.Member):
+    def __init__(self, author: discord.Member, key: str = None):
         self.author = author
-        self.key = ""
+        self.key = key
         super().__init__(timeout=60)
 
     async def interaction_check(self, interaction: discord.Interaction):
@@ -59,7 +57,7 @@ class SetAPI(discord.ui.View):
 
     @discord.ui.button(label="Set OpenAI Key", style=discord.ButtonStyle.primary)
     async def confirm(self, interaction: discord.Interaction, buttons: discord.ui.Button):
-        modal = APIModal()
+        modal = APIModal(key=self.key)
         await interaction.response.send_modal(modal)
         await modal.wait()
         self.key = modal.key
@@ -113,11 +111,20 @@ class EmbeddingSearch(discord.ui.Modal):
 
 
 class EmbeddingMenu(discord.ui.View):
-    def __init__(self, ctx: commands.Context, conf: GuildSettings, save_func: Callable):
+    def __init__(
+        self,
+        ctx: commands.Context,
+        conf: GuildSettings,
+        save_func: Callable,
+        fetch_pages: Callable,
+        embed_method: Callable,
+    ):
         super().__init__(timeout=600)
         self.ctx = ctx
         self.conf = conf
         self.save = save_func
+        self.fetch_pages = fetch_pages
+        self.embed_method = embed_method
 
         self.has_skip = True
         self.place = 0
@@ -140,7 +147,7 @@ class EmbeddingMenu(discord.ui.View):
         return await super().on_timeout()
 
     async def get_pages(self) -> None:
-        self.pages = await asyncio.to_thread(embedding_embeds, self.conf.embeddings, self.place)
+        self.pages = await self.fetch_pages(self.conf, self.place)
         if len(self.pages) > 30 and not self.has_skip:
             self.add_item(self.left10)
             self.add_item(self.right10)
@@ -176,7 +183,7 @@ class EmbeddingMenu(discord.ui.View):
                 )
 
     async def add_embedding(self, name: str, text: str):
-        embedding = await request_embedding(text, self.conf.api_key)
+        embedding = await self.embed_method(text, self.conf)
         if not embedding:
             return await self.ctx.send(
                 f"Failed to process embedding `{name}`\nContent: ```\n{text}\n```"
@@ -232,14 +239,12 @@ class EmbeddingMenu(discord.ui.View):
         await modal.wait()
         if not modal.name or not modal.text:
             return
-        embedding = await request_embedding(modal.text, self.conf.api_key)
+        embedding = await self.embed_method(modal.text, self.conf)
         if not embedding:
             return await interaction.followup.send(
                 "Failed to edit that embedding, please try again later", ephemeral=True
             )
-        self.conf.embeddings[modal.name] = Embedding(
-            nickname=modal.name, text=modal.text, embedding=embedding
-        )
+        self.conf.embeddings[modal.name] = Embedding(text=modal.text, embedding=embedding)
         if modal.name != name:
             del self.conf.embeddings[name]
         await self.get_pages()
@@ -421,6 +426,7 @@ class CodeMenu(discord.ui.View):
         db: DB,
         registry: Dict[str, Dict[str, dict]],
         save_func: Callable,
+        fetch_pages: Callable,
     ):
         super().__init__(timeout=600)
         self.ctx = ctx
@@ -428,6 +434,7 @@ class CodeMenu(discord.ui.View):
         self.conf = db.get_conf(ctx.guild)
         self.registry = registry
         self.save = save_func
+        self.fetch_pages = fetch_pages
 
         self.has_skip = True
 
@@ -457,11 +464,8 @@ class CodeMenu(discord.ui.View):
         return await super().on_timeout()
 
     async def get_pages(self) -> None:
-        owner = self.ctx.author.id in self.ctx.bot.owner_ids
-        func_dump = {k: v.dict() for k, v in self.db.functions.items()}
-        self.pages = await asyncio.to_thread(
-            function_embeds, func_dump, self.registry, owner, self.ctx.bot
-        )
+        self.pages = await self.fetch_pages(self.ctx.author)
+        self.update_button()
         if len(self.pages) > 30 and not self.has_skip:
             self.add_item(self.left10)
             self.add_item(self.right10)
@@ -475,7 +479,6 @@ class CodeMenu(discord.ui.View):
 
     async def start(self):
         self.message = await self.ctx.send(embed=self.pages[self.page], view=self)
-        self.update_button()
 
     def test_func(self, function_string: str) -> bool:
         try:
@@ -500,6 +503,8 @@ class CodeMenu(discord.ui.View):
         return missing
 
     def update_button(self):
+        if not self.pages:
+            return
         if not self.pages[self.page].fields:
             return
         function_name = self.pages[self.page].description
@@ -566,7 +571,7 @@ class CodeMenu(discord.ui.View):
             return await interaction.response.send_message("No code to inspect!", ephemeral=True)
         function_name = self.pages[self.page].description
         if function_name in self.db.functions:
-            entry = self.db.functions[function_name]
+            entry = self.db.functions[function_name].jsonschema
         else:
             for functions in self.registry.values():
                 if function_name in functions:
@@ -576,7 +581,7 @@ class CodeMenu(discord.ui.View):
                 return await interaction.response.send_message("Cannot find function!")
         files = [
             discord.File(
-                BytesIO(json.dumps(entry.jsonschema, indent=2).encode()),
+                BytesIO(json.dumps(entry, indent=2).encode()),
                 filename=f"{function_name}.json",
             ),
             discord.File(BytesIO(entry.code.encode()), filename=f"{function_name}.py"),
@@ -634,7 +639,6 @@ class CodeMenu(discord.ui.View):
             return await interaction.followup.send("Invalid function")
 
         entry = CustomFunction(code=code, jsonschema=schema)
-        entry.refresh()
         if function_name in self.db.functions:
             await interaction.followup.send(f"`{function_name}` has been overwritten!")
         else:
@@ -703,11 +707,9 @@ class CodeMenu(discord.ui.View):
         if function_name != new_name:
             self.db.functions[new_name] = CustomFunction(code=code, jsonschema=schema)
             del self.db.functions[function_name]
-            self.db.functions[new_name].refresh()
         else:
             self.db.functions[function_name].code = code
             self.db.functions[function_name].jsonschema = schema
-            self.db.functions[function_name].refresh()
         await interaction.followup.send(f"`{function_name}` function updated!", ephemeral=True)
         await self.get_pages()
         await self.message.edit(embed=self.pages[self.page], view=self)

@@ -1,19 +1,17 @@
 import functools
 import logging
 from io import BytesIO
-from typing import List, Literal, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import discord
 import pandas as pd
 from aiocache import cached
 from discord import app_commands
-from discord.app_commands.commands import Command as SlashCommand
-from discord.ext.commands.hybrid import HybridAppCommand
 from redbot.core import commands
 from redbot.core.bot import Red
-from redbot.core.commands.commands import HybridCommand, HybridGroup
 from redbot.core.i18n import Translator, cog_i18n
+from redbot.core.utils.mod import is_admin_or_superior, is_mod_or_superior
 
 from .formatter import HELP, IGNORE, CustomCmdFmt
 
@@ -31,7 +29,7 @@ class AutoDocs(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "0.6.1"
+    __version__ = "0.6.3"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -248,35 +246,66 @@ class AutoDocs(commands.Cog):
     async def get_cog_names(self, inter: discord.Interaction, current: str):
         return await self.get_coglist(current)
 
-    async def get_command_doc(
-        self,
-        guild: discord.Guild,
-        command: Union[
-            HybridGroup,
-            HybridCommand,
-            HybridAppCommand,
-            SlashCommand,
-            commands.Command,
-        ],
-    ):
+    # ------------------------------------------------------------------------
+    # ------------------------------------------------------------------------
+    # ------------------------------------------------------------------------
+    # ------------------- ASSISTANT FUNCTION REGISTRATION --------------------
+    # ------------------------------------------------------------------------
+    # ------------------------------------------------------------------------
+    # ------------------------------------------------------------------------
+    async def get_command_info(
+        self, guild: discord.Guild, user: discord.Member, command_name: str, *args, **kwargs
+    ) -> str:
+        command = self.bot.get_command(command_name)
+        if not command:
+            return "Command not found, check valid commands for this cog first"
+
         prefixes = await self.bot.get_valid_prefixes(guild)
-        c = CustomCmdFmt(self.bot, command, prefixes[0], True, False, "guildowner", True)
-        return c.get_doc()
+
+        if user.id in self.bot.owner_ids:
+            level = "botowner"
+        elif user.id == guild.owner_id or user.guild_permissions.manage_guild:
+            level = "guildowner"
+        elif (await is_admin_or_superior(self, user)) or user.guild_permissions.manage_roles:
+            level = "admin"
+        elif (await is_mod_or_superior(self, user)) or user.guild_permissions.manage_messages:
+            level = "mod"
+        else:
+            level = "user"
+
+        c = CustomCmdFmt(self.bot, command, prefixes[0], True, False, level, True)
+        doc = c.get_doc()
+        if not doc:
+            return "The user you are chatting with does not have the required permissions to use that command"
+
+        return f"Cog name: {command.cog.qualified_name}\nCommand:\n{doc}"
+
+    async def get_command_names(self, cog_name: str, *args, **kwargs):
+        cog = self.bot.get_cog(cog_name)
+        if not cog:
+            return "Could not find that cog, check loaded cogs first"
+        names = [i.qualified_name for i in cog.walk_app_commands()] + [
+            i.qualified_name for i in cog.walk_commands()
+        ]
+        joined = "\n".join(names)
+        return f"Command Names:\n{joined}"
+
+    async def get_cog_info(self, cog_name: str, *args, **kwargs):
+        cog = self.bot.get_cog(cog_name)
+        if not cog:
+            return "Could not find that cog, check loaded cogs first"
+        if desc := cog.help:
+            return desc
+        return "This cog has no description"
+
+    async def get_cog_list(self, *args, **kwargs):
+        joined = "\n".join([i for i in self.bot.cogs])
+        return f"Cog Names:\n{joined}"
 
     @commands.Cog.listener()
     async def on_assistant_cog_add(self, cog: commands.Cog):
         """Registers a command with Assistant enabling it to access to command docs"""
-
-        async def get_command_info(
-            guild: discord.Guild, command_name: str, *args, **kwargs
-        ) -> str:
-            command = self.bot.get_command(command_name)
-            if not command:
-                return "Command not found, check valid commands for this cog first"
-            doc = await self.get_command_doc(guild, command)
-            if not doc:
-                return "Failed to fetch info for that command!"
-            return f"Cog name: {command.cog.qualified_name}\nCommand:\n{doc}"
+        schemas = []
 
         schema = {
             "name": "get_command_info",
@@ -292,17 +321,7 @@ class AutoDocs(commands.Cog):
                 "required": ["command_name"],
             },
         }
-        await cog.register_function(self, schema, get_command_info)
-
-        async def get_command_names(cog_name: str, *args, **kwargs):
-            cog = self.bot.get_cog(cog_name)
-            if not cog:
-                return "Could not find that cog, check loaded cogs first"
-            names = [i.qualified_name for i in cog.walk_app_commands()] + [
-                i.qualified_name for i in cog.walk_commands()
-            ]
-            joined = "\n".join(names)
-            return f"Command Names:\n{joined}"
+        schemas.append(schema)
 
         schema = {
             "name": "get_command_names",
@@ -318,15 +337,7 @@ class AutoDocs(commands.Cog):
                 "required": ["cog_name"],
             },
         }
-        await cog.register_function(self, schema, get_command_names)
-
-        async def get_cog_info(cog_name: str, *args, **kwargs):
-            cog = self.bot.get_cog(cog_name)
-            if not cog:
-                return "Could not find that cog, check loaded cogs first"
-            if desc := cog.help:
-                return desc
-            return "This cog has no description"
+        schemas.append(schema)
 
         schema = {
             "name": "get_cog_info",
@@ -342,11 +353,7 @@ class AutoDocs(commands.Cog):
                 "required": ["cog_name"],
             },
         }
-        await cog.register_function(self, schema, get_cog_info)
-
-        async def get_cog_list(*args, **kwargs):
-            joined = "\n".join([i for i in self.bot.cogs])
-            return f"Cog Names:\n{joined}"
+        schemas.append(schema)
 
         schema = {
             "name": "get_cog_list",
@@ -356,4 +363,6 @@ class AutoDocs(commands.Cog):
                 "properties": {},
             },
         }
-        await cog.register_function(self, schema, get_cog_list)
+        schemas.append(schema)
+
+        await cog.register_functions(self.qualified_name, schemas)
