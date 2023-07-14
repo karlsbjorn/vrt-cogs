@@ -2,16 +2,33 @@ import random
 
 from redbot.core import commands
 
+CATS = [
+    "^._.^",
+    "ฅ(＾・ω・＾ฅ)",
+    "（＾・ω・＾✿）",
+    "（＾・ω・＾❁）",
+    "(=^･ω･^=)",
+    "(^・x・^)",
+    "(=^･ｪ･^=))ﾉ彡☆",
+    "/ᐠ｡▿｡ᐟ\*ᵖᵘʳʳ*",
+    "✧/ᐠ-ꞈ-ᐟ\\",
+    "/ᐠ –ꞈ –ᐟ\\",
+    "龴ↀ◡ↀ龴",
+    "^ↀᴥↀ^",
+    "(,,,)=(^.^)=(,,,)",
+]
+
 
 class Meow(commands.Cog):
     """
     Meow!
 
+
     My girlfriend had a dream about this cog, so I had to make it ¯\_(ツ)_/¯
     """
 
     __author__ = "Vertyco"
-    __version__ = "0.0.4"
+    __version__ = "0.1.1"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -43,16 +60,19 @@ class Meow(commands.Cog):
             newstring = text.replace("now", "meow")
             await ctx.send(newstring)
         else:
-            cats = [
-                "^._.^",
-                "ฅ(＾・ω・＾ฅ)",
-                "（＾・ω・＾✿）",
-                "（＾・ω・＾❁）",
-                "(=^･ω･^=)",
-                "(^・x・^)",
-                "(=^･ｪ･^=))ﾉ彡☆",
-                "/ᐠ｡▿｡ᐟ\*ᵖᵘʳʳ*",
-                "✧/ᐠ-ꞈ-ᐟ\\",
-                "/ᐠ –ꞈ –ᐟ\\",
-            ]
-            return await ctx.send(random.choice(cats))
+            return await ctx.send(self.get_cat())
+
+    def get_cat(self, *args, **kwargs) -> str:
+        return random.choice(CATS)
+
+    @commands.Cog.listener()
+    async def on_assistant_cog_add(self, cog: commands.Cog):
+        schema = {
+            "name": "get_cat",
+            "description": "generates ascii art of a cat face emoji",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        }
+        await cog.register_function("Meow", schema)

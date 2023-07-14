@@ -12,7 +12,6 @@ from redbot.core.utils.chat_formatting import pagify
 
 from .api import TranslateManager
 
-translator = googletrans.Translator()
 log = logging.getLogger("red.vrt.fluent")
 fail_embed = discord.Embed(description="❌ API seems to be down at the moment.")
 
@@ -26,7 +25,7 @@ class Fluent(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "1.3.1"
+    __version__ = "1.3.3"
 
     def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
@@ -240,7 +239,6 @@ class Fluent(commands.Cog):
 
     @commands.Cog.listener()
     async def on_assistant_cog_add(self, cog: commands.Cog):
-        """Registers a command with Assistant enabling it to access translations"""
         schema = {
             "name": "get_translation",
             "description": "Translate text to another language",

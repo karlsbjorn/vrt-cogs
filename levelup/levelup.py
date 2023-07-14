@@ -79,7 +79,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "3.2.1"
+    __version__ = "3.2.7"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -711,7 +711,8 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             cid = str(message.channel.id)
             cat_cid = str(message.channel.category.id) if message.channel.category else "0"
             if cid in channel_bonuses or cat_cid in channel_bonuses:
-                bonuschannelrange = channel_bonuses[cid]
+                bonus_id = cid if cid in channel_bonuses else cat_cid
+                bonuschannelrange = channel_bonuses[bonus_id]
                 bmin = int(bonuschannelrange[0])
                 bmax = int(bonuschannelrange[1]) + 1
                 bxp = random.choice(range(bmin, bmax))
@@ -1571,22 +1572,36 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
     @admin_group.command(name="importfixator")
     @commands.is_owner()
     @commands.bot_has_permissions(embed_links=True)
-    async def import_from_fixator(self, ctx: commands.Context, yes_or_no: str):
+    async def import_from_fixator(self, ctx: commands.Context, i_agree: bool):
         """
         Import data from Fixator's Leveler cog
 
         This will overwrite existing LevelUp level data and stars
         It will also import XP range level roles, and ignored channels
-        *Obviously you will need Leveler loaded while you run this command*
+        *Obviously you will need MongoDB running while you run this command*
         """
-        if "y" not in yes_or_no.lower():
+        if not i_agree:
             return await ctx.send(_("Not importing users"))
-        leveler = self.bot.get_cog("Leveler")
-        if not leveler:
-            return await ctx.send(_("Leveler is not loaded, please load it and try again!"))
-        config = await leveler.config.custom("MONGODB").all()
-        if not config:
-            return await ctx.send(_("Couldnt find mongo config"))
+
+        path = cog_data_path(self).parent / "Leveler" / "settings.json"
+        if not path.exists():
+            return await ctx.send(_("No config found for Malarne's Leveler cog!"))
+
+        leveler_config_id = "78008101945374987542543513523680608657"
+        config_root = json.loads(path.read_text())
+        base_config = config_root[leveler_config_id]
+
+        default_mongo_config = {
+            "host": "localhost",
+            "port": 27017,
+            "username": None,
+            "password": None,
+            "db_name": "leveler",
+        }
+
+        mongo_config = base_config.get("MONGODB", default_mongo_config)
+        global_config = base_config["GLOBAL"]
+        guild_config = base_config["GUILD"]
 
         # If leveler is installed then libs should import fine
         try:
@@ -1602,10 +1617,10 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         self._disconnect_mongo()
         try:
             self.client = AsyncIOMotorClient(
-                **{k: v for k, v in config.items() if not k == "db_name"}
+                **{k: v for k, v in mongo_config.items() if not k == "db_name"}
             )
             await self.client.server_info()
-            self.db = self.client[config["db_name"]]
+            self.db = self.client[mongo_config["db_name"]]
             self._db_ready = True
         except (
             mongoerrors.ServerSelectionTimeoutError,
@@ -1627,12 +1642,12 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         users_imported = 0
         # Now to start the importing
         async with ctx.typing():
-            min_message_length = await leveler.config.message_length()
-            mention = await leveler.config.mention()
-            xp_range = await leveler.config.xp()
+            min_message_length = global_config.get("message_length", 0)
+            mention = global_config.get("mention", False)
+            xp_range = global_config.get("xp", [1, 5])
             for guild in self.bot.guilds:
                 guild_id = str(guild.id)
-                ignored_channels = await leveler.config.guild(guild).ignored_channels()
+                ignored_channels = guild_config.get(str(guild.id), {}).get("ignored_channels", [])
                 self.data[guild.id]["ignoredchannels"] = ignored_channels
                 self.data[guild.id]["length"] = int(min_message_length)
                 self.data[guild.id]["mention"] = mention
@@ -2898,7 +2913,6 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
 
     @commands.Cog.listener()
     async def on_assistant_cog_add(self, cog: commands.Cog):
-        """Registers a command with Assistant enabling it to access to command docs"""
         schema = {
             "name": "get_user_profile",
             "description": "get a users level, xp, voice time and other stats about their LevelUp profile in the discord",

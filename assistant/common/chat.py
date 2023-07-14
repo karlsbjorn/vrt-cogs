@@ -236,14 +236,6 @@ class ChatHandler(MixinMeta):
                     api_key=conf.api_key,
 =======
 
-        if "_learn" in function_map and author.id not in conf.tutors:
-            if not any([role.id in conf.tutors for role in author.roles]):
-                del function_map["_learn"]
-                for i in function_calls.copy():
-                    if i["name"] == "_learn":
-                        function_calls.remove(i)
-                        break
-
         query_embedding = []
         if conf.top_n:
             # Save on tokens by only getting embeddings if theyre enabled
@@ -264,6 +256,15 @@ class ChatHandler(MixinMeta):
         def pop_schema(name: str, calls: List[dict]):
             return [func for func in calls if func["name"] != name]
 
+        if "knowledge_store" in function_map and author.id not in conf.tutors:
+            if not any([role.id in conf.tutors for role in author.roles]):
+                function_calls = pop_schema("knowledge_store", function_calls)
+                del function_map["knowledge_store"]
+
+        if "knowledge_search" in function_map and not conf.top_n:
+            function_calls = pop_schema("knowledge_search", function_calls)
+            del function_map["knowledge_search"]
+
         max_tokens = self.get_max_tokens(conf, author)
         messages = await self.prepare_messages(
             message,
@@ -280,7 +281,6 @@ class ChatHandler(MixinMeta):
         last_function_response = ""
         last_function_name = ""
         calls = 0
-        repeats = 0
         while True:
             if calls >= conf.max_function_calls or conversation.function_count() >= 64:
                 function_calls = []
@@ -307,7 +307,11 @@ class ChatHandler(MixinMeta):
                 log.warning(
                     f"Function response failed. functions: {len(function_calls)}", exc_info=e
                 )
-                response = await self.request_chat_response(messages, conf, member=author)
+                response = await self.request_response(
+                    messages=messages,
+                    conf=conf,
+                    member=author,
+                )
             except Exception as e:
                 log.error(
                     f"Exception occured for chat response.\nMessages: {messages}", exc_info=e
@@ -386,13 +390,9 @@ class ChatHandler(MixinMeta):
 
             # Calling the same function and getting the same result repeatedly is just insanity GPT
             if function_name == last_function_name and result == last_function_response:
-                repeats += 1
-                if repeats > 2:
-                    function_calls = pop_schema(function_name, function_calls)
-                    log.info(f"Popping {function_name} for repeats")
-                    continue
-            else:
-                repeats = 0
+                function_calls = pop_schema(function_name, function_calls)
+                log.info(f"Popping {function_name} for repeats")
+                continue
 
             last_function_name = function_name
             last_function_response = result

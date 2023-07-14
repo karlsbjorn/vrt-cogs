@@ -43,8 +43,10 @@ class GuildSettings(BaseModel):
     min_length: int = 7
     max_retention: int = 0
     max_retention_time: int = 1800
+    max_response_tokens: int = 500
     max_tokens: int = 4000
     mention: bool = False
+    mention_respond: bool = True  # TODO: add command to toggle
     enabled: bool = True
     model: str = "gpt-3.5-turbo"
     endpoint_override: Optional[str] = None
@@ -54,6 +56,7 @@ class GuildSettings(BaseModel):
     regex_blacklist: List[str] = [r"^As an AI language model,"]
     block_failed_regex: bool = False
 
+    max_response_token_override: Dict[int, int] = {}
     max_token_role_override: Dict[int, int] = {}
     max_retention_role_override: Dict[int, int] = {}
     model_role_overrides: Dict[int, str] = {}
@@ -85,6 +88,8 @@ class GuildSettings(BaseModel):
         strings_and_relatedness = [
             i for i in strings_and_relatedness if i[2] >= self.min_relatedness
         ]
+        if not strings_and_relatedness:
+            return []
         strings_and_relatedness.sort(key=lambda x: x[2], reverse=True)
         return strings_and_relatedness[: self.top_n]
 
@@ -104,6 +109,15 @@ class GuildSettings(BaseModel):
         for role in sorted_roles:
             if role.id in self.max_token_role_override:
                 return self.max_token_role_override[role.id]
+        return self.max_tokens
+
+    def get_user_max_response_tokens(self, member: Optional[discord.Member] = None) -> int:
+        if not member or not self.max_response_token_override:
+            return self.max_response_tokens
+        sorted_roles = sorted(member.roles, reverse=True)
+        for role in sorted_roles:
+            if role.id in self.max_response_token_override:
+                return self.max_response_token_override[role.id]
         return self.max_tokens
 
     def get_user_max_retention(self, member: Optional[discord.Member] = None) -> int:

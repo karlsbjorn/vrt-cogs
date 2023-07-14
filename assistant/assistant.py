@@ -14,7 +14,7 @@ from .abc import CompositeMetaClass
 from .commands import AssistantCommands
 from .common.api import API
 from .common.chat import ChatHandler
-from .common.constants import TUTOR_SCHEMA
+from .common.constants import KNOWLEDGE_SEARCH, KNOWLEDGE_STORE
 from .common.models import DB, Embedding, EmbeddingEntryExists, NoAPIKey
 from .common.utils import json_schema_invalid
 from .listener import AssistantListener
@@ -43,15 +43,21 @@ class Assistant(
     **Support for self-hosted endpoints!**
     Assistant supports usage of **[Self-Hosted Models](https://github.com/vertyco/gpt-api)** via endpoint overrides.
     To set a custom endpoint for example: `[p]assist endpoint http://localhost:8000/v1`
-    This will now make calls to your self-hosted api
+    This will now make calls to your self-hosted api.
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "4.4.3"
+    __version__ = "4.5.0"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
         return f"{helpcmd}\nVersion: {self.__version__}\nAuthor: {self.__author__}"
+
+    async def red_delete_data_for_user(self, *, requester, user_id: int):
+        """No data to delete"""
+        for key in self.db.conversations.copy():
+            if key.split("-")[0] == str(user_id):
+                del self.db.conversations[key]
 
     def __init__(self, bot: Red, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -84,7 +90,10 @@ class Assistant(
         self.db = await asyncio.to_thread(DB.parse_obj, data)
         log.info(f"Config loaded in {round((perf_counter() - start) * 1000, 2)}ms")
         await asyncio.to_thread(self._cleanup_db)
-        await self.register_function(self.qualified_name, TUTOR_SCHEMA)
+
+        # Register internal functions
+        await self.register_function(self.qualified_name, KNOWLEDGE_STORE)
+        await self.register_function(self.qualified_name, KNOWLEDGE_SEARCH)
 
         logging.getLogger("openai").setLevel(logging.WARNING)
         logging.getLogger("aiocache").setLevel(logging.WARNING)
@@ -181,6 +190,31 @@ class Assistant(
             return
         await self.save_conf()
 
+    async def knowledge_search(
+        self,
+        guild: discord.Guild,
+        search_query: str,
+        *args,
+        **kwargs,
+    ):
+        conf = self.db.get_conf(guild)
+        if not conf.embeddings:
+            return "There are no embeddings saved!"
+        if not conf.top_n:
+            return "Top N is set to 0 so no embeddings will be returned!"
+        query_embedding = await self.request_embedding(search_query, conf)
+        if not query_embedding:
+            return f"Failed to get embedding for your the query '{search_query}'"
+        embeddings = await asyncio.to_thread(conf.get_related_embeddings, query_embedding)
+        if not embeddings:
+            return f"No embeddings could be found related to the search query '{search_query}'"
+
+        embed = embeddings[0]
+        return (
+            f"Search results for '{search_query}'\n"
+            f"Found entry '{embed[0]}' with relatedness score of '{embed[2]}'\n{embed[1]}"
+        )
+
     async def knowledge_store(
         self,
         guild: discord.Guild,
@@ -204,10 +238,10 @@ class Assistant(
                 ai_created=True,
             )
             if embedding is None:
-                return "Failed to create embedding!"
-            return f"The {embedding_name} embedding entry has been created, you can now reference it later"
+                return "Failed to create embedding"
+            return "The embedding has been created successfully"
         except EmbeddingEntryExists:
-            return "Error: embedding_name already exists!"
+            return "That embedding already exists"
 
     # ------------------ 3rd PARTY ACCESSIBLE METHODS ------------------
     async def add_embedding(

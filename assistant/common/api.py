@@ -39,7 +39,7 @@ class API(MixinMeta):
         if conf.api_key:
             api_base = None
             api_key = conf.api_key
-
+        max_response_tokens = conf.get_user_max_response_tokens(member)
         model = conf.get_user_model(member)
         if model in CHAT:
             return await request_chat_completion_raw(
@@ -47,6 +47,7 @@ class API(MixinMeta):
                 messages=messages,
                 temperature=conf.temperature,
                 api_key=api_key,
+                max_tokens=max_response_tokens,
                 api_base=api_base,
                 functions=functions,
             )
@@ -58,6 +59,7 @@ class API(MixinMeta):
             prompt=prompt,
             temperature=conf.temperature,
             api_key=api_key,
+            max_tokens=max_response_tokens,
             api_base=api_base,
         )
         for i in ["Assistant:", "assistant:", "System:", "system:", "User:", "user:"]:
