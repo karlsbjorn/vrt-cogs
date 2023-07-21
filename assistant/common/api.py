@@ -39,15 +39,26 @@ class API(MixinMeta):
         if conf.api_key:
             api_base = None
             api_key = conf.api_key
+
         max_response_tokens = conf.get_user_max_response_tokens(member)
         model = conf.get_user_model(member)
+        # Overestimate by 5%
+        convo_tokens = await self.payload_token_count(conf, messages)
+        convo_tokens = round(convo_tokens * 1.05)
+        max_convo_tokens = self.get_max_tokens(conf, member)
+        max_model_tokens = MODELS[model]
+        diff = min(max_model_tokens - convo_tokens, max_convo_tokens - convo_tokens)
+        if diff < 1:
+            diff = max_model_tokens - convo_tokens
+        max_tokens = min(max_response_tokens, max(diff, 10))
+
         if model in CHAT:
             return await request_chat_completion_raw(
                 model=model,
                 messages=messages,
                 temperature=conf.temperature,
                 api_key=api_key,
-                max_tokens=max_response_tokens,
+                max_tokens=max_tokens,
                 api_base=api_base,
                 functions=functions,
             )
@@ -59,7 +70,7 @@ class API(MixinMeta):
             prompt=prompt,
             temperature=conf.temperature,
             api_key=api_key,
-            max_tokens=max_response_tokens,
+            max_tokens=max_tokens,
             api_base=api_base,
         )
         for i in ["Assistant:", "assistant:", "System:", "system:", "User:", "user:"]:
@@ -169,6 +180,9 @@ class API(MixinMeta):
         """Fetch token count of stored messages"""
         return sum([(await self.get_token_count(i["content"], conf)) for i in convo.messages])
 
+    async def payload_token_count(self, conf: GuildSettings, messages: List[dict]):
+        return sum([(await self.get_token_count(i["content"], conf)) for i in messages])
+
     async def prompt_token_count(self, conf: GuildSettings) -> int:
         """Fetch token count of system and initial prompts"""
         return (await self.get_token_count(conf.prompt, conf)) + (
@@ -217,11 +231,14 @@ class API(MixinMeta):
             total_tokens += count
 
         # Check if the total token count is already under the max token limit
+        max_response_tokens = conf.get_user_max_response_tokens(user)
         max_tokens = self.get_max_tokens(conf, user)
+        if max_tokens > max_response_tokens:
+            max_tokens = max_tokens - max_response_tokens
+
         if total_tokens <= max_tokens:
             return messages, function_list, False
 
-        # Helper function to degrade a message
         def _degrade_message(msg: str) -> str:
             words = msg.split()
             if len(words) > 1:

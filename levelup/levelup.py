@@ -16,7 +16,7 @@ import discord
 import matplotlib
 import matplotlib.pyplot as plt
 import tabulate
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 from discord.ext import tasks
 from redbot.core import Config, VersionInfo, commands, version_info
 from redbot.core.data_manager import bundled_data_path, cog_data_path
@@ -29,6 +29,12 @@ from redbot.core.utils.chat_formatting import (
     humanize_timedelta,
 )
 from redbot.core.utils.predicates import MessagePredicate
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from levelup.utils.formatter import (
     get_attachments,
@@ -79,7 +85,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "3.2.7"
+    __version__ = "3.4.0"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -1463,6 +1469,23 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         txt = _("Imported {} profile(s)").format(imported)
         await ctx.send(txt)
 
+    @retry(
+        retry=retry_if_exception_type(json.JSONDecodeError),
+        wait=wait_random_exponential(min=120, max=600),
+        stop=stop_after_attempt(6),
+        reraise=True,
+    )
+    async def fetch_mee6_payload(self, guild_id: int, page: int):
+        url = f"https://mee6.xyz/api/plugins/levels/leaderboard/{guild_id}?page={page}&limit=1000"
+        timeout = ClientTimeout(total=60)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers={"Accept": "application/json"}) as res:
+                status = res.status
+                if status == 429:
+                    log.warning("mee6 import is being rate limited!")
+                data = await res.json(content_type=None)
+                return data, status
+
     @admin_group.command(name="importmee6")
     @commands.guildowner()
     @commands.bot_has_permissions(embed_links=True)
@@ -1471,6 +1494,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         ctx: commands.Context,
         import_by: str,
         replace: bool,
+        include_settings: bool,
         i_agree: bool,
     ):
         """
@@ -1483,91 +1507,138 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         If exp is entered, it will import their experience and base their new level off of that.
         If level is entered, it will import their level and calculate their exp based off of that.
         `replace` - (True/False) if True, it will replace the user's exp or level, otherwise it will add it
+        `include_settings` - import level roles and exp settings from MEE6
         `i_agree` - (Yes/No) Just an extra option to make sure you want to execute this command
+
+        **Note**
+        Instead of typing true/false
+        1 = True
+        0 = False
         """
         if not i_agree:
             return await ctx.send(_("Not importing MEE6 levels"))
-        pages = math.ceil(len(ctx.guild.members) / 999)
+
+        msg = await ctx.send(_("Fetching mee6 leaderboard data, this could take a while..."))
+
+        conf = self.data[ctx.guild.id]
+        base = conf["base"]
+        exp = conf["exp"]
+
+        pages = math.ceil(len(ctx.guild.members) / 1000)
+        players: List[dict] = []
+        failed_pages = 0
+        settings_imported = False
+
+        async with ctx.typing():
+            async for i in AsyncIter(range(pages), delay=5):
+                try:
+                    data, status = await self.fetch_mee6_payload(ctx.guild.id, i)
+                except Exception as e:
+                    log.warning(
+                        f"Failed to import page {i} of mee6 leaderboard data in {ctx.guild}",
+                        exc_info=e,
+                    )
+                    await ctx.send(f"Failed to import page {i} of mee6 leaderboard data: {e}")
+                    failed_pages += 1
+                    if isinstance(e, json.JSONDecodeError):
+                        await msg.edit(
+                            content=_("Mee6 is rate limiting too heavily! Import Failed!")
+                        )
+                        return
+                    continue
+
+                error = data.get("error", {})
+                error_msg = error.get("message", None)
+                if status != 200:
+                    if status == 401:
+                        return await ctx.send(_("Your leaderboard needs to be set to public!"))
+                    elif error_msg:
+                        return await ctx.send(error_msg)
+                    else:
+                        return await ctx.send(_("No data found!"))
+
+                if include_settings and not settings_imported:
+                    settings_imported = True
+                    if xp_rate := data.get("xp_rate"):
+                        self.data[ctx.guild.id]["base"] = round(xp_rate * 100)
+
+                    if xp_per_message := data.get("xp_per_message"):
+                        self.data[ctx.guild.id]["xp"] = xp_per_message
+
+                    if role_rewards := data.get("role_rewards"):
+                        for entry in role_rewards:
+                            level_requirement = entry["rank"]
+                            role_id = entry["role"]["id"]
+                            self.data[ctx.guild.id]["levelroles"][str(level_requirement)] = int(
+                                role_id
+                            )
+                    await ctx.send("Settings imported!")
+
+                player_data = data.get("players")
+                if not player_data:
+                    break
+
+                players.extend(player_data)
+
+        if failed_pages:
+            await ctx.send(
+                _("{} pages failed to fetch from mee6 api, check logs for more info").format(
+                    str(failed_pages)
+                )
+            )
+        if not players:
+            return await ctx.send(_("No leaderboard data found!"))
+
+        await msg.edit(content=_("Data retrieved, importing..."))
         imported = 0
         failed = 0
         async with ctx.typing():
-            conf = self.data[ctx.guild.id]
-            base = conf["base"]
-            exp = conf["exp"]
-            async for i in AsyncIter(range(pages)):
-                url = f"https://mee6.xyz/api/plugins/levels/leaderboard/{ctx.guild.id}?page={i}&limit=999"
-                async with ClientSession() as session:
-                    async with session.get(url) as res:
-                        status = res.status
-                        data = await res.json()
-                        error = data.get("error", {})
-                        error_msg = error.get("message", None)
-                        if status != 200:
-                            if status == 401:
-                                return await ctx.send(
-                                    _("Your leaderboard needs to be set to public!")
-                                )
-                            elif error_msg:
-                                return await ctx.send(error_msg)
-                            else:
-                                return await ctx.send(_("No data found!"))
-                        players = data["players"]
-                        if not players:
-                            break
-                        async for user in AsyncIter(players):
-                            uid = str(user["id"])
-                            member = ctx.guild.get_member(int(uid))
-                            if not member:
-                                failed += 1
-                                continue
+            async for user in AsyncIter(players):
+                uid = str(user["id"])
+                member = ctx.guild.get_member(int(uid))
+                if not member:
+                    failed += 1
+                    continue
 
-                            lvl = user["level"]
-                            xp = user["xp"]
-                            if uid not in self.data[ctx.guild.id]["users"]:
-                                self.init_user(ctx.guild.id, uid)
+                lvl = user["level"]
+                xp = user["xp"]
+                if uid not in self.data[ctx.guild.id]["users"]:
+                    self.init_user(ctx.guild.id, uid)
 
-                            if replace:  # Replace stats
-                                if "l" in import_by.lower():
-                                    self.data[ctx.guild.id]["users"][uid]["level"] = lvl
-                                    newxp = get_xp(lvl, base, exp)
-                                    self.data[ctx.guild.id]["users"][uid]["xp"] = newxp
-                                else:
-                                    self.data[ctx.guild.id]["users"][uid]["xp"] = xp
-                                    newlvl = get_level(xp, base, exp)
-                                    self.data[ctx.guild.id]["users"][uid]["level"] = newlvl
-                                self.data[ctx.guild.id]["users"][uid]["messages"] = user[
-                                    "message_count"
-                                ]
-                            else:  # Add stats
-                                if "l" in import_by.lower():
-                                    self.data[ctx.guild.id]["users"][uid]["level"] += lvl
-                                    newxp = get_xp(
-                                        self.data[ctx.guild.id]["users"][uid]["level"],
-                                        base,
-                                        exp,
-                                    )
-                                    self.data[ctx.guild.id]["users"][uid]["xp"] = newxp
-                                else:
-                                    self.data[ctx.guild.id]["users"][uid]["xp"] += xp
-                                    newlvl = get_level(
-                                        self.data[ctx.guild.id]["users"][uid]["xp"],
-                                        base,
-                                        exp,
-                                    )
-                                    self.data[ctx.guild.id]["users"][uid]["level"] = newlvl
-                                self.data[ctx.guild.id]["users"][uid]["messages"] += user[
-                                    "message_count"
-                                ]
+                if replace:  # Replace stats
+                    if "l" in import_by.lower():
+                        self.data[ctx.guild.id]["users"][uid]["level"] = lvl
+                        newxp = get_xp(lvl, base, exp)
+                        self.data[ctx.guild.id]["users"][uid]["xp"] = newxp
+                    else:
+                        self.data[ctx.guild.id]["users"][uid]["xp"] = xp
+                        newlvl = get_level(xp, base, exp)
+                        self.data[ctx.guild.id]["users"][uid]["level"] = newlvl
+                    self.data[ctx.guild.id]["users"][uid]["messages"] = user["message_count"]
+                else:  # Add stats
+                    if "l" in import_by.lower():
+                        self.data[ctx.guild.id]["users"][uid]["level"] += lvl
+                        newxp = get_xp(self.data[ctx.guild.id]["users"][uid]["level"], base, exp)
+                        self.data[ctx.guild.id]["users"][uid]["xp"] = newxp
+                    else:
+                        self.data[ctx.guild.id]["users"][uid]["xp"] += xp
+                        newlvl = get_level(self.data[ctx.guild.id]["users"][uid]["xp"], base, exp)
+                        self.data[ctx.guild.id]["users"][uid]["level"] = newlvl
+                    self.data[ctx.guild.id]["users"][uid]["messages"] += user["message_count"]
 
-                            imported += 1
+                imported += 1
 
-            if not imported and not failed:
-                await ctx.send(_("No MEE6 stats were found"))
-            else:
-                txt = _("Imported ") + str(imported) + _(" User(s)")
-                if failed:
-                    txt += f" ({failed} " + _("failed") + ")"
-                await ctx.send(txt)
+        if not imported and not failed:
+            await msg.edit(content=_("No MEE6 stats were found"))
+        else:
+            txt = _("Imported {} User(s)").format(str(imported))
+            if failed:
+                txt += _(" ({} skipped since they are no longer in the discord)").format(
+                    str(failed)
+                )
+            await msg.edit(content=txt)
+            await ctx.tick()
+            await self.save_cache(ctx.guild)
 
     @admin_group.command(name="importfixator")
     @commands.is_owner()
@@ -1585,7 +1656,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
 
         path = cog_data_path(self).parent / "Leveler" / "settings.json"
         if not path.exists():
-            return await ctx.send(_("No config found for Malarne's Leveler cog!"))
+            return await ctx.send(_("No config found for Fixator's Leveler cog!"))
 
         leveler_config_id = "78008101945374987542543513523680608657"
         config_root = json.loads(path.read_text())
@@ -1609,7 +1680,10 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             from pymongo import errors as mongoerrors  # type: ignore
         except Exception as e:
             log.warning(f"pymongo Import Error: {e}")
-            return await ctx.send(_("Failed to import modules"))
+            txt = _(
+                "Failed to import `pymongo` and `motor` libraries. Run `{}pipinstall pymongo` and `{}pipinstall motor`"
+            ).format(ctx.clean_prefix, ctx.clean_prefix)
+            return await ctx.send(txt)
 
         # Try connecting to mongo
         if self._db_ready:
