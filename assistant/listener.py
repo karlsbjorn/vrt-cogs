@@ -5,11 +5,15 @@ from redbot.core import commands
 
 from .abc import MixinMeta
 <<<<<<< HEAD
+<<<<<<< HEAD
 from .common.utils import get_attachments
 from .models import READ_EXTENSIONS, GuildSettings
 import random
 =======
 from .common.utils import can_use
+>>>>>>> main
+=======
+from .common.utils import can_use, embed_to_content
 >>>>>>> main
 
 log = logging.getLogger("red.vrt.assistant.listener")
@@ -22,13 +26,26 @@ class AssistantListener(MixinMeta):
         if not message:
             return
         # If message was from a bot
+<<<<<<< HEAD
         # if message.author.bot:
         #     return
         if not message.webhook_id:
+=======
+        if message.author.bot and not self.db.listen_to_bots:
+>>>>>>> main
             return
         # If message wasn't sent in a guild
         if not message.guild:
             return
+<<<<<<< HEAD
+=======
+        # Ignore messages without content
+        if not message.content:
+            if not message.embeds:
+                return
+            # Replace message content with embed content
+            embed_to_content(message)
+>>>>>>> main
         # Ignore if channel doesn't exist
         if not message.channel:
             return

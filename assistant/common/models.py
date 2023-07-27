@@ -28,10 +28,17 @@ class CustomFunction(BaseModel):
         return globals()[self.jsonschema["name"]]
 
 
+class Usage(BaseModel):
+    total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
 class GuildSettings(BaseModel):
     system_prompt: str = "You are a helpful discord assistant named {botname}"
     prompt: str = "Current time: {timestamp}\nDiscord server you are chatting in: {server}"
     embeddings: Dict[str, Embedding] = {}
+    usage: Dict[str, Usage] = {}
     blacklist: List[int] = []  # Channel/Role/User IDs
     tutors: List[int] = []  # Role or user IDs
     top_n: int = 3
@@ -43,7 +50,7 @@ class GuildSettings(BaseModel):
     min_length: int = 7
     max_retention: int = 0
     max_retention_time: int = 1800
-    max_response_tokens: int = 500
+    max_response_tokens: int = 0
     max_tokens: int = 4000
     mention: bool = False
     mention_respond: bool = True  # TODO: add command to toggle
@@ -64,6 +71,7 @@ class GuildSettings(BaseModel):
 
     image_tools: bool = True
     image_size: Literal["256x256", "512x512", "1024x1024"] = "1024x1024"
+
     use_function_calls: bool = False
     max_function_calls: int = 10  # Max calls in a row
     disabled_functions: List[str] = []
@@ -94,6 +102,19 @@ class GuildSettings(BaseModel):
             return []
         strings_and_relatedness.sort(key=lambda x: x[2], reverse=True)
         return strings_and_relatedness[: top_n_override or self.top_n]
+
+    def update_usage(
+        self,
+        model: str,
+        total_tokens: int,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        if model not in self.usage:
+            self.usage[model] = Usage()
+        self.usage[model].total_tokens += total_tokens
+        self.usage[model].input_tokens += input_tokens
+        self.usage[model].output_tokens += output_tokens
 
     def get_user_model(self, member: Optional[discord.Member] = None) -> str:
         if not member or not self.model_role_overrides:
@@ -194,7 +215,11 @@ class Conversation(BaseModel):
         self.refresh()
 
     def prepare_chat(
-        self, user_message: str, initial_prompt: str, system_prompt: str
+        self,
+        user_message: str,
+        initial_prompt: str,
+        system_prompt: str,
+        name: str = None,
     ) -> List[dict]:
         """Pre-appends the prmompts before the user's messages without motifying them"""
         prepared = []
@@ -204,6 +229,8 @@ class Conversation(BaseModel):
             prepared.append({"role": "user", "content": initial_prompt})
         prepared.extend(self.messages)
         user_message = {"role": "user", "content": user_message}
+        if name:
+            user_message["name"] = name
         prepared.append(user_message)
         self.messages.append(user_message)
         self.refresh()
@@ -215,17 +242,13 @@ class DB(BaseModel):
     conversations: dict[str, Conversation] = {}
     persistent_conversations: bool = False
     functions: Dict[str, CustomFunction] = {}
+    listen_to_bots: bool = False
 
     endpoint_override: Optional[str] = None
 
     def get_conf(self, guild: Union[discord.Guild, int]) -> GuildSettings:
         gid = guild if isinstance(guild, int) else guild.id
-
-        if gid in self.configs:
-            return self.configs[gid]
-
-        self.configs[gid] = GuildSettings()
-        return self.configs[gid]
+        return self.configs.setdefault(gid, GuildSettings())
 
     def get_conversation(
         self,

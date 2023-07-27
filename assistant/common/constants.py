@@ -1,11 +1,14 @@
 MODELS = {
     "gpt-3.5-turbo": 4096,
+    "gpt-3.5-turbo-0301": 4096,
     "gpt-3.5-turbo-0613": 4096,
     "gpt-3.5-turbo-16k": 16384,
     "gpt-3.5-turbo-16k-0613": 16384,
     "gpt-4": 8192,
+    "gpt-4-0301": 8192,
     "gpt-4-0613": 8192,
     "gpt-4-32k": 32768,
+    "gpt-4-32k-0301": 32768,
     "gpt-4-32k-0613": 32768,
     "code-davinci-002": 8001,
     "text-davinci-003": 4097,
@@ -13,6 +16,26 @@ MODELS = {
     "text-curie-001": 2049,
     "text-babbage-001": 2049,
     "text-ada-001": 2049,
+}
+PRICES = {
+    "gpt-3.5-turbo": [0.0015, 0.002],
+    "gpt-3.5-turbo-0301": [0.0015, 0.002],
+    "gpt-3.5-turbo-0613": [0.0015, 0.002],
+    "gpt-3.5-turbo-16k": [0.003, 0.004],
+    "gpt-3.5-turbo-16k-0613": [0.003, 0.004],
+    "gpt-4": [0.03, 0.06],
+    "gpt-4-0301": [0.03, 0.06],
+    "gpt-4-0613": [0.03, 0.06],
+    "gpt-4-32k": [0.06, 0.12],
+    "gpt-4-32k-0301": [0.06, 0.12],
+    "gpt-4-32k-0613": [0.06, 0.12],
+    "text-ada-001": [0.0004, 0.0016],
+    "text-babbage-001": [0.0006, 0.0024],
+    "text-curie-001": [0.003, 0.012],
+    "text-davinci-002": [0.03, 0.12],
+    "text-davinci-003": [0.03, 0.12],
+    "code-davinci-002": [0.03, 0.12],
+    "text-embedding-ada-002": [0.0001, 0.0001],
 }
 SUPPORTS_FUNCTIONS = [
     "gpt-3.5-turbo",
@@ -26,12 +49,15 @@ SUPPORTS_FUNCTIONS = [
 ]
 CHAT = [
     "gpt-3.5-turbo",
+    "gpt-3.5-turbo-0301",
     "gpt-3.5-turbo-0613",
     "gpt-3.5-turbo-16k",
     "gpt-3.5-turbo-16k-0613",
     "gpt-4",
+    "gpt-4-0301",
     "gpt-4-0613",
     "gpt-4-32k",
+    "gpt-4-32k-0301",
     "gpt-4-32k-0613",
     "code-davinci-002",
 ]
@@ -76,6 +102,7 @@ READ_EXTENSIONS = [
     ".bat",
     ".batch",
     ".shell",
+    ".env",
 ]
 CREATE_EMBEDDING = {
     "name": "create_embedding",

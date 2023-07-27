@@ -40,14 +40,13 @@ async def request_embedding_raw(
     api_key: str,
     api_base: Optional[str] = None,
 ) -> List[float]:
-    response = await openai.Embedding.acreate(
+    return await openai.Embedding.acreate(
         input=text,
         model="text-embedding-ada-002",
         api_key=api_key,
         api_base=api_base,
         timeout=30,
     )
-    return response["data"][0]["embedding"]
 
 
 @retry(
@@ -71,31 +70,22 @@ async def request_chat_completion_raw(
     api_key: str,
     max_tokens: int,
     api_base: Optional[str] = None,
-    functions: List[dict] = [],
+    functions: Optional[List[dict]] = None,
     timeout: int = 60,
 ) -> Dict[str, str]:
+    kwargs = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "api_key": api_key,
+        "api_base": api_base,
+        "timeout": timeout,
+    }
+    if max_tokens > 0:
+        kwargs["max_tokens"] = max_tokens
     if functions and VERSION >= "0.27.6" and model in SUPPORTS_FUNCTIONS:
-        response = await openai.ChatCompletion.acreate(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            api_key=api_key,
-            max_tokens=max_tokens,
-            api_base=api_base,
-            functions=functions,
-            timeout=timeout,
-        )
-    else:
-        response = await openai.ChatCompletion.acreate(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            api_key=api_key,
-            max_tokens=max_tokens,
-            api_base=api_base,
-            timeout=timeout,
-        )
-    return response["choices"][0]["message"]
+        kwargs["functions"] = functions
+    return await openai.ChatCompletion.acreate(**kwargs)
 
 
 @retry(
@@ -122,16 +112,17 @@ async def request_completion_raw(
     api_base: Optional[str] = None,
     timeout: int = 60,
 ) -> str:
-    response = await openai.Completion.acreate(
-        model=model,
-        prompt=prompt,
-        temperature=temperature,
-        api_key=api_key,
-        max_tokens=max_tokens,
-        api_base=api_base,
-        timeout=timeout,
-    )
-    return response["choices"][0]["text"]
+    kwargs = {
+        "model": model,
+        "prompt": prompt,
+        "temperature": temperature,
+        "api_key": api_key,
+        "api_base": api_base,
+        "timeout": timeout,
+    }
+    if max_tokens > 0:
+        kwargs["max_tokens"] = max_tokens
+    return await openai.Completion.acreate(**kwargs)
 
 
 @cached(ttl=30)

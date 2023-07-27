@@ -22,6 +22,9 @@ from .listener import AssistantListener
 log = logging.getLogger("red.vrt.assistant")
 
 
+# redgettext -D views.py commands/admin.py commands/base.py common/api.py common/chat.py common/utils.py --command-docstring
+
+
 class Assistant(
     AssistantCommands,
     AssistantListener,
@@ -47,7 +50,7 @@ class Assistant(
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "4.6.0"
+    __version__ = "4.8.1"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -285,8 +288,8 @@ class Assistant(
         author: Union[discord.Member, int],
         guild: discord.Guild,
         channel: Union[discord.TextChannel, discord.Thread, discord.ForumChannel, int],
-        function_calls: Optional[List[dict]] = [],
-        function_map: Optional[Dict[str, Callable]] = {},
+        function_calls: Optional[List[dict]] = None,
+        function_map: Optional[Dict[str, Callable]] = None,
         extend_function_calls: bool = True,
     ) -> str:
         """
