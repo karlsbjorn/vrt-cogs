@@ -731,7 +731,7 @@ class AdminCommands(MixinMeta):
         em.set_footer(text=foot)
         await msg.edit(embed=em)
         desc = await wait_reply(ctx, 600)
-        if desc and desc.lower().strip() == _("cancel"):
+        if desc and desc.lower().strip() == "cancel":
             em = Embed(description=_("Ticket message addition cancelled"))
             return await msg.edit(embed=em)
         if desc is None:
@@ -865,7 +865,8 @@ class AdminCommands(MixinMeta):
             desc += _("`LogChannel:     `") + f"{logchannel}\n"
             desc += _("`Priority:       `") + f"{info.get('priority', 1)}\n"
             desc += _("`Button Row:     `") + f"{info.get('row')}\n"
-            desc += _("`Reason Modal:   `") + f"{info.get('close_reason', False)}"
+            desc += _("`Reason Modal:   `") + f"{info.get('close_reason', False)}\n"
+            desc += _("`Max Claims:     `") + f"{info.get('max_claims', 0)}"
 
             em = Embed(
                 title=_("Panel: ") + panel_name,
@@ -945,6 +946,13 @@ class AdminCommands(MixinMeta):
             embed.add_field(name=_("Support Roles(Mention)"), value=suproles, inline=False)
         if blacklisted:
             embed.add_field(name=_("Blacklist"), value=blacklisted, inline=False)
+
+        if conf["thread_close"]:
+            txt = _("Thread tickets will be closed/archived rather than deleted")
+        else:
+            txt = _("Thread tickets will be deleted instead of closed/archived")
+        embed.add_field(name=_("Thread Tickets"), value=txt, inline=False)
+
         embed.add_field(
             name=_("Thread Ticket Auto-Add"),
             value=_("Auto-add support and panel roles to tickets that use threads: **{}**").format(
@@ -1026,6 +1034,20 @@ class AdminCommands(MixinMeta):
                 await ctx.send(
                     role.name + _(" has been added to the {} panel roles").format(panel_name)
                 )
+        await self.initialize(ctx.guild)
+
+    @tickets.command()
+    async def maxclaims(self, ctx: commands.Context, panel_name: str, amount: int):
+        """Set how many staff members can claim/join a ticket before the join button is disabled (If using threads)"""
+        panel_name = panel_name.lower()
+        if amount < 0:
+            return await ctx.send(_("Amount cannot be negative!"))
+        async with self.config.guild(ctx.guild).panels() as panels:
+            if panel_name not in panels:
+                return await ctx.send(_("Panel does not exist!"))
+            panels[panel_name]["max_claims"] = amount
+
+        await ctx.send(_("Up to {} staff member(s) can claim a single ticket").format(amount))
         await self.initialize(ctx.guild)
 
     @tickets.command()
@@ -1111,10 +1133,10 @@ class AdminCommands(MixinMeta):
                 return await ctx.send(_("Panel does not exist!"))
 
             panel = panels[panel_name]
-            panel_key = f"{panel['channel-id']}{panel['messaage_id']}"
+            panel_key = f"{panel['channel_id']}{panel['message_id']}"
             count = 0
             for i in panels.values():
-                panel_key2 = f"{i['channel-id']}{i['messaage_id']}"
+                panel_key2 = f"{i['channel_id']}{i['message_id']}"
                 if panel_key != panel_key2:
                     continue
                 if not i["row"]:
@@ -1292,12 +1314,18 @@ class AdminCommands(MixinMeta):
         target: discord.Message,
     ):
         """Update a message with another message (Target gets updated using the source)"""
-        await target.edit(
-            embeds=source.embeds,
-            content=target.content,
-            attachments=target.attachments,
-        )
-        await ctx.tick()
+        try:
+            await target.edit(
+                embeds=source.embeds,
+                content=target.content,
+                attachments=target.attachments,
+            )
+            await ctx.tick()
+        except discord.HTTPException as e:
+            if txt := e.text:
+                await ctx.send(txt)
+            else:
+                await ctx.send(_("Failed to update message!"))
 
     @tickets.command()
     async def embed(
@@ -1338,7 +1366,11 @@ class AdminCommands(MixinMeta):
             color=color,
         )
         em.set_footer(text=foot)
-        await msg.edit(embed=em)
+        try:
+            await msg.edit(embed=em)
+        except discord.NotFound:
+            # Message was deleted. Just cancel.
+            return
         yes = await confirm(ctx, msg)
         if yes:
             em = Embed(description=_("Enter a url for the thumbnail"), color=color)

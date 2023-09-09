@@ -3,6 +3,7 @@ MODELS = {
     "gpt-3.5-turbo-0301": 4096,
     "gpt-3.5-turbo-0613": 4096,
     "gpt-3.5-turbo-16k": 16384,
+    "gpt-3.5-turbo-16k-0301": 16384,
     "gpt-3.5-turbo-16k-0613": 16384,
     "gpt-4": 8192,
     "gpt-4-0301": 8192,
@@ -16,6 +17,8 @@ MODELS = {
     "text-curie-001": 2049,
     "text-babbage-001": 2049,
     "text-ada-001": 2049,
+    "text-embedding-ada-002": 8191,
+    "text-embedding-ada-002-v2": 8191,
 }
 PRICES = {
     "gpt-3.5-turbo": [0.0015, 0.002],
@@ -36,6 +39,7 @@ PRICES = {
     "text-davinci-003": [0.03, 0.12],
     "code-davinci-002": [0.03, 0.12],
     "text-embedding-ada-002": [0.0001, 0.0001],
+    "text-embedding-ada-002-v2": [0.0001, 0.0001],
 }
 SUPPORTS_FUNCTIONS = [
     "gpt-3.5-turbo",
@@ -104,35 +108,64 @@ READ_EXTENSIONS = [
     ".shell",
     ".env",
 ]
-CREATE_EMBEDDING = {
-    "name": "create_embedding",
-    "description": "Use this function to save information about something outside of the context of the current conversation, and can be referenced later. useful when someone corrects you or tells you something new.",
+REACT_SUMMARY_MESSAGE = """
+Your job is to summarize text to use as embeddings. Respond only with the summary of the text.
+"""
+REACT_NAME_MESSAGE = """
+Your job is to read a snippet of text and come up with a short descriptive name for it. Only respond with the name of the summary.
+"""
+
+CREATE_MEMORY = {
+    "name": "create_memory",
+    "description": "Use this when someone corrects you, tells you something new, or tells you to remember something.",
     "parameters": {
         "type": "object",
         "properties": {
-            "embedding_name": {
+            "memory_name": {
                 "type": "string",
-                "description": "Short unique name for the embedding entry",
+                "description": "A short name to describe the memory, perferrably less than 50 characters or 3 words tops",
             },
-            "embedding_text": {
+            "memory_text": {
                 "type": "string",
-                "description": "Detailed summary of information to be stored based on the context of the conversation or correction.",
+                "description": "The information to remember, write as if you are informing yourself of the thing to remember.",
             },
         },
-        "required": ["embedding_name", "embedding_text"],
+        "required": ["memory_name", "memory_text"],
     },
 }
-SEARCH_EMBEDDINGS = {
-    "name": "search_embeddings",
-    "description": "Use this function to search embeddings for related info",
+SEARCH_MEMORIES = {
+    "name": "search_memories",
+    "description": "Use this to find information about something, always use this if you are unsure about the answer to a question",
     "parameters": {
         "type": "object",
         "properties": {
             "search_query": {
                 "type": "string",
-                "description": "The context you wish to search for",
-            }
+                "description": "the keyword or query you want to find information about",
+            },
+            "amount": {
+                "type": "integer",
+                "description": "Max amount of memories to fetch. Defaults to 2",
+            },
         },
         "required": ["search_query"],
+    },
+}
+EDIT_MEMORY = {
+    "name": "edit_memory",
+    "description": "Use this to edit existing memories, useful for correcting inaccurate memories after making them",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_name": {
+                "type": "string",
+                "description": "The name of the memory entry, case sensitive",
+            },
+            "memory_text": {
+                "type": "string",
+                "description": "The new text that will replace the current content of the memory",
+            },
+        },
+        "required": ["memory_name", "memory_text"],
     },
 }

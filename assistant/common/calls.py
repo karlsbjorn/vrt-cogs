@@ -1,3 +1,4 @@
+import logging
 from typing import Dict, List, Optional, Union
 
 import aiohttp
@@ -20,6 +21,8 @@ from tenacity import (
 
 from .constants import SUPPORTS_FUNCTIONS
 
+log = logging.getLogger("red.vrt.assistant.calls")
+
 
 @retry(
     retry=retry_if_exception_type(
@@ -40,6 +43,7 @@ async def request_embedding_raw(
     api_key: str,
     api_base: Optional[str] = None,
 ) -> List[float]:
+    log.debug("request_embedding_raw")
     return await openai.Embedding.acreate(
         input=text,
         model="text-embedding-ada-002",
@@ -56,13 +60,13 @@ async def request_embedding_raw(
             APIConnectionError,
             RateLimitError,
             ServiceUnavailableError,
+            APIError,
         ]
     ),
-    wait=wait_random_exponential(min=5, max=15),
-    stop=stop_after_attempt(3),
+    wait=wait_random_exponential(min=5, max=30),
+    stop=stop_after_attempt(4),
     reraise=True,
 )
-@cached(ttl=30)
 async def request_chat_completion_raw(
     model: str,
     messages: List[dict],
@@ -73,6 +77,7 @@ async def request_chat_completion_raw(
     functions: Optional[List[dict]] = None,
     timeout: int = 60,
 ) -> Dict[str, str]:
+    log.debug(f"request_chat_completion_raw: {model}")
     kwargs = {
         "model": model,
         "messages": messages,
@@ -84,6 +89,7 @@ async def request_chat_completion_raw(
     if max_tokens > 0:
         kwargs["max_tokens"] = max_tokens
     if functions and VERSION >= "0.27.6" and model in SUPPORTS_FUNCTIONS:
+        log.debug(f"Calling model with {len(functions)} functions")
         kwargs["functions"] = functions
     return await openai.ChatCompletion.acreate(**kwargs)
 
@@ -98,11 +104,10 @@ async def request_chat_completion_raw(
             ServiceUnavailableError,
         ]
     ),
-    wait=wait_random_exponential(min=5, max=15),
-    stop=stop_after_attempt(3),
+    wait=wait_random_exponential(min=5, max=30),
+    stop=stop_after_attempt(4),
     reraise=True,
 )
-@cached(ttl=30)
 async def request_completion_raw(
     model: str,
     prompt: str,
@@ -112,6 +117,7 @@ async def request_completion_raw(
     api_base: Optional[str] = None,
     timeout: int = 60,
 ) -> str:
+    log.debug(f"request_completion_raw: {model}")
     kwargs = {
         "model": model,
         "prompt": prompt,

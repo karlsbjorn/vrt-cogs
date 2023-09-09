@@ -17,8 +17,7 @@
   "required_cogs": {},
   "requirements": [
     "py-cpuinfo",
-    "speedtest-cli>=2.1.3",
-    "dislash.py"
+    "speedtest-cli>=2.1.3"
   ],
   "short": "Random utility commands",
   "tags": [
@@ -26,7 +25,9 @@
     "bot",
     "botstats",
     "botinfo",
-    "serverstats"
+    "serverstats",
+    "ping",
+    "latency"
   ],
   "type": "COG"
 }

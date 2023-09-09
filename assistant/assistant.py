@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from multiprocessing.pool import Pool
 from time import perf_counter
@@ -7,6 +8,7 @@ from typing import Callable, Dict, List, Optional, Union
 import discord
 import tiktoken
 from discord.ext import tasks
+from pydantic.error_wrappers import ValidationError
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
@@ -14,7 +16,7 @@ from .abc import CompositeMetaClass
 from .commands import AssistantCommands
 from .common.api import API
 from .common.chat import ChatHandler
-from .common.constants import CREATE_EMBEDDING, SEARCH_EMBEDDINGS
+from .common.constants import CREATE_MEMORY, EDIT_MEMORY, SEARCH_MEMORIES
 from .common.models import DB, Embedding, EmbeddingEntryExists, NoAPIKey
 from .common.utils import json_schema_invalid
 from .listener import AssistantListener
@@ -50,7 +52,7 @@ class Assistant(
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "4.8.1"
+    __version__ = "4.13.3"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -90,13 +92,21 @@ class Assistant(
         await self.bot.wait_until_red_ready()
         start = perf_counter()
         data = await self.config.db()
-        self.db = await asyncio.to_thread(DB.parse_obj, data)
+        try:
+            self.db = await asyncio.to_thread(DB.parse_obj, data)
+        except ValidationError:
+            # Try clearing conversations
+            if "conversations" in data:
+                del data["conversations"]
+            self.db = await asyncio.to_thread(DB.parse_obj, data)
+
         log.info(f"Config loaded in {round((perf_counter() - start) * 1000, 2)}ms")
         await asyncio.to_thread(self._cleanup_db)
 
         # Register internal functions
-        await self.register_function(self.qualified_name, CREATE_EMBEDDING)
-        await self.register_function(self.qualified_name, SEARCH_EMBEDDINGS)
+        await self.register_function(self.qualified_name, CREATE_MEMORY)
+        await self.register_function(self.qualified_name, SEARCH_MEMORIES)
+        await self.register_function(self.qualified_name, EDIT_MEMORY)
 
         logging.getLogger("openai").setLevel(logging.WARNING)
         logging.getLogger("aiocache").setLevel(logging.WARNING)
@@ -119,8 +129,6 @@ class Assistant(
             if self.first_run:
                 log.info(txt)
                 self.first_run = False
-            else:
-                log.debug(txt)
         except Exception as e:
             log.error("Failed to save config", exc_info=e)
         finally:
@@ -184,6 +192,15 @@ class Assistant(
                     conf.blacklist.remove(obj_id)
                     cleaned = True
 
+            # Ensure embedding entry names arent too long
+            new_embeddings = {}
+            for entry_name, embedding in conf.embeddings.items():
+                if len(entry_name) > 100:
+                    log.debug(f"Embed entry more than 100 characters, truncating: {entry_name}")
+                    cleaned = True
+                new_embeddings[entry_name[:100]] = embedding
+            conf.embeddings = new_embeddings
+
         health = "BAD (Cleaned)" if cleaned else "GOOD"
         log.info(f"Config health: {health}")
 
@@ -193,56 +210,101 @@ class Assistant(
             return
         await self.save_conf()
 
-    async def create_embedding(
+    async def create_memory(
         self,
         guild: discord.Guild,
         user: discord.Member,
-        embedding_name: str,
-        embedding_text: str,
+        memory_name: str,
+        memory_text: str,
         *args,
         **kwargs,
     ):
-        if len(embedding_name) > 45:
-            return "Error: embedding_name should be 45 characters or less!"
+        if len(memory_name) > 100:
+            return "Error: memory_name should be 100 characters or less!"
         conf = self.db.get_conf(guild)
         if not any([role.id in conf.tutors for role in user.roles]) and user.id not in conf.tutors:
             return f"User {user.display_name} is not recognized as a tutor!"
         try:
             embedding = await self.add_embedding(
                 guild,
-                embedding_name,
-                embedding_text,
+                memory_name,
+                memory_text,
                 overwrite=False,
                 ai_created=True,
             )
             if embedding is None:
-                return "Failed to create embedding"
-            return "The embedding has been created successfully"
+                return "Failed to create memory"
+            return f"The memory '{memory_name}' has been created successfully"
         except EmbeddingEntryExists:
-            return "That embedding already exists"
+            return "That memory name already exists"
 
-    async def search_embeddings(
+    async def search_memories(
         self,
         guild: discord.Guild,
         search_query: str,
+        amount: int = 2,
+        *args,
+        **kwargs,
+    ):
+        try:
+            amount = int(amount)
+        except ValueError:
+            return "Error: amount must be an integer"
+        if amount < 1:
+            return "Amount needs to be more than 1"
+
+        conf = self.db.get_conf(guild)
+        if not conf.embeddings:
+            return "There are no memories saved!"
+
+        if search_query in conf.embeddings:
+            embed = conf.embeddings[search_query]
+            return f"Found a memory name that matches exactly: {embed.text}"
+
+        query_embedding = await self.request_embedding(search_query, conf)
+        if not query_embedding:
+            return f"Failed to get memory for your the query '{search_query}'"
+
+        embeddings = await asyncio.to_thread(
+            conf.get_related_embeddings,
+            query_embedding=query_embedding,
+            top_n_override=amount,
+            relatedness_override=0.5,
+        )
+        if not embeddings:
+            return f"No embeddings could be found related to the search query '{search_query}'"
+
+        results = []
+        for embed in embeddings:
+            entry = {"memory name": embed[0], "relatedness": embed[2], "content": embed[1]}
+            results.append(entry)
+
+        return f"Memories related to `{search_query}`\n{json.dumps(results, indent=2)}"
+
+    async def edit_memory(
+        self,
+        guild: discord.Guild,
+        user: discord.Member,
+        memory_name: str,
+        memory_text: str,
         *args,
         **kwargs,
     ):
         conf = self.db.get_conf(guild)
-        if not conf.embeddings:
-            return "There are no embeddings saved!"
-        query_embedding = await self.request_embedding(search_query, conf)
-        if not query_embedding:
-            return f"Failed to get embedding for your the query '{search_query}'"
-        embeddings = await asyncio.to_thread(conf.get_related_embeddings, query_embedding, 1)
-        if not embeddings:
-            return f"No embeddings could be found related to the search query '{search_query}'"
+        if not any([role.id in conf.tutors for role in user.roles]) and user.id not in conf.tutors:
+            return f"User {user.display_name} is not recognized as a tutor!"
 
-        embed = embeddings[0]
-        return (
-            f"Search results for '{search_query}'\n"
-            f"Found entry '{embed[0]}' with relatedness score of '{embed[2]}'\n{embed[1]}"
-        )
+        if memory_name not in conf.embeddings:
+            return "A memory with that name does not exist!"
+        embedding = await self.request_embedding(memory_text, conf)
+        if not embedding:
+            return "Could not update the memory!"
+
+        conf.embeddings[memory_name].text = memory_text
+        conf.embeddings[memory_name].embedding = embedding
+        conf.embeddings[memory_name].update()
+        asyncio.create_task(self.save_conf())
+        return "Your memory has been updated!"
 
     # ------------------ 3rd PARTY ACCESSIBLE METHODS ------------------
     async def add_embedding(
@@ -291,6 +353,7 @@ class Assistant(
         function_calls: Optional[List[dict]] = None,
         function_map: Optional[Dict[str, Callable]] = None,
         extend_function_calls: bool = True,
+        message_obj: Optional[discord.Message] = None,
     ) -> str:
         """
         Method for other cogs to call the chat API
@@ -305,6 +368,7 @@ class Assistant(
             functions (Optional[List[dict]]): custom functions that the api can call (see https://platform.openai.com/docs/guides/gpt/function-calling)
             function_map (Optional[Dict[str, Callable]]): mappings for custom functions {"FunctionName": Callable}
             extend_function_calls (bool=[False]): If True, configured functions are used in addition to the ones provided
+            message_obj (Optional[discord.Message]): actual message object associated with the question
 
         Raises:
             NoAPIKey: If the specified guild has no api key associated with it
@@ -313,7 +377,7 @@ class Assistant(
             str: the reply from ChatGPT (may need to be pagified)
         """
         conf = self.db.get_conf(guild)
-        if not self.can_call_llm(conf):
+        if not await self.can_call_llm(conf):
             raise NoAPIKey("OpenAI key has not been set for this server!")
         return await self.get_chat_response(
             message,
@@ -324,6 +388,7 @@ class Assistant(
             function_calls,
             function_map,
             extend_function_calls,
+            message_obj,
         )
 
     # ------------------ 3rd PARTY FUNCTION REGISTRY ------------------

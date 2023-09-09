@@ -78,6 +78,7 @@ class EmbeddingModal(discord.ui.Modal):
             style=discord.TextStyle.short,
             default=name,
             required=True,
+            max_length=250,
         )
         self.add_item(self.name_field)
         self.text_field = discord.ui.TextInput(
@@ -248,7 +249,10 @@ class EmbeddingMenu(discord.ui.View):
             return await interaction.followup.send(
                 _("Failed to edit that embedding, please try again later"), ephemeral=True
             )
-        self.conf.embeddings[modal.name] = Embedding(text=modal.text, embedding=embedding)
+        embedding_obj.text = modal.text
+        embedding_obj.embedding = embedding
+        embedding_obj.update()
+        self.conf.embeddings[modal.name] = embedding_obj
         if modal.name != name:
             del self.conf.embeddings[name]
         await self.get_pages()

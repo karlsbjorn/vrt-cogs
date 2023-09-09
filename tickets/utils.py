@@ -1,4 +1,5 @@
 import logging
+from contextlib import suppress
 from datetime import datetime
 from io import BytesIO
 from typing import List, Optional, Union
@@ -24,6 +25,11 @@ async def can_close(
     owner_id: str,
     conf: dict,
 ):
+    if str(owner_id) not in conf["opened"]:
+        return False
+    if str(channel.id) not in conf["opened"][str(owner_id)]:
+        return False
+
     panel_name = conf["opened"][str(owner_id)][str(channel.id)]["panel"]
     panel_roles = conf["panels"][panel_name]["roles"]
     user_roles = [r.id for r in author.roles]
@@ -68,7 +74,7 @@ def get_ticket_owner(opened: dict, channel_id: str) -> Optional[str]:
 async def close_ticket(
     member: Union[discord.Member, discord.User],
     guild: discord.Guild,
-    channel: discord.TextChannel,
+    channel: Union[discord.TextChannel, discord.Thread],
     conf: dict,
     reason: str,
     closedby: str,
@@ -88,13 +94,17 @@ async def close_ticket(
     pfp = ticket["pfp"]
     panel_name = ticket["panel"]
     panel = conf["panels"][panel_name]
-    threads = panel.get("threads")
+    panel.get("threads")
 
-    if not channel.permissions_for(guild.me).manage_channels and not threads:
+    if not channel.permissions_for(guild.me).manage_channels and isinstance(
+        channel, discord.TextChannel
+    ):
         return await channel.send(
             _("I am missing the `Manage Channels` permission to close this ticket!")
         )
-    if not channel.permissions_for(guild.me).manage_threads and threads:
+    if not channel.permissions_for(guild.me).manage_threads and isinstance(
+        channel, discord.Thread
+    ):
         return await channel.send(
             _("I am missing the `Manage Threads` permission to close this ticket!")
         )
@@ -155,7 +165,8 @@ async def close_ticket(
                 text += f"{msg.author.name}: {msg.content}\n"
             if att:
                 text += _("Files uploaded: ") + humanize_list(att) + "\n"
-        await temp_message.delete()
+        with suppress(discord.HTTPException):
+            await temp_message.delete()
     else:
         history = await fetch_channel_history(channel, limit=1)
 
@@ -229,6 +240,9 @@ async def close_ticket(
         if cid not in tickets[uid]:
             return
         del tickets[uid][cid]
+        # If user has no more tickets, clean up their key from the config
+        if not tickets[uid]:
+            del tickets[uid]
 
         new_id = await update_active_overview(guild, conf)
         if new_id:
@@ -266,11 +280,21 @@ async def prune_invalid_tickets(
                 continue
             count += 1
             log.info(f"Ticket channel {channel_id} no longer exists for user {user_id}")
+            panel = conf["panels"][ticket["panel"]]
+            log_message_id = ticket["logmsg"]
+            log_channel_id = panel["log_channel"]
+            if log_channel_id and log_message_id:
+                log_channel = guild.get_channel(log_channel_id)
+                try:
+                    log_message = await log_channel.fetch_message(log_message_id)
+                    await log_message.delete()
+                except (discord.NotFound, discord.Forbidden):
+                    pass
 
         if valid_user_tickets:
             valid_opened_tickets[user_id] = valid_user_tickets
 
-    if valid_opened_tickets and count:
+    if count:
         await config.guild(guild).opened.set(valid_opened_tickets)
 
     if count and ctx:

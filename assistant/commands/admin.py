@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import json
 import logging
 import re
 import traceback
@@ -334,7 +333,7 @@ class Admin(MixinMeta):
             total_input_cost += input_cost
             total_output_cost += output_cost
 
-            if model_name == "text-embedding-ada-002":
+            if model_name in ["text-embedding-ada-002", "text-embedding-ada-002-v2"]:
                 field = _("`Total:  `{} (${} @ ${}/1k tokens)").format(
                     humanize_number(usage.input_tokens), round(input_cost, 2), input_price
                 )
@@ -390,7 +389,11 @@ class Admin(MixinMeta):
     @assistant.command(name="openaikey", aliases=["key"])
     @commands.bot_has_permissions(embed_links=True)
     async def set_openai_key(self, ctx: commands.Context):
-        """Set your OpenAI key"""
+        """
+        Set your OpenAI key
+
+        Setting this will disable any endpoint overrides you have for this server.
+        """
         conf = self.db.get_conf(ctx.guild)
 
         view = SetAPI(ctx.author, conf.api_key)
@@ -877,8 +880,12 @@ class Admin(MixinMeta):
         if conf.api_key:
             try:
                 await openai.Model.aretrieve(model, api_key=conf.api_key)
-            except openai.InvalidRequestError:
-                return await ctx.send(_("This model is not available for the API key provided!"))
+            except openai.InvalidRequestError as e:
+                err = e._message or ""
+                txt = _("This model is not available for the API key provided!{}").format(
+                    f"\n{err}" if err else ""
+                )
+                return await ctx.send(txt)
 
         if model not in valid_raw:
             return await ctx.send(
@@ -895,6 +902,8 @@ class Admin(MixinMeta):
         Set a custom endpoint to use a [self-hosted model](https://github.com/vertyco/gpt-api)
 
         Example: `http://localhost:8000/v1`
+
+        Endpoint overrides will not be used if there is an API key set.
         """
         conf = self.db.get_conf(ctx.guild)
         if conf.endpoint_override and not endpoint:
@@ -916,6 +925,8 @@ class Admin(MixinMeta):
         Set a custom global endpoint to use a [self-hosted model](https://github.com/vertyco/gpt-api) for all guilds as a fallback
 
         Example: `http://localhost:8000/v1`
+
+        Endpoint overrides will not be used if there is an API key set.
         """
         if self.db.endpoint_override and not endpoint:
             self.db.endpoint_override = None
@@ -1346,7 +1357,7 @@ class Admin(MixinMeta):
         - [OpenAI Cookbook](https://github.com/openai/openai-cookbook/blob/main/examples/How_to_call_functions_with_chat_models.ipynb)
         - [JSON Schema Reference](https://json-schema.org/understanding-json-schema/)
 
-        Only these two models can use function calls as of now:
+        Only these models can use function calls as of now:
         - gpt-3.5-turbo
         - gpt-3.5-turbo-16k
         - gpt-4
@@ -1468,7 +1479,12 @@ class Admin(MixinMeta):
 
     @assistant.group(name="override")
     async def override(self, ctx: commands.Context):
-        """Override settings for specific roles"""
+        """
+        Override settings for specific roles
+
+        **NOTE**
+        If a user has two roles with override settings, override associated with the higher role will be used.
+        """
 
     @override.command(name="model")
     async def model_role_override(self, ctx: commands.Context, model: str, *, role: discord.Role):
@@ -1479,7 +1495,7 @@ class Admin(MixinMeta):
         """
         model = model.lower().strip()
         conf = self.db.get_conf(ctx.guild)
-        if not self.can_call_llm(conf, ctx):
+        if not await self.can_call_llm(conf, ctx):
             return
 
         if model not in CHAT + COMPLETION:
@@ -1651,8 +1667,7 @@ class Admin(MixinMeta):
         def _dump():
             # Delete and convo data
             self.db.conversations.clear()
-            to_dict = self.db.dict()
-            return json.dumps(to_dict)
+            return self.db.json()
 
         dump = await asyncio.to_thread(_dump)
 

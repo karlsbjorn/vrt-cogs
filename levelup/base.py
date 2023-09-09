@@ -24,6 +24,7 @@ from levelup.utils.formatter import (
     get_content_from_url,
     get_leaderboard,
     get_level,
+    get_twemoji,
     get_user_position,
     get_xp,
     hex_to_rgb,
@@ -426,9 +427,13 @@ class UserCommands(MixinMeta, ABC):
     async def view_default_backgrounds(self, ctx: commands.Context):
         """View the default backgrounds"""
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server so this command is off")
-            )
+            txt = _("Image profiles are disabled on this server so this command is off")
+            if ctx.author.guild_permissions.manage_messages:
+                txt += _(
+                    "\nUse the `{}` command to toggle image profiles and enable this command."
+                ).format(f"{ctx.clean_prefix}lset embeds")
+            await ctx.send(txt)
+
         async with ctx.typing():
             img = await self.get_or_fetch_backgrounds()
             if img is None:
@@ -457,9 +462,12 @@ class UserCommands(MixinMeta, ABC):
     async def view_fonts(self, ctx: commands.Context):
         """View available fonts to use"""
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server so this command is off")
-            )
+            txt = _("Image profiles are disabled on this server so this command is off")
+            if ctx.author.guild_permissions.manage_messages:
+                txt += _(
+                    "\nUse the `{}` command to toggle image profiles and enable this command."
+                ).format(f"{ctx.clean_prefix}lset embeds")
+            await ctx.send(txt)
         async with ctx.typing():
             img = await self.get_or_fetch_fonts()
             if img is None:
@@ -781,6 +789,7 @@ class UserCommands(MixinMeta, ABC):
         gid = ctx.guild.id
         if gid not in self.data:
             await self.initialize()
+
         # Main config stuff
         conf = self.data[gid]
         usepics = conf["usepics"]
@@ -801,8 +810,10 @@ class UserCommands(MixinMeta, ABC):
         currency_name = await bank.get_currency_name(ctx.guild)
 
         if DPY2:
-            pfp = user.display_avatar.url
+            pfp = user.display_avatar
             role_icon = user.top_role.display_icon
+            if isinstance(role_icon, str):
+                role_icon = get_twemoji(role_icon)
         else:
             pfp = user.avatar_url
             role_icon = None
@@ -853,15 +864,11 @@ class UserCommands(MixinMeta, ABC):
                     + str(percentage)
                     + _("% of global server Exp")
                 )
-                em.set_footer(text=footer)
+                author_name = _("{}'s Profile").format(user.display_name)
+                em.set_author(name=author_name, icon_url=pfp)
+                em.set_footer(text=footer, icon_url=role_icon)
                 em.add_field(name=_("Progress"), value=box(lvlbar, "py"))
-                txt = _("Profile")
-                if role_icon:
-                    em.set_author(name=f"{user.name}'s {txt}", icon_url=role_icon)
-                else:
-                    em.set_author(name=f"{user.name}'s {txt}")
-                if pfp:
-                    em.set_thumbnail(url=pfp)
+
                 try:
                     await ctx.reply(embed=em, mention_author=mention)
                 except discord.HTTPException:
@@ -943,6 +950,7 @@ class UserCommands(MixinMeta, ABC):
         perms = ctx.channel.permissions_for(ctx.guild.me).manage_roles
         if not perms:
             log.warning("Insufficient perms to assign prestige ranks!")
+
         required_level = conf["prestige"]
         if not required_level:
             return await ctx.send(_("Prestige is disabled on this server!"))
@@ -971,15 +979,16 @@ class UserCommands(MixinMeta, ABC):
             )
 
         role_id = prestige_data[pending_prestige]["role"]
-        role = ctx.guild.get_role(role_id) if role_id else None
+        prestige_role = ctx.guild.get_role(role_id) if role_id else None
         emoji = prestige_data[pending_prestige]["emoji"]
-        if perms and role:
+        if perms and prestige_role:
             try:
-                await ctx.author.add_roles(role)
+                await ctx.author.add_roles(prestige_role)
             except discord.Forbidden:
                 await ctx.send(
-                    _("I do not have the proper permissions to assign you to the role ")
-                    + role.mention
+                    _("I do not have the proper permissions to assign you to the {} role!").format(
+                        prestige_role.mention
+                    )
                 )
 
         current_xp = user["xp"]
@@ -1004,6 +1013,35 @@ class UserCommands(MixinMeta, ABC):
                 role = ctx.guild.get_role(role_id)
                 if role and perms:
                     await ctx.author.remove_roles(role)
+
+        # Handle roles
+        level_roles = conf["levelroles"]
+
+        # Remove all level roles from user
+        role_ids_to_remove = [
+            int(role_id) for level, role_id in level_roles.items() if int(level) > newlevel
+        ]
+        to_remove = [role for role in ctx.author.roles if role.id in role_ids_to_remove]
+        try:
+            await ctx.author.remove_roles(*to_remove)
+        except discord.Forbidden:
+            await ctx.send(_("I don't have permissions to remove your old roles!"))
+
+        # If autoremove is on then the new highest role might need to be reassigned
+        highest_level = 0
+        for level, role_id in level_roles.items():
+            if newlevel >= int(level) >= highest_level:
+                highest_level = int(level)
+
+        if highest_level:
+            role_id = level_roles[str(highest_level)]
+            role = ctx.guild.get_role(role_id)
+            try:
+                await ctx.author.add_roles(role)
+            except discord.Forbidden:
+                await ctx.send(
+                    _("I was not able to re-add the {} role to your profile!").format(role.mention)
+                )
 
     @commands.command(name="lvltop", aliases=["topstats", "membertop", "topranks"])
     @commands.guild_only()

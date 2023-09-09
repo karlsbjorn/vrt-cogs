@@ -39,10 +39,16 @@ def time_to_level(
     xp_obtained = 0
     time_to_reach_level = 0  # Seconds
     while True:
-        xp = random.choice(range(xp_range[0], xp_range[1]))
+        xp = random.choice(range(xp_range[0], xp_range[1] + 1))
         xp_obtained += xp
-        # Wait up to an hour after cooldown for a little more realism
-        time_to_reach_level += cooldown + random.randint(0, 3600)
+
+        if random.random() < 0.5:
+            # Wait up to an hour after cooldown for a little more realism
+            wait = cooldown + random.randint(30, 3600)
+        else:
+            wait = cooldown + random.randint(5, 300)
+
+        time_to_reach_level += wait
         if xp_obtained >= xp_needed:
             return time_to_reach_level
 
@@ -66,12 +72,14 @@ def int_to_rgb(color: int) -> tuple:
 
 
 def get_bar(progress, total, perc=None, width: int = 20) -> str:
+    fill = "▰"
+    space = "▱"
     if perc is not None:
         ratio = perc / 100
     else:
         ratio = progress / total
-    bar = "█" * round(ratio * width) + "-" * round(width - (ratio * width))
-    return f"|{bar}| {round(100 * ratio, 1)}%"
+    bar = fill * round(ratio * width) + space * round(width - (ratio * width))
+    return f"{bar} {round(100 * ratio, 1)}%"
 
 
 # Format time from total seconds and format into readable string
@@ -101,6 +109,18 @@ def time_formatter(time_in_seconds) -> str:
     else:
         tstring = f"{years}y {days}d {hours}h {minutes}m"
     return tstring
+
+
+def get_twemoji(emoji: str):
+    # Thanks Fixator!
+    emoji_unicode = []
+    for char in emoji:
+        char = hex(ord(char))[2:]
+        emoji_unicode.append(char)
+    if "200d" not in emoji_unicode:
+        emoji_unicode = list(filter(lambda c: c != "fe0f", emoji_unicode))
+    emoji_unicode = "-".join(emoji_unicode)
+    return f"https://twemoji.maxcdn.com/v/latest/72x72/{emoji_unicode}.png"
 
 
 def get_next_reset(weekday: int, hour: int):

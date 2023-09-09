@@ -9,7 +9,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import BytesIO
-from time import monotonic
+from time import monotonic, perf_counter
 from typing import Dict, List, Set, Tuple, Union
 
 import discord
@@ -19,6 +19,7 @@ import tabulate
 from aiohttp import ClientSession, ClientTimeout
 from discord.ext import tasks
 from redbot.core import Config, VersionInfo, commands, version_info
+from redbot.core.bot import Red
 from redbot.core.data_manager import bundled_data_path, cog_data_path
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils import AsyncIter
@@ -41,6 +42,7 @@ from levelup.utils.formatter import (
     get_content_from_url,
     get_level,
     get_next_reset,
+    get_twemoji,
     get_xp,
     hex_to_rgb,
     time_formatter,
@@ -85,7 +87,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "3.4.0"
+    __version__ = "3.7.4"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -106,7 +108,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         if deleted:
             await self.save_cache()
 
-    def __init__(self, bot, *args, **kwargs):
+    def __init__(self, bot: Red, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.bot = bot
         self.config = Config.get_conf(self, 117117117, force_registration=True)
@@ -130,7 +132,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
                 "voice": {},
             },  # ChannelID keys, list values for bonus xp range
             "streambonus": [],  # Bonus voice XP for streaming in voice
-            "cooldown": 60,  # Only gives XP every 30 seconds
+            "cooldown": 60,  # Only gives XP every 60 seconds
             "base": 100,  # Base denominator for level algorithm, higher takes longer to level
             "exp": 2,  # Exponent for level algorithm, higher is a more exponential/steeper curve
             "length": 0,  # Minimum length of message to be considered eligible for XP gain
@@ -457,7 +459,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
                     continue
                 if isinstance(v, int) or isinstance(v, float):
                     continue
-                conf["users"][uid][k] = int(v) if v is not None else 0
+                conf["users"][uid][k] = int(v.replace(",", "")) if v is not None else 0
                 cleaned.append(f"{k} stat should be int")
 
             # Check prestige settings
@@ -514,7 +516,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             "prestige": 0,
             "emoji": None,
             "stars": 0,
-            "background": None,
+            "background": "random",
             "full": True,
             "colors": {"name": None, "stat": None, "levelbar": None},
             "font": None,
@@ -1330,7 +1332,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         await ctx.send("Here is your LevelUp config", file=file)
 
     @admin_group.command(name="guildbackup")
-    @commands.is_owner()
+    @commands.guildowner()
     @commands.bot_has_permissions(attach_files=True)
     async def backup_guild(self, ctx):
         """Create a backup of the LevelUp config"""
@@ -1486,6 +1488,41 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
                 data = await res.json(content_type=None)
                 return data, status
 
+    @retry(
+        retry=retry_if_exception_type(json.JSONDecodeError),
+        wait=wait_random_exponential(min=120, max=600),
+        stop=stop_after_attempt(6),
+        reraise=True,
+    )
+    async def fetch_amari_payload(self, guild_id: int, page: int, key: str):
+        url = f"https://amaribot.com/api/v1/guild/leaderboard/{guild_id}?page={page}&limit=1000"
+        headers = {"Accept": "application/json", "Authorization": key}
+        timeout = ClientTimeout(total=60)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers) as res:
+                status = res.status
+                if status == 429:
+                    log.warning("amari import is being rate limited!")
+                data = await res.json(content_type=None)
+                return data, status
+
+    @retry(
+        retry=retry_if_exception_type(json.JSONDecodeError),
+        wait=wait_random_exponential(min=120, max=600),
+        stop=stop_after_attempt(6),
+        reraise=True,
+    )
+    async def fetch_polaris_payload(self, guild_id: int, page: int):
+        url = f"https://gdcolon.com/polaris/api/leaderboard/{guild_id}?page={page}"
+        timeout = ClientTimeout(total=60)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers={"Accept": "application/json"}) as res:
+                status = res.status
+                if status == 429:
+                    log.warning("polaris import is being rate limited!")
+                data = await res.json(content_type=None)
+                return data, status
+
     @admin_group.command(name="importmee6")
     @commands.guildowner()
     @commands.bot_has_permissions(embed_links=True)
@@ -1630,6 +1667,296 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
 
         if not imported and not failed:
             await msg.edit(content=_("No MEE6 stats were found"))
+        else:
+            txt = _("Imported {} User(s)").format(str(imported))
+            if failed:
+                txt += _(" ({} skipped since they are no longer in the discord)").format(
+                    str(failed)
+                )
+            await msg.edit(content=txt)
+            await ctx.tick()
+            await self.save_cache(ctx.guild)
+
+    @admin_group.command(name="importamari")
+    @commands.guildowner()
+    @commands.bot_has_permissions(embed_links=True)
+    async def import_from_amari(
+        self, ctx: commands.Context, import_by: str, replace: bool, i_agree: bool, api_key: str
+    ):
+        """
+        Import levels and exp from AmariBot
+
+        **Arguments**
+        `import_by` - which stat to prioritize (`level` or `exp`)
+        If exp is entered, it will import their experience and base their new level off of that.
+        If level is entered, it will import their level and calculate their exp based off of that.
+        `replace` - (True/False) if True, it will replace the user's exp or level, otherwise it will add it
+        `i_agree` - (Yes/No) Just an extra option to make sure you want to execute this command
+        `api_key` - Your [AmariBot API Key](https://docs.google.com/forms/d/e/1FAIpQLScQDCsIqaTb1QR9BfzbeohlUJYA3Etwr-iSb0CRKbgjA-fq7Q/viewform?usp=send_form)
+
+        **Note**
+        Instead of typing true/false
+        1 = True
+        0 = False
+        """
+        if not i_agree:
+            return await ctx.send(_("Not importing AmariBot levels"))
+
+        msg = await ctx.send(_("Fetching AmariBot leaderboard data, this could take a while..."))
+
+        conf = self.data[ctx.guild.id]
+        base = conf["base"]
+        exp = conf["exp"]
+
+        pages = math.ceil(len(ctx.guild.members) / 1000)
+        players: List[dict] = []
+        failed_pages = 0
+
+        with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+            await ctx.message.delete()
+
+        async with ctx.typing():
+            async for i in AsyncIter(range(pages), delay=5):
+                try:
+                    data, status = await self.fetch_amari_payload(ctx.guild.id, i, api_key)
+                except Exception as e:
+                    log.warning(
+                        f"Failed to import page {i} of AmariBot leaderboard data in {ctx.guild}",
+                        exc_info=e,
+                    )
+                    await ctx.send(f"Failed to import page {i} of AmariBot leaderboard data: {e}")
+                    failed_pages += 1
+                    if isinstance(e, json.JSONDecodeError):
+                        await msg.edit(
+                            content=_("AmariBot is rate limiting too heavily! Import Failed!")
+                        )
+                        return
+                    continue
+
+                error_msg = data.get("error", None)
+                if status == 501:
+                    # No more users
+                    break
+
+                if status != 200:
+                    if error_msg:
+                        return await ctx.send(error_msg)
+                    else:
+                        return await ctx.send(_("No data found!"))
+
+                player_data = data.get("data")
+                if not player_data:
+                    break
+
+                players.extend(player_data)
+
+        if failed_pages:
+            await ctx.send(
+                _("{} pages failed to fetch from AmariBot api, check logs for more info").format(
+                    str(failed_pages)
+                )
+            )
+        if not players:
+            return await ctx.send(_("No leaderboard data found!"))
+
+        await msg.edit(content=_("Data retrieved, importing..."))
+        imported = 0
+        failed = 0
+        async with ctx.typing():
+            async for user in AsyncIter(players):
+                uid = user["id"]
+                # username = user["username"]
+                xp = user["exp"]
+                lvl = user["level"]
+                weekly_exp = user["weeklyExp"]
+
+                member = ctx.guild.get_member(int(uid))
+                if not member:
+                    failed += 1
+                    continue
+
+                if uid not in self.data[ctx.guild.id]["users"]:
+                    self.init_user(ctx.guild.id, uid)
+
+                weekly_on = self.data[ctx.guild.id]["weekly"]["on"]
+
+                if weekly_on and uid not in self.data[ctx.guild.id]["weekly"]["users"]:
+                    self.init_user_weekly(ctx.guild.id, uid)
+
+                if replace:  # Replace stats
+                    if "l" in import_by.lower():
+                        self.data[ctx.guild.id]["users"][uid]["level"] = lvl
+                        newxp = get_xp(lvl, base, exp)
+                        self.data[ctx.guild.id]["users"][uid]["xp"] = newxp
+                    else:
+                        self.data[ctx.guild.id]["users"][uid]["xp"] = xp
+                        newlvl = get_level(xp, base, exp)
+                        self.data[ctx.guild.id]["users"][uid]["level"] = newlvl
+
+                    if weekly_on:
+                        self.data[ctx.guild.id]["weekly"]["users"][uid]["xp"] = weekly_exp
+
+                else:  # Add stats
+                    if "l" in import_by.lower():
+                        self.data[ctx.guild.id]["users"][uid]["level"] += lvl
+                        newxp = get_xp(self.data[ctx.guild.id]["users"][uid]["level"], base, exp)
+                        self.data[ctx.guild.id]["users"][uid]["xp"] = newxp
+                    else:
+                        self.data[ctx.guild.id]["users"][uid]["xp"] += xp
+                        newlvl = get_level(self.data[ctx.guild.id]["users"][uid]["xp"], base, exp)
+                        self.data[ctx.guild.id]["users"][uid]["level"] = newlvl
+
+                    if weekly_on:
+                        self.data[ctx.guild.id]["weekly"]["users"][uid]["xp"] += weekly_exp
+
+                imported += 1
+
+        if not imported and not failed:
+            await msg.edit(content=_("No AmariBot stats were found"))
+        else:
+            txt = _("Imported {} User(s)").format(str(imported))
+            if failed:
+                txt += _(" ({} skipped since they are no longer in the discord)").format(
+                    str(failed)
+                )
+            await msg.edit(content=txt)
+            await ctx.tick()
+            await self.save_cache(ctx.guild)
+
+    @admin_group.command(name="importpolaris")
+    @commands.guildowner()
+    @commands.bot_has_permissions(embed_links=True)
+    async def import_from_polaris(
+        self,
+        ctx: commands.Context,
+        replace: bool,
+        include_settings: bool,
+        i_agree: bool,
+    ):
+        """
+        Import levels and exp from [Polaris](https://gdcolon.com/polaris/)
+
+        **Make sure your guild's leaderboard is public!**
+
+        **Arguments**
+        `replace` - (True/False) if True, it will replace the user's exp, otherwise it will add it
+        `include_settings` - import level roles and exp settings from Polaris
+        `i_agree` - (Yes/No) Just an extra option to make sure you want to execute this command
+
+        **Note**
+        Instead of typing true/false
+        1 = True
+        0 = False
+        """
+        if not i_agree:
+            return await ctx.send(_("Not importing Polaris levels"))
+
+        msg = await ctx.send(_("Fetching Polaris leaderboard data, this could take a while..."))
+
+        conf = self.data[ctx.guild.id]
+        base = conf["base"]
+        exp = conf["exp"]
+
+        players: List[dict] = []
+        failed_pages = 0
+        settings_imported = False
+
+        async with ctx.typing():
+            async for i in AsyncIter(range(10), delay=5):
+                page = i + 1
+                try:
+                    data, status = await self.fetch_polaris_payload(ctx.guild.id, page)
+                except Exception as e:
+                    log.warning(
+                        f"Failed to import page {page} of Polaris leaderboard data in {ctx.guild}",
+                        exc_info=e,
+                    )
+                    await ctx.send(
+                        f"Failed to import page {page} of Polaris leaderboard data: {e}"
+                    )
+                    failed_pages += 1
+                    if isinstance(e, json.JSONDecodeError):
+                        await msg.edit(
+                            content=_("Polaris is rate limiting too heavily! Import Failed!")
+                        )
+                        return
+                    continue
+
+                error = data.get("error", {})
+                error_msg = error.get("message", None)
+                if status != 200:
+                    if status == 401:
+                        return await ctx.send(_("Your leaderboard needs to be set to public!"))
+                    elif error_msg:
+                        return await ctx.send(error_msg)
+                    else:
+                        return await ctx.send(_("No data found!"))
+
+                if include_settings and not settings_imported:
+                    settings_imported = True
+                    if settings := data.get("settings"):
+                        if gain := settings.get("gain"):
+                            self.data[ctx.guild.id]["xp"] = [gain["min"], gain["max"]]
+                            self.data[ctx.guild.id]["cooldown"] = gain["time"]
+
+                        if curve := settings.get("curve"):
+                            # The cubic curve doesn't translate to quadratic easily, so we won't import this
+                            # cubed = curve["3"]
+                            # squared = curve["2"]
+                            # base = curve["1"]
+                            self.data[ctx.guild.id]["base"] = curve["1"]
+
+                    if role_rewards := data.get("rewards"):
+                        for entry in role_rewards:
+                            self.data[ctx.guild.id]["levelroles"][str(entry["level"])] = int(
+                                entry["id"]
+                            )
+
+                    await ctx.send("Settings imported!")
+
+                player_data = data.get("leaderboard")
+                if not player_data:
+                    break
+
+                players.extend(player_data)
+
+        if failed_pages:
+            await ctx.send(
+                _("{} pages failed to fetch from Polaris api, check logs for more info").format(
+                    str(failed_pages)
+                )
+            )
+        if not players:
+            return await ctx.send(_("No leaderboard data found!"))
+
+        await msg.edit(content=_("Data retrieved, importing..."))
+        imported = 0
+        failed = 0
+        async with ctx.typing():
+            async for user in AsyncIter(players):
+                uid = str(user["id"])
+                member = ctx.guild.get_member(int(uid))
+                if not member:
+                    failed += 1
+                    continue
+
+                xp = user["xp"]
+                if uid not in self.data[ctx.guild.id]["users"]:
+                    self.init_user(ctx.guild.id, uid)
+
+                if replace:  # Replace stats
+                    self.data[ctx.guild.id]["users"][uid]["xp"] = xp
+                    newlvl = get_level(xp, base, exp)
+                    self.data[ctx.guild.id]["users"][uid]["level"] = newlvl
+                else:  # Add stats
+                    self.data[ctx.guild.id]["users"][uid]["xp"] += xp
+                    newlvl = get_level(self.data[ctx.guild.id]["users"][uid]["xp"], base, exp)
+                    self.data[ctx.guild.id]["users"][uid]["level"] = newlvl
+
+                imported += 1
+
+        if not imported and not failed:
+            await msg.edit(content=_("No Polaris stats were found"))
         else:
             txt = _("Imported {} User(s)").format(str(imported))
             if failed:
@@ -2239,10 +2566,8 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         file = discord.File(BytesIO(file_bytes), filename="lvlexample.png")
         img = "attachment://lvlexample.png"
         example = _(
-            "XP required for a level = Base * Level^Exp\n\n"
-            "Approx time is the time it would take for a user to reach a level if they "
-            "typed every time the cooldown expired non stop without sleeping or taking "
-            "potty breaks."
+            "XP required for a level = Base * Level^ᵉˣᵖ\n\n"
+            "Approx time is the time it would take for a user to reach a level with randomized breaks"
         )
         desc = _("`Base Multiplier:  `") + f"{base}\n"
         desc += _("`Exp Multiplier:   `") + f"{exp}\n"
@@ -2431,6 +2756,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         This command is for if you added level roles after users have achieved that level,
         it will apply all necessary roles to a user according to their level and prestige
         """
+        start = perf_counter()
         guild = ctx.guild
         perms = guild.me.guild_permissions.manage_roles
         if not perms:
@@ -2438,14 +2764,14 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         roles_added = 0
         roles_removed = 0
         embed = discord.Embed(
-            description="Adding roles, this may take a while...",
+            description=_("Calculating roles, this may take a while..."),
             color=discord.Color.magenta(),
         )
         embed.set_thumbnail(url=self.loading)
         msg = await ctx.send(embed=embed)
 
-        to_add: Dict[discord.Member, Set[int]] = {}
-        to_remove: Dict[discord.Member, Set[int]] = {}
+        to_add: Dict[discord.Member, Set[discord.Role]] = {}
+        to_remove: Dict[discord.Member, Set[discord.Role]] = {}
 
         conf = self.data[ctx.guild.id]
         level_roles = conf["levelroles"]
@@ -2463,42 +2789,67 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             user_level = data["level"]
             prestige_level = data["prestige"]
             if autoremove:
-                highest_level = ""
-                for lvl, role_id in level_roles.items():
-                    if int(lvl) <= int(user_level):
-                        highest_level = lvl
-                if highest_level:
-                    if role := guild.get_role(int(level_roles[highest_level])):
-                        to_add[user].add(role)
-                        for r in user.roles:
-                            if r.id in level_roles.values() and r.id != role.id:
-                                to_remove[user].add(r)
-                highest_prestige = ""
-                for plvl in prestiges:
-                    if int(plvl) <= int(prestige_level):
-                        highest_prestige = plvl
-                if highest_prestige:
-                    if role := guild.get_role(int(prestiges[highest_prestige]["role"])):
-                        to_add[user].add(role)
-            else:
-                for lvl, role_id in level_roles.items():
-                    role = guild.get_role(int(role_id))
-                    if role and int(lvl) <= int(user_level):
-                        to_add[user].add(role)
-                for lvl, prestige in prestiges.items():
-                    role = guild.get_role(int(prestige["role"]))
-                    if role and int(lvl) <= int(prestige_level):
-                        to_add[user].add(role)
+                highest_level = 0
+                for level, role_id in level_roles.items():
+                    if int(user_level) >= int(level) >= highest_level:
+                        highest_level = int(level)
 
+                if highest_level:
+                    role_id = level_roles[str(highest_level)]
+                    if role := guild.get_role(role_id):
+                        to_add[user].add(role)
+                        for user_role in user.roles:
+                            if user_role.id in level_roles.values() and user_role.id != role.id:
+                                to_remove[user].add(user_role)
+
+                highest_prestige = 0
+                for prestige_level_requirement in prestiges:
+                    if int(prestige_level) >= int(prestige_level_requirement) >= highest_prestige:
+                        highest_prestige = int(prestige_level_requirement)
+
+                if highest_prestige:
+                    prestige_role_ids = [i["role"] for i in prestiges.values()]
+                    role_id = prestiges[str(highest_prestige)]
+                    if role := guild.get_role(role_id):
+                        to_add[user].add(role)
+                        for user_role in user.roles:
+                            if user_role.id in prestige_role_ids and user_role.id != role.id:
+                                to_remove[user].add(user_role)
+
+            else:
+                user_role_ids = [role.id for role in user.roles]
+                for lvl, role_id in level_roles.items():
+                    if role := guild.get_role(int(role_id)):
+                        if int(lvl) <= int(user_level) and role.id not in user_role_ids:
+                            to_add[user].add(role)
+
+                for lvl, prestige in prestiges.items():
+                    if role := guild.get_role(int(prestige["role"])):
+                        if int(lvl) <= int(prestige_level) and role.id not in user_role_ids:
+                            to_add[user].add(role)
+
+        embed.description = _("Assigning roles, this may take a while...")
+        await msg.edit(embed=embed)
+
+        add_fails = 0
+        remove_fails = 0
         async with ctx.typing():
+            bot_top_role = max(role for role in guild.me.roles)
             for user, adding in to_add.items():
                 removing = to_remove[user]
+
+                # Update what can actually be assigned/removed
+                adding = [role for role in adding if role < bot_top_role]
+                removing = [role for role in removing if role < bot_top_role]
+
                 for role in removing:
                     if role in adding and role in user.roles:
                         adding.discard(role)
+
                 for role in adding:
                     if role in removing and role not in user.roles:
                         removing.discard(role)
+
                 try:
                     await user.add_roles(*adding)
                     roles_added += len(adding)
@@ -2506,21 +2857,36 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
                     log.warning(
                         f"Failed to assign the following roles to {user} in {guild}: {humanize_list([r.name for r in adding])}"
                     )
+                    add_fails += len(adding)
+
                 try:
                     await user.remove_roles(*removing)
                     roles_removed += len(removing)
                 except discord.Forbidden:
                     log.warning(
-                        f"Failed to remove the following roles from {user} in {guild}: {humanize_list([r.name for r in adding])}"
+                        f"Failed to remove the following roles from {user} in {guild}: {humanize_list([r.name for r in removing])}"
                     )
+                    remove_fails += len(removing)
 
-        desc = (
-            _("Initialization complete! Added ")
-            + str(roles_added)
-            + _(" roles and removed ")
-            + str(roles_removed)
-        )
+        desc = _("Role initialization completed!")
+        if roles_added:
+            desc += _("\nAdded `{}`").format(roles_added)
+            if add_fails:
+                desc += _(" (`{}` failed)").format(add_fails)
+
+        if roles_removed:
+            desc += _("\nRemoved `{}`").format(roles_removed)
+            if remove_fails:
+                desc += _(" (`{}` failed)").format(remove_fails)
+
+        if not roles_added and not roles_removed:
+            desc += _("\nNo roles needed to be added or removed!")
+
         embed = discord.Embed(description=desc, color=discord.Color.green())
+        td = round(perf_counter() - start)
+        delta = humanize_timedelta(seconds=td)
+        foot = _("Initialization took {} to complete.").format(delta)
+        embed.set_footer(text=foot)
         await msg.edit(embed=embed)
 
     @level_roles.command(name="autoremove")
@@ -2540,10 +2906,10 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         """Assign a role to a level"""
         if role >= ctx.author.top_role:
             return await ctx.send(
-                "The role you are trying to set is higher than the one you currently have!"
+                _("The role you are trying to set is higher than the one you currently have!")
             )
         if role >= ctx.me.top_role:
-            return await ctx.send("I cannot assign roles higher than my own!")
+            return await ctx.send(_("I cannot assign roles higher than my own!"))
         perms = ctx.guild.me.guild_permissions.manage_roles
         if not perms:
             return await ctx.send(_("I do not have permission to manage roles"))
@@ -2593,18 +2959,6 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             await ctx.send(_("Automatic prestige role removal **Enabled**"))
         await self.save_cache(ctx.guild)
 
-    @staticmethod
-    def get_twemoji(emoji: str):
-        # Thanks Fixator!
-        emoji_unicode = []
-        for char in emoji:
-            char = hex(ord(char))[2:]
-            emoji_unicode.append(char)
-        if "200d" not in emoji_unicode:
-            emoji_unicode = list(filter(lambda c: c != "fe0f", emoji_unicode))
-        emoji_unicode = "-".join(emoji_unicode)
-        return f"https://twemoji.maxcdn.com/v/latest/72x72/{emoji_unicode}.png"
-
     @prestige_settings.command(name="add")
     async def add_pres_data(
         self,
@@ -2621,7 +2975,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         """
         if not prestige_level.isdigit():
             return await ctx.send(_("prestige_level must be a number!"))
-        url = self.get_twemoji(emoji) if isinstance(emoji, str) else emoji.url
+        url = get_twemoji(emoji) if isinstance(emoji, str) else emoji.url
         self.data[ctx.guild.id]["prestigedata"][prestige_level] = {
             "role": role.id,
             "emoji": {"str": str(emoji), "url": url},
@@ -2633,7 +2987,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
     async def e_test(self, ctx, emoji: Union[discord.Emoji, discord.PartialEmoji, str]):
         """Test emojis to see if the bot is able to get a valid url for them"""
         if isinstance(emoji, str):
-            em = self.get_twemoji(emoji)
+            em = get_twemoji(emoji)
             await ctx.send(em)
         else:
             await ctx.send(emoji.url)

@@ -6,7 +6,6 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 import discord
-import orjson
 from aiohttp import ClientConnectionError
 from redbot.core import commands
 from redbot.core.i18n import Translator, cog_i18n
@@ -36,6 +35,7 @@ class API(MixinMeta):
         conf: GuildSettings,
         functions: Optional[List[dict]] = None,
         member: Optional[discord.Member] = None,
+        response_token_override: int = None,
     ) -> Dict[str, str]:
         api_base = conf.endpoint_override or self.db.endpoint_override
         api_key = "unset"
@@ -43,17 +43,35 @@ class API(MixinMeta):
             api_base = None
             api_key = conf.api_key
 
-        max_response_tokens = conf.get_user_max_response_tokens(member)
-        model = conf.get_user_model(member)
-        # Overestimate by 5%
-        convo_tokens = await self.payload_token_count(conf, messages)
-        convo_tokens = round(convo_tokens * 1.05)
         max_convo_tokens = self.get_max_tokens(conf, member)
+        max_response_tokens = conf.get_user_max_response_tokens(member)
+
+        # Overestimate by 5%
+        current_convo_tokens = await self.payload_token_count(conf, messages)
+        current_convo_tokens = round(current_convo_tokens * 1.05)
+
+        model = conf.get_user_model(member)
+        # Dynamically adjust to lower model to save on cost
+        if "-16k" in model and current_convo_tokens < 2000:
+            model = model.replace("-16k", "")
+        if "-32k" in model and current_convo_tokens < 4000:
+            model = model.replace("-32k", "")
+
         max_model_tokens = MODELS[model]
-        diff = min(max_model_tokens - convo_tokens, max_convo_tokens - convo_tokens)
-        if diff < 1:
-            diff = max_model_tokens - convo_tokens
-        max_tokens = min(max_response_tokens, max(diff, 0))
+
+        # Ensure that user doesn't set max response tokens higher than model can handle
+        if response_token_override:
+            response_tokens = response_token_override
+        else:
+            response_tokens = 0  # Dynamic
+            if max_response_tokens:
+                # Calculate max response tokens
+                response_tokens = max(max_convo_tokens - current_convo_tokens, 0)
+                # If current convo exceeds the max convo tokens for that user, use max model tokens
+                if not response_tokens:
+                    response_tokens = max(max_model_tokens - current_convo_tokens, 0)
+                # Use the lesser of caculated vs set response tokens
+                response_tokens = min(response_tokens, max_response_tokens)
 
         if model in CHAT:
             response = await request_chat_completion_raw(
@@ -61,7 +79,7 @@ class API(MixinMeta):
                 messages=messages,
                 temperature=conf.temperature,
                 api_key=api_key,
-                max_tokens=max_tokens,
+                max_tokens=response_tokens,
                 api_base=api_base,
                 functions=functions,
             )
@@ -76,7 +94,7 @@ class API(MixinMeta):
                 prompt=prompt,
                 temperature=conf.temperature,
                 api_key=api_key,
-                max_tokens=max_tokens,
+                max_tokens=response_tokens,
                 api_base=api_base,
             )
             text = response["choices"][0]["text"]
@@ -219,9 +237,10 @@ class API(MixinMeta):
         )
 
     async def payload_token_count(self, conf: GuildSettings, messages: List[dict]):
-        return sum(
-            [(await self.get_token_count(i["content"], conf)) for i in messages if i["content"]]
-        )
+        total = 0
+        for message in messages:
+            total += await self.get_token_count(json.dumps(message), conf)
+        return total
 
     async def prompt_token_count(self, conf: GuildSettings) -> int:
         """Fetch token count of system and initial prompts"""
@@ -261,16 +280,8 @@ class API(MixinMeta):
             Tuple[List[dict], List[dict], bool]: updated messages list, function list, and whether the conversation was degraded
         """
         # Calculate the initial total token count
-        total_tokens = 0
-        for message in messages:
-            if not message["content"]:
-                continue
-            count = await self.get_token_count(message["content"], conf)
-            total_tokens += count
-
-        for function in function_list:
-            count = await self.get_token_count(orjson.dumps(function), conf)
-            total_tokens += count
+        total_tokens = await self.get_token_count(json.dumps(messages), conf)
+        total_tokens += await self.get_token_count(json.dumps(function_list), conf)
 
         # Check if the total token count is already under the max token limit
         max_response_tokens = conf.get_user_max_response_tokens(user)
@@ -292,7 +303,7 @@ class API(MixinMeta):
         # Degrade function_list first
         while total_tokens > max_tokens and len(function_list) > 0:
             popped = function_list.pop(0)
-            total_tokens -= await self.get_token_count(orjson.dumps(popped), conf)
+            total_tokens -= await self.get_token_count(json.dumps(popped), conf)
             if total_tokens <= max_tokens:
                 return messages, function_list, True
 
@@ -312,6 +323,14 @@ class API(MixinMeta):
             ):
                 break
 
+        # Clear out function calls (not the result, just the message of it being called)
+        i = 0
+        while total_tokens > max_tokens and i < len(messages):
+            if messages[i]["content"]:
+                i += 1
+                continue
+            messages.pop(i)
+
         log.debug(f"Degrading messages (total: {total_tokens}/max: {max_tokens})")
         # Degrade the conversation except for the most recent user, assistant, and function messages
         i = 0
@@ -325,8 +344,11 @@ class API(MixinMeta):
                 i += 1
                 continue
 
-            if not messages[i]["content"] and "function_call" not in messages[i]:
-                messages.pop(i)
+            if not messages[i]["content"]:
+                if "function_call" not in messages[i]:
+                    messages.pop(i)
+                else:
+                    i += 1
                 continue
 
             degraded_content = _degrade_message(messages[i]["content"])
@@ -497,13 +519,23 @@ class API(MixinMeta):
                     if len(embedding.text) > 33
                     else box(embedding.text.strip())
                 )
-                val = (
-                    _("`Tokens:     `{}\n").format(tokens)
-                    + _("`Dimensions: `{}\n").format(len(embedding.embedding))
-                    + text
+                val = _(
+                    "`Created:    `{}\n"
+                    "`Modified:   `{}\n"
+                    "`Tokens:     `{}\n"
+                    "`Dimensions: `{}\n"
+                    "`AI Created: `{}\n"
+                ).format(
+                    embedding.created_at(),
+                    embedding.modified_at(relative=True),
+                    tokens,
+                    len(embedding.embedding),
+                    embedding.ai_created,
                 )
+                val += text
+                fieldname = f"➣ {name}" if place == num else name
                 embed.add_field(
-                    name=f"➣ {name}" if place == num else name,
+                    name=fieldname[:250],
                     value=val,
                     inline=False,
                 )

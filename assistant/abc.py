@@ -32,6 +32,7 @@ class MixinMeta(metaclass=ABCMeta):
         conf: GuildSettings,
         functions: Optional[List[dict]] = None,
         member: discord.Member = None,
+        response_token_override: int = None,
     ) -> Dict[str, str]:
         raise NotImplementedError
 
@@ -112,6 +113,17 @@ class MixinMeta(metaclass=ABCMeta):
     # -------------------------------------------------------
 
     @abstractmethod
+    async def add_embedding(
+        self,
+        guild: discord.Guild,
+        name: str,
+        text: str,
+        overwrite: bool = False,
+        ai_created: bool = False,
+    ) -> Optional[List[float]]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_chat_response(
         self,
         message: str,
@@ -122,6 +134,7 @@ class MixinMeta(metaclass=ABCMeta):
         function_calls: Optional[List[dict]] = None,
         function_map: Optional[Dict[str, Callable]] = None,
         extend_function_calls: bool = True,
+        message_obj: Optional[discord.Message] = None,
     ) -> str:
         raise NotImplementedError
 

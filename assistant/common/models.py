@@ -1,10 +1,10 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import discord
 from openai.embeddings_utils import cosine_similarity
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from redbot.core.bot import Red
 
 log = logging.getLogger("red.vrt.assistant.models")
@@ -14,6 +14,25 @@ class Embedding(BaseModel):
     text: str
     embedding: List[float]
     ai_created: bool = False
+    created: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    modified: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+
+    def created_at(self, relative: bool = False):
+        t_type = "R" if relative else "F"
+        return f"<t:{int(self.created.timestamp())}:{t_type}>"
+
+    def modified_at(self, relative: bool = False):
+        t_type = "R" if relative else "F"
+        return f"<t:{int(self.modified.timestamp())}:{t_type}>"
+
+    def update(self):
+        self.modified = datetime.now(tz=timezone.utc)
+
+    def dict(self, *args, **kwargs):
+        data = super().dict(*args, **kwargs)
+        data["created"] = self.created.isoformat()
+        data["modified"] = self.modified.isoformat()
+        return data
 
 
 class CustomFunction(BaseModel):
@@ -77,29 +96,35 @@ class GuildSettings(BaseModel):
     disabled_functions: List[str] = []
 
     def get_related_embeddings(
-        self, query_embedding: List[float], top_n_override: Optional[int] = None
-    ) -> List[Tuple[str, str, float]]:
+        self,
+        query_embedding: List[float],
+        top_n_override: Optional[int] = None,
+        relatedness_override: Optional[float] = None,
+    ) -> List[Tuple[str, str, float, int]]:
+        # Name, text, score, dimensions
+
         if not self.top_n or len(query_embedding) == 0 or not self.embeddings:
             return []
+
         strings_and_relatedness = []
         for name, em in self.embeddings.items():
             if len(query_embedding) != len(em.embedding):
                 continue
             try:
                 score = cosine_similarity(query_embedding, em.embedding)
+                strings_and_relatedness.append((name, em.text, score, len(em.embedding)))
             except ValueError as e:
                 log.error(
                     f"Failed to match '{name}' embedding {len(query_embedding)} - {len(em.embedding)}",
                     exc_info=e,
                 )
-                continue
-            strings_and_relatedness.append((name, em.text, score, len(em.embedding)))
 
-        strings_and_relatedness = [
-            i for i in strings_and_relatedness if i[2] >= self.min_relatedness
-        ]
+        min_relatedness = relatedness_override or self.min_relatedness
+        strings_and_relatedness = [i for i in strings_and_relatedness if i[2] >= min_relatedness]
+
         if not strings_and_relatedness:
             return []
+
         strings_and_relatedness.sort(key=lambda x: x[2], reverse=True)
         return strings_and_relatedness[: top_n_override or self.top_n]
 
@@ -163,7 +188,7 @@ class GuildSettings(BaseModel):
 
 
 class Conversation(BaseModel):
-    messages: list[dict[str, str]] = []
+    messages: List[dict] = []
     last_updated: float = 0.0
 
     def function_count(self) -> int:

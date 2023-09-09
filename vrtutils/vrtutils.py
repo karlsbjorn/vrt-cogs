@@ -6,11 +6,14 @@ import math
 import os
 import platform
 import random
+import string
 import subprocess
 import sys
+import typing as t
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from sys import executable
-from typing import List, Optional, Union
+from time import perf_counter
 
 import cpuinfo
 import discord
@@ -62,7 +65,7 @@ class VrtUtils(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "1.7.0"
+    __version__ = "1.10.2"
 
     def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
@@ -75,7 +78,6 @@ class VrtUtils(commands.Cog):
         super().__init__(*args, **kwargs)
         self.bot = bot
         self.path = cog_data_path(self)
-        self.threadpool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vrt_utils")
 
     # -/-/-/-/-/-/-/-/FORMATTING-/-/-/-/-/-/-/-/
     @staticmethod
@@ -114,7 +116,7 @@ class VrtUtils(commands.Cog):
             )
             return results.stdout.decode("utf-8") or results.stderr.decode("utf-8")
 
-        res = await self.bot.loop.run_in_executor(self.threadpool, exe)
+        res = await asyncio.to_thread(exe)
         return res
 
     async def run_disk_speed(
@@ -249,14 +251,6 @@ class VrtUtils(commands.Cog):
                 results[f"read{stage + 1}"] = "Running..."
             await asyncio.sleep(1)
 
-    # @commands.command()
-    # async def latency(self, ctx: commands.Context):
-    #     """Check the bots latency"""
-    #     try:
-    #         socket_latency = round(self.bot.latency * 1000)
-    #     except OverflowError:
-    #         return await ctx.send("Bot is up but missed had connection issues the last few seconds.")
-
     @commands.command()
     @commands.is_owner()
     async def pip(self, ctx, *, command: str):
@@ -319,15 +313,44 @@ class VrtUtils(commands.Cog):
     # https://github.com/kennnyshiwa/kennnyshiwa-cogs
     @commands.command()
     @commands.bot_has_permissions(embed_links=True)
-    @commands.cooldown(1, 30, commands.BucketType.user)
+    @commands.cooldown(1, 15, commands.BucketType.user)
     async def botinfo(self, ctx: commands.Context):
         """
         Get info about the bot
         """
         async with ctx.typing():
-            color = await self.bot.get_embed_color(ctx)
+            latency = self.bot.latency * 1000
+
+            latency_ratio = max(0.0, min(1.0, latency / 100))
+
+            # Calculate RGB values based on latency ratio
+            green = 255 - round(255 * latency_ratio) if latency_ratio > 0.5 else 255
+            red = 255 if latency_ratio > 0.5 else round(255 * latency_ratio)
+
+            color = discord.Color.from_rgb(red, green, 0)
+
             embed = await asyncio.to_thread(self.get_bot_info_embed, color)
-            await ctx.send(embed=embed)
+
+            latency_txt = f"Websocket: {humanize_number(round(latency, 2))} ms"
+            embed.add_field(
+                name="\N{HIGH VOLTAGE SIGN} Latency",
+                value=box(latency_txt, lang="python"),
+                inline=False,
+            )
+
+            start = perf_counter()
+            message = await ctx.send(embed=embed)
+            end = perf_counter()
+
+            field = embed.fields[-1]
+            latency_txt += f"\nMessage:   {humanize_number(round((end - start) * 1000, 2))} ms"
+            embed.set_field_at(
+                index=5,
+                name=field.name,
+                value=box(latency_txt, lang="python"),
+                inline=False,
+            )
+            await message.edit(embed=embed)
 
     def get_bot_info_embed(self, color: discord.Color) -> discord.Embed:
         process = psutil.Process(os.getpid())
@@ -335,9 +358,9 @@ class VrtUtils(commands.Cog):
 
         # -/-/-/CPU-/-/-/
         cpu_count = psutil.cpu_count()  # Int
-        cpu_perc: List[float] = psutil.cpu_percent(interval=3, percpu=True)
+        cpu_perc: t.List[float] = psutil.cpu_percent(interval=3, percpu=True)
         cpu_avg = round(sum(cpu_perc) / len(cpu_perc), 1)
-        cpu_freq: list = psutil.cpu_freq(percpu=True)  # List of Objects
+        cpu_freq: list = psutil.cpu_freq(percpu=True)  # t.List of Objects
         if not cpu_freq:
             freq = psutil.cpu_freq(percpu=False)
             if freq:
@@ -409,6 +432,9 @@ class VrtUtils(commands.Cog):
             title=f"Stats for {self.bot.user.display_name}",
             description="Below are various stats about the bot and the system it runs on.",
             color=color,
+        )
+        embed.set_footer(
+            text=f"System: {ostype}\nUptime: {sys_uptime}", icon_url=self.bot.user.display_avatar
         )
 
         botstats = (
@@ -495,13 +521,10 @@ class VrtUtils(commands.Cog):
             inline=False,
         )
 
-        embed.set_footer(
-            text=f"System: {ostype}\nUptime: {sys_uptime}", icon_url=self.bot.user.display_avatar
-        )
         return embed
 
     @commands.command()
-    async def getuser(self, ctx, *, user_id: Union[int, discord.User]):
+    async def getuser(self, ctx, *, user_id: t.Union[int, discord.User]):
         """Find a user by ID"""
         if isinstance(user_id, int):
             try:
@@ -789,8 +812,8 @@ class VrtUtils(commands.Cog):
     async def oldestmembers(
         self,
         ctx,
-        amount: Optional[int] = 10,
-        include_bots: Optional[bool] = False,
+        amount: t.Optional[int] = 10,
+        include_bots: t.Optional[bool] = False,
     ):
         """
         See which users have been in the server the longest
@@ -821,8 +844,8 @@ class VrtUtils(commands.Cog):
     async def oldestaccounts(
         self,
         ctx,
-        amount: Optional[int] = 10,
-        include_bots: Optional[bool] = False,
+        amount: t.Optional[int] = 10,
+        include_bots: t.Optional[bool] = False,
     ):
         """
         See which users have the oldest Discord accounts
@@ -972,3 +995,54 @@ class VrtUtils(commands.Cog):
             return await ctx.send("Minimum needs to be lower than maximum!")
         num = random.randint(minimum, maximum)
         await ctx.send(f"Result: `{num}`")
+
+    @commands.command(name="emojidata")
+    @commands.bot_has_permissions(embed_links=True)
+    async def emoji_info(
+        self, ctx: commands.Context, emoji: t.Union[discord.Emoji, discord.PartialEmoji, str]
+    ):
+        """Get info about an emoji"""
+
+        def _url():
+            emoji_unicode = []
+            for char in emoji:
+                char = hex(ord(char))[2:]
+                emoji_unicode.append(char)
+            if "200d" not in emoji_unicode:
+                emoji_unicode = list(filter(lambda c: c != "fe0f", emoji_unicode))
+            emoji_unicode = "-".join(emoji_unicode)
+            return f"https://twemoji.maxcdn.com/v/latest/72x72/{emoji_unicode}.png"
+
+        unescapable = string.ascii_letters + string.digits
+        embed = discord.Embed(color=ctx.author.color)
+        if isinstance(emoji, str):
+            if emoji.startswith("http"):
+                return await ctx.send("This is not an emoji!")
+
+            fail = "Unable to get emoji name"
+            txt = "\n".join(map(lambda x: unicodedata.name(x, fail), emoji)) + "\n\n"
+            unicode = ", ".join(f"\\{i}" if i not in unescapable else i for i in emoji)
+            category = ", ".join(unicodedata.category(c) for c in emoji)
+            txt += f"`Unicode:   `{unicode}\n"
+            txt += f"`Category:  `{category}\n"
+            embed.set_image(url=_url())
+        else:
+            txt = emoji.name + "\n\n"
+            txt += f"`ID:        `{emoji.id}\n"
+            txt += f"`Animated:  `{emoji.animated}\n"
+            txt += f"`Created:   `<t:{int(emoji.created_at.timestamp())}:F>\n"
+            embed.set_image(url=emoji.url)
+
+        if isinstance(emoji, discord.PartialEmoji):
+            txt += f"`Custom:    `{emoji.is_custom_emoji()}\n"
+        elif isinstance(emoji, discord.Emoji):
+            txt += f"`Managed:   `{emoji.managed}\n"
+            txt += f"`Server:    `{emoji.guild}\n"
+            txt += f"`Available: `{emoji.available}\n"
+            txt += f"`BotCanUse: `{emoji.is_usable()}\n"
+            if emoji.roles:
+                mentions = ", ".join([i.mention for i in emoji.roles])
+                embed.add_field(name="Roles", value=mentions)
+
+        embed.description = txt
+        await ctx.send(embed=embed)
