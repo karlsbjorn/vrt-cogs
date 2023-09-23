@@ -11,7 +11,6 @@ from time import perf_counter
 from typing import Optional, Union
 
 import discord
-import tabulate
 import validators
 from aiocache import cached
 from redbot.core import VersionInfo, bank, commands, version_info
@@ -80,7 +79,7 @@ class UserCommands(MixinMeta, ABC):
             # Try running it through profile generator blind to see if it errors
 
             params = {"bg_image": image_url}
-            await asyncio.to_thread(self.generate_profile, kwargs=params)
+            await asyncio.to_thread(self.generate_profile, **params)
         except Exception as e:
             if "cannot identify image file" in str(e):
                 await ctx.send(
@@ -809,6 +808,7 @@ class UserCommands(MixinMeta, ABC):
         bal = await bank.get_balance(user)
         currency_name = await bank.get_currency_name(ctx.guild)
 
+        role_icon = None
         if DPY2:
             pfp = user.display_avatar
             role_icon = user.top_role.display_icon
@@ -816,7 +816,6 @@ class UserCommands(MixinMeta, ABC):
                 role_icon = get_twemoji(role_icon)
         else:
             pfp = user.avatar_url
-            role_icon = None
 
         p = users[user_id]
         full = p["full"]
@@ -1102,19 +1101,21 @@ class UserCommands(MixinMeta, ABC):
                 i = sorted_users.index(i)
                 you = f"You: {i + 1}/{len(sorted_users)}\n"
 
+        if DPY2:
+            icon = ctx.guild.icon
+        else:
+            icon = ctx.guild.icon_url
+
         pages = math.ceil(len(sorted_users) / 10)
         start = 0
         stop = 10
-        title = (
-            _("**Star Leaderboard**\n")
-            + _("**Total ⭐'s: ")
-            + humanize_number(total_stars)
-            + "**\n"
-        )
+        title = _("Star Leaderboard")
+        base_desc = _("Total ⭐'s: {}\n").format(f"`{humanize_number(total_stars)}`")
+
         for p in range(pages):
             if stop > len(sorted_users):
                 stop = len(sorted_users)
-            table = []
+            txt = ""
             for i in range(start, stop, 1):
                 uid = sorted_users[i][0]
                 user = ctx.guild.get_member(int(uid))
@@ -1123,26 +1124,22 @@ class UserCommands(MixinMeta, ABC):
                 else:
                     user = uid
                 stars = sorted_users[i][1]
-                stars = f"{stars} ⭐"
-                table.append([stars, user])
-            data = tabulate.tabulate(table, tablefmt="presto", colalign=("right",))
+                txt += f"{i + 1}. {user} ({stars})\n"
+
             embed = discord.Embed(
-                description=f"{title}{box(data, lang='python')}",
+                title=title,
+                description=base_desc + box(txt, lang="python"),
                 color=discord.Color.random(),
             )
-            if DPY2:
-                if ctx.guild.icon:
-                    embed.set_thumbnail(url=ctx.guild.icon.url)
-            else:
-                embed.set_thumbnail(url=ctx.guild.icon_url)
 
             if you:
-                embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages} ｜ {you}")
+                embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages} ｜ {you}", icon_url=icon)
             else:
-                embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages}")
+                embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages}", icon_url=icon)
             embeds.append(embed)
             start += 10
             stop += 10
+
         if embeds:
             if len(embeds) == 1:
                 embed = embeds[0]

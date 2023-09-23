@@ -10,7 +10,6 @@ from aiohttp import ClientSession
 from redbot.core import commands
 from redbot.core.i18n import Translator
 from redbot.core.utils.chat_formatting import box, humanize_number
-from tabulate import tabulate
 
 DPY2 = True if discord.__version__ > "1.7.3" else False
 _ = Translator("LevelUp", __file__)
@@ -167,40 +166,40 @@ def get_leaderboard(
         sorted_users = sorted(lb.items(), key=lambda x: x[1]["voice"], reverse=True)
         title += _("Voice Leaderboard")
         key = "voice"
-        statname = _("Voicetime")
         col = "🎙️"
+        statname = _("Voicetime")
         total = time_formatter(sum(v["voice"] for v in lb.values()))
     elif "m" in stat.lower():
         sorted_users = sorted(lb.items(), key=lambda x: x[1]["messages"], reverse=True)
         title += _("Message Leaderboard")
         key = "messages"
-        statname = _("Messages")
         col = "💬"
+        statname = _("Messages")
         total = humanize_number(round(sum(v["messages"] for v in lb.values())))
     elif "s" in stat.lower():
         sorted_users = sorted(lb.items(), key=lambda x: x[1]["stars"], reverse=True)
         title += _("Star Leaderboard")
         key = "stars"
-        statname = _("Stars")
         col = "⭐"
+        statname = _("Stars")
         total = humanize_number(round(sum(v["stars"] for v in lb.values())))
     else:  # Exp
         sorted_users = sorted(lb.items(), key=lambda x: x[1]["xp"], reverse=True)
         title += _("Exp Leaderboard")
         key = "xp"
-        statname = _("Exp")
         col = "💡"
+        statname = _("Exp")
         total = humanize_number(round(sum(v["xp"] for v in lb.values())))
 
     if lbtype == "weekly":
         w = settings["weekly"]
-        desc = _("Total ") + f"{statname}: `{total}`\n"
+        desc = _("Total ") + f"{statname}: `{total}`{col}\n"
         desc += _("Last Reset: ") + f"<t:{w['last_reset']}:d>\n"
         if w["autoreset"]:
             tl = get_next_reset(w["reset_day"], w["reset_hour"])
             desc += _("Next Reset: ") + f"<t:{tl}:d> (<t:{tl}:R>)\n"
     else:
-        desc = _("Total") + f" {statname}: `{total}`\n"
+        desc = _("Total") + f" {statname}: `{total}`{col}\n"
 
     for i in sorted_users.copy():
         if not i[1][key]:
@@ -226,7 +225,7 @@ def get_leaderboard(
         if stop > len(sorted_users):
             stop = len(sorted_users)
 
-        table = []
+        txt = ""
         for i in range(start, stop, 1):
             uid = sorted_users[i][0]
             user_obj = ctx.guild.get_member(int(uid))
@@ -247,35 +246,25 @@ def get_leaderboard(
                 else:
                     stat = str(round(v))
 
-            if lbtype != "weekly" and key == "xp":
-                table.append([place, str(data["level"]), stat, user])
-            else:
-                table.append([place, stat, user])
+                if key == "xp" and lbtype != "weekly":
+                    stat += f" 🎖{data['level']}"
 
-        headers = ["#", col, "Name"]
-        if lbtype != "weekly" and key == "xp":
-            headers = ["#", "🎖", col, "Name"]
+            txt += f"{place}. {user} ({stat})\n"
 
-        msg = tabulate(
-            tabular_data=table,
-            headers=headers,
-            numalign="left",
-            stralign="left",
-        )
         embed = discord.Embed(
             title=title,
-            description=desc + f"{box(msg, lang='python')}",
+            description=desc + box(txt, lang="python"),
             color=discord.Color.random(),
         )
         if DPY2:
-            embed.set_thumbnail(url=ctx.guild.icon)
+            icon = ctx.guild.icon
         else:
-            embed.set_thumbnail(url=ctx.guild.icon_url)
+            icon = ctx.guild.icon_url
 
         if you:
-            embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages} | {you}")
+            embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages} | {you}", icon_url=icon)
         else:
-            embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages}")
+            embed.set_footer(text=_("Pages ") + f"{p + 1}/{pages}", icon_url=icon)
 
         embeds.append(embed)
         start += 10

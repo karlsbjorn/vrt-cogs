@@ -429,7 +429,7 @@ class SupportButton(Button):
                 if conf["auto_add"] and not support_mentions:
                     for role in support_roles:
                         for member in role.members:
-                            await channel_or_thread.add_user(member)
+                            asyncio.create_task(channel_or_thread.add_user(member))
             else:
                 if alt_cid := panel.get("alt_channel"):
                     alt_channel = guild.get_channel(alt_cid)
@@ -536,7 +536,11 @@ class SupportButton(Button):
             with contextlib.suppress(discord.HTTPException):
                 await interaction.followup.send(embed=em, ephemeral=True)
         else:
-            await interaction.response.send_message(embed=em, ephemeral=True)
+            try:
+                await interaction.response.send_message(embed=em, ephemeral=True)
+            except discord.NotFound:
+                with contextlib.suppress(discord.HTTPException, discord.NotFound):
+                    await interaction.channel.send(embed=em, delete_after=5)
 
         if logchannel:
             ts = int(now.timestamp())
