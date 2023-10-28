@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import string
 from multiprocessing.pool import Pool
 from time import perf_counter
 from typing import Callable, Dict, List, Optional, Union
@@ -8,7 +9,8 @@ from typing import Callable, Dict, List, Optional, Union
 import discord
 import tiktoken
 from discord.ext import tasks
-from pydantic.error_wrappers import ValidationError
+from pydantic import ValidationError
+from rapidfuzz import fuzz
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
@@ -16,7 +18,13 @@ from .abc import CompositeMetaClass
 from .commands import AssistantCommands
 from .common.api import API
 from .common.chat import ChatHandler
-from .common.constants import CREATE_MEMORY, EDIT_MEMORY, SEARCH_MEMORIES
+from .common.constants import (
+    CREATE_MEMORY,
+    EDIT_MEMORY,
+    GET_CHANNEL_ID,
+    GET_CHANNEL_NAMED,
+    SEARCH_MEMORIES,
+)
 from .common.models import DB, Embedding, EmbeddingEntryExists, NoAPIKey
 from .common.utils import json_schema_invalid
 from .listener import AssistantListener
@@ -52,7 +60,7 @@ class Assistant(
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "4.14.1"
+    __version__ = "4.17.2"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -93,12 +101,12 @@ class Assistant(
         start = perf_counter()
         data = await self.config.db()
         try:
-            self.db = await asyncio.to_thread(DB.parse_obj, data)
+            self.db = await asyncio.to_thread(DB.model_validate, data)
         except ValidationError:
             # Try clearing conversations
             if "conversations" in data:
                 del data["conversations"]
-            self.db = await asyncio.to_thread(DB.parse_obj, data)
+            self.db = await asyncio.to_thread(DB.model_validate, data)
 
         log.info(f"Config loaded in {round((perf_counter() - start) * 1000, 2)}ms")
         await asyncio.to_thread(self._cleanup_db)
@@ -107,6 +115,8 @@ class Assistant(
         await self.register_function(self.qualified_name, CREATE_MEMORY)
         await self.register_function(self.qualified_name, SEARCH_MEMORIES)
         await self.register_function(self.qualified_name, EDIT_MEMORY)
+        await self.register_function(self.qualified_name, GET_CHANNEL_ID)
+        await self.register_function(self.qualified_name, GET_CHANNEL_NAMED)
 
         logging.getLogger("openai").setLevel(logging.WARNING)
         logging.getLogger("aiocache").setLevel(logging.WARNING)
@@ -123,7 +133,7 @@ class Assistant(
             start = perf_counter()
             if not self.db.persistent_conversations:
                 self.db.conversations.clear()
-            dump = await asyncio.to_thread(self.db.dict)
+            dump = await asyncio.to_thread(self.db.model_dump, mode="json")
             await self.config.db.set(dump)
             txt = f"Config saved in {round((perf_counter() - start) * 1000, 2)}ms"
             if self.first_run:
@@ -171,10 +181,10 @@ class Assistant(
                     log.debug("Cleaning deleted max retention override role")
                     del conf.max_retention_role_override[role_id]
                     cleaned = True
-            for role_id in conf.model_role_overrides.copy():
+            for role_id in conf.role_overrides.copy():
                 if not guild.get_role(role_id):
                     log.debug("Cleaning deleted model override role")
-                    del conf.model_role_overrides[role_id]
+                    del conf.role_overrides[role_id]
                     cleaned = True
             for role_id in conf.max_time_role_override.copy():
                 if not guild.get_role(role_id):
@@ -182,11 +192,7 @@ class Assistant(
                     del conf.max_time_role_override[role_id]
                     cleaned = True
             for obj_id in conf.blacklist.copy():
-                discord_obj = (
-                    guild.get_role(obj_id)
-                    or guild.get_member(obj_id)
-                    or guild.get_channel_or_thread(obj_id)
-                )
+                discord_obj = guild.get_role(obj_id) or guild.get_member(obj_id) or guild.get_channel_or_thread(obj_id)
                 if not discord_obj:
                     log.debug("Cleaning up invalid blacklisted ID")
                     conf.blacklist.remove(obj_id)
@@ -305,6 +311,68 @@ class Assistant(
         conf.embeddings[memory_name].update()
         asyncio.create_task(self.save_conf())
         return "Your memory has been updated!"
+
+    async def get_channel_name_from_id(
+        self,
+        guild: discord.Guild,
+        channel_id: str | int,
+        *args,
+        **kwargs,
+    ):
+        if isinstance(channel_id, str):
+            if not channel_id.isdigit():
+                return "channel_id must be a valid integer!"
+        if channel := guild.get_channel_or_thread(int(channel_id)):
+            ctype = "voice" if isinstance(channel, discord.VoiceChannel) else "text"
+            return f"the name of the {ctype} channel with ID {channel_id} is {channel.name}"
+        return "a channel with that ID could not be found!"
+
+    async def get_channel_id_from_name(
+        self,
+        guild: discord.Guild,
+        channel_name: str,
+        *args,
+        **kwargs,
+    ):
+        def clean_name(name: str) -> str:
+            chars = string.ascii_letters + string.hexdigits
+            for char in name:
+                if char not in chars:
+                    name = name.replace(char, "")
+            return name
+
+        def match_channels() -> tuple:
+            channels = list(guild.channels) + list(guild.threads) + list(guild.forums)
+            scores = [(i, fuzz.ratio(clean_name(channel_name.lower()), clean_name(i.name.lower()))) for i in channels]
+            sorted_scores = sorted(scores, key=lambda x: x[1], reverse=True)
+            return sorted_scores[0]
+
+        channel, score = await asyncio.to_thread(match_channels)
+        if score < 50:
+            return "could not find a channel that closely matches that name"
+        ctype = "voice" if isinstance(channel, discord.VoiceChannel) else "text"
+        if clean_name(channel.name) == clean_name(channel_name):
+            return f"The ID for the {ctype} channel named {channel_name} is {channel.id}"
+        return (
+            f"found {ctype} channel ID {channel.id} for {channel_name} with a relatedness score of {round(score)}/100"
+        )
+
+    async def make_search_url(
+        self,
+        site: str,
+        search_query: str,
+        *args,
+        **kwargs,
+    ):
+        site = site.lower()
+        chars = string.ascii_letters + string.hexdigits
+        for char in search_query:
+            if char not in chars:
+                search_query = search_query.replace(char, "")
+        search_query = search_query.replace(" ", "+")
+        if site == "youtube":
+            return f"https://www.youtube.com/results?search_query={search_query}"
+        return f"https://www.google.com/search?q={search_query}"
 
     # ------------------ 3rd PARTY ACCESSIBLE METHODS ------------------
     async def add_embedding(

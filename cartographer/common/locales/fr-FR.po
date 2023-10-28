@@ -1,0 +1,249 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: vrt-cogs\n"
+"POT-Creation-Date: 2023-10-16 17:37-0400\n"
+"PO-Revision-Date: 2023-10-17 14:05\n"
+"Last-Translator: \n"
+"Language-Team: French\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: redgettext 3.4.2\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+"X-Crowdin-Project: vrt-cogs\n"
+"X-Crowdin-Project-ID: 550681\n"
+"X-Crowdin-Language: fr\n"
+"X-Crowdin-File: /main/cartographer/common/locales/messages.pot\n"
+"X-Crowdin-File-ID: 78\n"
+"Language: fr_FR\n"
+
+#: common\formatting.py:11
+msgid "`Created:        `{}\n"
+"`Name:           `{}\n"
+"`AFK Channel:    `{}\n"
+"`AFK Timeout:    `{}\n"
+"`Verification:   `{}\n"
+"`Notifications:  `{}\n"
+"`Locale:         `{}\n"
+"`Role Count:     `{}\n"
+"`Members Saved:  `{}\n"
+"`Categories:     `{}\n"
+"`Text Channels:  `{}\n"
+"`Voice Channels: `{}\n"
+"`Forums:         `{}\n"
+msgstr "`Créé :        `{}\n"
+"`Nom :           `{}\n"
+"`Canal AFK :    `{}\n"
+"`Temps d'attente de l'AFK : `{}\n"
+"`Vérification : `{}\n"
+"`Notifications :  `{}\n"
+"`Langue :         `{}\n"
+"`Nombre de rôles :     `{}\n"
+"`Membres sauvegardés :  `{}\n"
+"`Catégories :     `{}\n"
+"`Canaux de texte :  `{}\n"
+"`Canaux vocaux : `{}\n"
+"`Forums :         `{}\n"
+
+#: common\formatting.py:45
+msgid "Controls"
+msgstr "Contrôles"
+
+#: common\formatting.py:46
+msgid "- Backup Current Server: 📥\n"
+"- Restore Here: 🔄\n"
+"- Switch Servers: 🔍\n"
+"- Set AutoBackup Interval: ⌛\n"
+"- Delete Backup: 🗑️\n"
+msgstr "- Sauvegarde du serveur actuel : 📥\n"
+"- Restaurer ici : 🔄\n"
+"- Changer de serveur : 🔍\n"
+"- Définir l'intervalle d'auto-sauvegarde : ⌛\n"
+"- Supprimer la sauvegarde : 🗑️\n"
+
+#: common\formatting.py:53
+msgid "Settings"
+msgstr "Paramètres"
+
+#: common\formatting.py:54
+msgid "- Auto Backup Interval Hours: {}\n"
+"- Last Backup: {}"
+msgstr "- Intervalle de sauvegarde automatique en heures : {}\n"
+"- Dernière sauvegarde : {}"
+
+#: common\formatting.py:57
+msgid "Cartographer Backups for {}"
+msgstr "Sauvegardes du cartographe pour {}"
+
+#: common\formatting.py:64
+msgid "Page {}"
+msgstr "Page {}"
+
+#: common\formatting.py:67
+msgid "There are no backups for this server yet!"
+msgstr "Il n'y a pas encore de sauvegardes pour ce serveur !"
+
+#: common\models.py:178 common\models.py:189 common\models.py:216
+msgid "Restored from backup"
+msgstr "Restauré à partir d'une sauvegarde"
+
+#: common\models.py:694
+msgid "Cartographer Restore"
+msgstr "Restauration du cartographe"
+
+#: common\models.py:695
+msgid " (Removal)"
+msgstr " (Déménagement)"
+
+#: common\models.py:835
+msgid "Server restore has completed successfully!"
+msgstr "La restauration du serveur s'est achevée avec succès !"
+
+#: common\views.py:36
+msgid "That is not a number!"
+msgstr "Ce n'est pas un chiffre !"
+
+#: common\views.py:47
+msgid "Confirmation"
+msgstr "Confirmation"
+
+#: common\views.py:49
+msgid "Are you SURE?"
+msgstr "Êtes-vous sûr ?"
+
+#: common\views.py:52
+msgid "THIS CANNOT BE UNDONE!"
+msgstr "CELA NE PEUT ÊTRE ANNULÉ !"
+
+#: common\views.py:56
+msgid "Remove Old"
+msgstr "Supprimer l'ancien"
+
+#: common\views.py:59
+msgid "removes unsaved channels/roles"
+msgstr "supprime les chaînes/rôles non sauvegardés"
+
+#: common\views.py:64
+msgid "response must be a string!"
+msgstr "la réponse doit être une chaîne de caractères !"
+
+#: common\views.py:84
+msgid "Close"
+msgstr "Fermer"
+
+#: common\views.py:88
+msgid "This isn't your menu!"
+msgstr "Ce n'est pas votre menu !"
+
+#: common\views.py:129
+msgid "Backing up {}!"
+msgstr "Sauvegarde {} !"
+
+#: common\views.py:133
+msgid "Backup created!"
+msgstr "Sauvegarde créée !"
+
+#: common\views.py:136
+msgid "- Backup contains roles with duplcate names! Only one role per unique name can be restored!"
+msgstr "- La sauvegarde contient des rôles avec des noms en double ! Un seul rôle par nom unique peut être restauré !"
+
+#: common\views.py:140
+msgid "- Backup contains categories with duplcate names! Only one category per unique name can be restored!"
+msgstr "- La sauvegarde contient des catégories avec des noms doubles ! Seule une catégorie par nom unique peut être restaurée !"
+
+#: common\views.py:144
+msgid "- Backup contains text channels with duplcate names! Only one text channel per unique name can be restored!"
+msgstr "- La sauvegarde contient des canaux de texte avec des noms doubles ! Un seul canal de texte par nom unique peut être restauré !"
+
+#: common\views.py:148
+msgid "- Backup contains voice channels with duplcate names! Only one voice channel per unique name can be restored!"
+msgstr "- La sauvegarde contient des canaux vocaux avec des noms doubles ! Un seul canal vocal par nom unique peut être restauré !"
+
+#: common\views.py:152
+msgid "- Backup contains forum channels with duplcate names! Only one forum channel per unique name can be restored!"
+msgstr "- La sauvegarde contient des canaux de forum avec des noms doubles ! Un seul canal de forum par nom unique peut être restauré !"
+
+#: common\views.py:162
+msgid "No backups to restore!"
+msgstr "Pas de sauvegardes à restaurer !"
+
+#: common\views.py:174
+msgid "Your backup is being restored!"
+msgstr "Votre sauvegarde est en cours de restauration !"
+
+#: common\views.py:176
+msgid "- Backup contains roles with duplcate names! Only one role per unique name will be restored!"
+msgstr "- La sauvegarde contient des rôles avec des noms en double ! Seul un rôle par nom unique sera restauré !"
+
+#: common\views.py:180
+msgid "- Backup contains categories with duplcate names! Only one category per unique name will be restored!"
+msgstr "- La sauvegarde contient des catégories avec des noms doubles ! Seule une catégorie par nom unique sera restaurée !"
+
+#: common\views.py:184
+msgid "- Backup contains text channels with duplcate names! Only one text channel per unique name will be restored!"
+msgstr "- La sauvegarde contient des canaux de texte avec des noms doubles ! Un seul canal de texte par nom unique sera restauré !"
+
+#: common\views.py:188
+msgid "- Backup contains voice channels with duplcate names! Only one voice channel per unique name will be restored!"
+msgstr "- La sauvegarde contient des canaux vocaux avec des noms doubles ! Seul un canal vocal par nom unique sera restauré !"
+
+#: common\views.py:192
+msgid "- Backup contains forum channels with duplcate names! Only one forum channel per unique name will be restored!"
+msgstr "- La sauvegarde contient des canaux de forum avec des noms doubles ! Seul un canal de forum par nom unique sera restauré !"
+
+#: common\views.py:197
+msgid "Restore has been cancelled!"
+msgstr "La restauration a été annulée !"
+
+#: common\views.py:202
+msgid "Switch Servers"
+msgstr "Serveurs de commutation"
+
+#: common\views.py:202
+msgid "Server ID"
+msgstr "ID du serveur"
+
+#: common\views.py:202
+msgid "Enter the ID of the server"
+msgstr "Saisir l'ID du serveur"
+
+#: common\views.py:209
+msgid "I am not in that server!"
+msgstr "Je ne suis pas dans ce serveur !"
+
+#: common\views.py:213
+msgid "You do not appear to be in that server!"
+msgstr "Vous ne semblez pas faire partie de ce serveur !"
+
+#: common\views.py:216
+msgid "You can only switch to servers that you are an administrator of!"
+msgstr "Vous ne pouvez basculer que vers les serveurs dont vous êtes l'administrateur !"
+
+#: common\views.py:226
+msgid "Auto backups have been disabled by the bot owner!"
+msgstr "Les sauvegardes automatiques ont été désactivées par le propriétaire du bot !"
+
+#: common\views.py:228
+msgid "Auto Backup Interval"
+msgstr "Intervalle de sauvegarde automatique"
+
+#: common\views.py:228
+msgid "Interval Hours"
+msgstr "Heures d'intervalle"
+
+#: common\views.py:228
+msgid "Hours in-between backups"
+msgstr "Heures entre les sauvegardes"
+
+#: common\views.py:234
+msgid "Auto-backup interval hours has been set to {}"
+msgstr "L'intervalle de sauvegarde automatique en heures a été réglé sur {}"
+
+#: common\views.py:246
+msgid "No backups to delete!"
+msgstr "Pas de sauvegardes à supprimer !"
+
+#: common\views.py:252
+msgid "Backup deleted!"
+msgstr "Sauvegarde supprimée !"
+

@@ -10,10 +10,10 @@ from aiocache import cached
 from discord import app_commands
 from redbot.core import commands
 from redbot.core.bot import Red
-from redbot.core.i18n import Translator, cog_i18n
+from redbot.core.i18n import Translator, cog_i18n, set_contextual_locales_from_guild
 from redbot.core.utils.mod import is_admin_or_superior, is_mod_or_superior
 
-from .formatter import HELP, IGNORE, CustomCmdFmt
+from .formatter import IGNORE, CustomCmdFmt
 
 log = logging.getLogger("red.vrt.autodocs")
 _ = Translator("AutoDocs", __file__)
@@ -29,13 +29,11 @@ class AutoDocs(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "0.6.4"
+    __version__ = "0.6.7"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
-        txt = _("{}\nCog Version: {}\nAuthor: {}").format(
-            helpcmd, self.__version__, self.__author__
-        )
+        txt = _("{}\nCog Version: {}\nAuthor: {}").format(helpcmd, self.__version__, self.__author__)
         return txt
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
@@ -48,6 +46,7 @@ class AutoDocs(commands.Cog):
     def generate_readme(
         self,
         cog: commands.Cog,
+        guild: discord.Guild,
         prefix: str,
         replace_botname: bool,
         extended_info: bool,
@@ -58,7 +57,8 @@ class AutoDocs(commands.Cog):
         columns = [_("name"), _("text")]
         rows = []
         cog_name = cog.qualified_name
-        docs = f"# {cog_name} {HELP}\n\n"
+        helptxt = _("Help")
+        docs = f"# {cog_name} {helptxt}\n\n"
         cog_help = cog.help if cog.help else None
         if not embedding_style and cog_help:
             cog_help = cog_help.replace("\n", "<br/>")
@@ -121,9 +121,7 @@ class AutoDocs(commands.Cog):
         replace_botname=_("Replace all occurrences of [botname] with the bots name"),
         extended_info=_("Include extra info like converters and their docstrings"),
         include_hidden=_("Include hidden commands"),
-        privilege_level=_(
-            "Hide commands above specified privilege level (user, mod, admin, guildowner, botowner)"
-        ),
+        privilege_level=_("Hide commands above specified privilege level (user, mod, admin, guildowner, botowner)"),
         csv_export=_("Include a csv with each command isolated per row"),
     )
     @commands.is_owner()
@@ -155,9 +153,8 @@ class AutoDocs(commands.Cog):
         **Note** If `all` is specified for cog_name, all currently loaded non-core cogs will have docs generated for
         them and sent in a zip file
         """
-        prefix = (
-            (await self.bot.get_valid_prefixes(ctx.guild))[0].strip() if replace_prefix else ""
-        )
+        await set_contextual_locales_from_guild(self.bot, ctx.guild)
+        prefix = (await self.bot.get_valid_prefixes(ctx.guild))[0].strip() if replace_prefix else ""
         async with ctx.typing():
             if cog_name == "all":
                 buffer = BytesIO()
@@ -171,6 +168,7 @@ class AutoDocs(commands.Cog):
                         partial_func = functools.partial(
                             self.generate_readme,
                             cog,
+                            ctx.guild,
                             prefix,
                             replace_botname,
                             extended_info,
@@ -209,6 +207,7 @@ class AutoDocs(commands.Cog):
                 partial_func = functools.partial(
                     self.generate_readme,
                     cog,
+                    ctx.guild,
                     prefix,
                     replace_botname,
                     extended_info,
@@ -238,9 +237,7 @@ class AutoDocs(commands.Cog):
         cogs = set("all")
         for cmd in self.bot.walk_commands():
             cogs.add(str(cmd.cog_name).strip())
-        return [app_commands.Choice(name=i, value=i) for i in cogs if string.lower() in i.lower()][
-            :25
-        ]
+        return [app_commands.Choice(name=i, value=i) for i in cogs if string.lower() in i.lower()][:25]
 
     @makedocs.autocomplete("cog_name")
     async def get_cog_names(self, inter: discord.Interaction, current: str):
@@ -284,9 +281,7 @@ class AutoDocs(commands.Cog):
         cog = self.bot.get_cog(cog_name)
         if not cog:
             return "Could not find that cog, check loaded cogs first"
-        names = [i.qualified_name for i in cog.walk_app_commands()] + [
-            i.qualified_name for i in cog.walk_commands()
-        ]
+        names = [i.qualified_name for i in cog.walk_app_commands()] + [i.qualified_name for i in cog.walk_commands()]
         joined = "\n".join(names)
         return f"Available commands for the {cog_name} cog:\n{joined}"
 

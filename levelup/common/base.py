@@ -2,11 +2,11 @@ import asyncio
 import datetime
 import logging
 import math
-import os.path
 import random
 import traceback
 from abc import ABC
 from io import BytesIO
+from pathlib import Path
 from time import perf_counter
 from typing import Optional, Union
 
@@ -14,6 +14,7 @@ import discord
 import validators
 from aiocache import cached
 from redbot.core import VersionInfo, bank, commands, version_info
+from redbot.core.data_manager import bundled_data_path, cog_data_path
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import box, humanize_list, humanize_number
 
@@ -30,16 +31,13 @@ from levelup.utils.formatter import (
     time_formatter,
 )
 
-from .abc import MixinMeta
-
-# from .generator import Generator
+from ..abc import MixinMeta
 
 if version_info >= VersionInfo.from_str("3.5.0"):
     from .dpymenu import DEFAULT_CONTROLS, menu
 
     DPY2 = True
 else:
-    # from .dislashmenu import menu, DEFAULT_CONTROLS
     from .menus import DEFAULT_CONTROLS, menu
 
     DPY2 = False
@@ -82,9 +80,7 @@ class UserCommands(MixinMeta, ABC):
             await asyncio.to_thread(self.generate_profile, **params)
         except Exception as e:
             if "cannot identify image file" in str(e):
-                await ctx.send(
-                    _("Uh Oh, looks like that is not a valid image, cannot identify the file")
-                )
+                await ctx.send(_("Uh Oh, looks like that is not a valid image, cannot identify the file"))
                 return
             else:
                 log.warning(f"background set failed: {traceback.format_exc()}")
@@ -93,38 +89,44 @@ class UserCommands(MixinMeta, ABC):
         return True
 
     async def get_or_fetch_fonts(self):
-        fonts = os.listdir(os.path.join(self.path, "fonts"))
-        same = all([name in self.fdata["names"] for name in fonts])
-        if same and self.fdata["img"]:
-            img = self.fdata["img"]
-        else:
+        maindir = bundled_data_path(self)
+        savedir = cog_data_path(self)
+        fonts = maindir / "fonts"
+        saved_fonts = savedir / "fonts"
+        available = list(fonts.iterdir()) + list(saved_fonts.iterdir())
+        match = all(i.name in self.fdata["names"] for i in available)
+        if match and self.fdata["img"]:
+            return self.fdata["img"]
+
+        try:
             task = asyncio.to_thread(self.get_all_fonts)
-            try:
-                img = await asyncio.wait_for(task, timeout=60)
-                self.fdata["img"] = img
-                self.fdata["names"] = fonts
-            except asyncio.TimeoutError:
-                img = None
-        return img
+            img = await asyncio.wait_for(task, timeout=60)
+            self.fdata["img"] = img
+            self.fdata["names"] = [i.name for i in available]
+            return img
+        except asyncio.TimeoutError:
+            log.warning("get_or_fetch_fonts took too long to generate!")
 
     async def get_or_fetch_backgrounds(self):
-        backgrounds = os.listdir(os.path.join(self.path, "backgrounds"))
-        same = all([name in self.fdata["names"] for name in backgrounds])
-        if same and self.fdata["img"]:
-            img = self.fdata["img"]
-        else:
-            task = asyncio.to_thread(self.get_all_backgrounds)
-            try:
-                img = await asyncio.wait_for(task, timeout=60)
-                self.bgdata["img"] = img
-                self.bgdata["names"] = backgrounds
-            except asyncio.TimeoutError:
-                img = None
-        return img
+        maindir = bundled_data_path(self)
+        savedir = cog_data_path(self)
+        backgrounds = maindir / "backgrounds"
+        saved_backgrounds = savedir / "backgrounds"
+        available = list(backgrounds.iterdir()) + list(saved_backgrounds.iterdir())
+        match = all(i.name in self.bgdata["names"] for i in available)
+        if match and self.bgdata["img"]:
+            return self.bgdata["img"]
 
-    async def get_or_fetch_profile(
-        self, user: discord.Member, args: dict, full: bool
-    ) -> Union[discord.File, None]:
+        try:
+            task = asyncio.to_thread(self.get_all_backgrounds)
+            img = await asyncio.wait_for(task, timeout=60)
+            self.bgdata["img"] = img
+            self.bgdata["names"] = [i.name for i in available]
+            return img
+        except asyncio.TimeoutError:
+            log.warning("get_or_fetch_backgrounds took too long to generate!")
+
+    async def get_or_fetch_profile(self, user: discord.Member, args: dict, full: bool) -> Union[discord.File, None]:
         gid = user.guild.id
         uid = str(user.id)
         now = datetime.datetime.now()
@@ -147,7 +149,10 @@ class UserCommands(MixinMeta, ABC):
         ext = "GIF" if animated else "WEBP"
         buffer = BytesIO()
         buffer.name = f"{user.id}.{ext.lower()}"
-        img.save(buffer, save_all=True, format=ext)
+        try:
+            img.save(buffer, save_all=True, format=ext)
+        except KeyError:
+            img.save(buffer, save_all=True, format="PNG")
         buffer.seek(0)
         return discord.File(buffer, filename=buffer.name)
 
@@ -191,11 +196,7 @@ class UserCommands(MixinMeta, ABC):
             else:
                 time_left = cooldown - td
                 tstring = time_formatter(time_left)
-                msg = (
-                    _("You need to wait ")
-                    + f"**{tstring}**"
-                    + _(" before you can give more stars!")
-                )
+                msg = _("You need to wait ") + f"**{tstring}**" + _(" before you can give more stars!")
                 return await ctx.send(msg)
         mention = self.data[guild_id]["mention"]
         users = self.data[guild_id]["users"]
@@ -238,7 +239,10 @@ class UserCommands(MixinMeta, ABC):
         img = await self.gen_levelup_img(args)
         temp = BytesIO()
         temp.name = f"{ctx.author.id}.webp"
-        img.save(temp, format="WEBP")
+        try:
+            img.save(temp, format="WEBP")
+        except KeyError:
+            img.save(temp, format="PNG")
         temp.seek(0)
         file = discord.File(temp)
         await ctx.send(file=file)
@@ -283,28 +287,43 @@ class UserCommands(MixinMeta, ABC):
                 description=desc,
                 color=ctx.author.color,
             )
+
+            maindir = bundled_data_path(self)
+            savedir = cog_data_path(self)
+            backgrounds = maindir / "backgrounds"
+            saved_backgrounds = savedir / "backgrounds"
+            available = list(backgrounds.iterdir()) + list(saved_backgrounds.iterdir())
+
             file = None
             if bg:
-                if "http" in bg.lower():
+                if bg.lower().startswith("http"):
                     em.set_image(url=bg)
                 elif bg != "random":
-                    bgpaths = os.path.join(self.path, "backgrounds")
-                    defaults = [i for i in os.listdir(bgpaths)]
-                    if bg in defaults:
-                        bgpath = os.path.join(bgpaths, bg)
-                        try:
-                            file = discord.File(bgpath, filename=bg)
-                            em.set_image(url=f"attachment://{bg}")
-                        except (WindowsError, PermissionError, OSError):
-                            pass
+                    for bgfile in available:
+                        if bg.lower() in bgfile.name:
+                            try:
+                                file = discord.File(bgfile, filename=bgfile.name)
+                                em.set_image(url=f"attachment://{bg}")
+                                break
+                            except (WindowsError, PermissionError, OSError):
+                                pass
+
             await ctx.send(embed=em, file=file)
 
-    @set_profile.command(name="bgpath")
+    @set_profile.command(name="defaultbgpath")
     @commands.is_owner()
     async def get_bg_path(self, ctx: commands.Context):
         """Get folder path for this cog's default backgrounds"""
-        bgpath = os.path.join(self.path, "backgrounds")
+        bgpath = bundled_data_path(self) / "backgrounds"
         txt = _("Your default background folder path is \n")
+        await ctx.send(f"{txt}`{bgpath}`")
+
+    @set_profile.command(name="savedbgpath")
+    @commands.is_owner()
+    async def get_saved_bg_path(self, ctx: commands.Context):
+        """Get folder path for this cog's saved backgrounds"""
+        bgpath = cog_data_path(self) / "backgrounds"
+        txt = _("Your saved background folder path is \n")
         await ctx.send(f"{txt}`{bgpath}`")
 
     @set_profile.command(name="addbackground")
@@ -315,7 +334,11 @@ class UserCommands(MixinMeta, ABC):
 
         **Arguments**
         `preferred_filename` - If a name is given, it will be saved as this name instead of the filename
-        **Note:** do not include the file extension in the preferred name, it will be added automatically
+
+        **DISCLAIMER**
+        - Do not replace any existing file names with custom images
+        - If you add broken or corrupt images it can break the cog
+        - Do not include the file extension in the preferred name, it will be added automatically
         """
         content = get_attachments(ctx)
         if not content:
@@ -323,10 +346,9 @@ class UserCommands(MixinMeta, ABC):
         valid = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
         url = content[0].url
         filename = content[0].filename
-        if not any([i in filename.lower() for i in valid]):
+        if not any(filename.lower().endswith(i) for i in valid):
             return await ctx.send(
-                _("That is not a valid format, must be on of the following extensions: ")
-                + humanize_list(valid)
+                _("That is not a valid format, must be on of the following extensions: ") + humanize_list(valid)
             )
         ext = ".png"
         for ext in valid:
@@ -336,35 +358,44 @@ class UserCommands(MixinMeta, ABC):
         if not bytes_file:
             return await ctx.send(_("I was not able to get the file from Discord"))
         if preferred_filename:
-            filename = f"{preferred_filename}{ext}"
-        bgpath = os.path.join(self.path, "backgrounds")
-        filepath = os.path.join(bgpath, filename)
-        with open(filepath, "wb") as f:
-            f.write(bytes_file)
+            if Path(filename).suffix.lower() == Path(preferred_filename).suffix.lower():
+                filename = preferred_filename
+            else:
+                filename = f"{preferred_filename}{ext}"
+        filepath = cog_data_path(self) / "backgrounds" / filename
+        filepath.write_bytes(bytes_file)
         await ctx.send(_("Your custom background has been saved as ") + f"`{filename}`")
 
     @set_profile.command(name="rembackground")
     @commands.is_owner()
     async def remove_background(self, ctx: commands.Context, *, filename: str):
         """Remove a default background from the cog's backgrounds folder"""
-        bgpath = os.path.join(self.path, "backgrounds")
-        for f in os.listdir(bgpath):
-            if filename.lower() in f.lower():
+        savedir = cog_data_path(self) / "backgrounds"
+        for file in savedir.iterdir():
+            if filename.lower() in file.name.lower():
                 break
         else:
             return await ctx.send(_("I could not find any background images with that name"))
-        file = os.path.join(bgpath, f)
+
         try:
-            os.remove(file)
+            file.unlink(missing_ok=True)
         except Exception as e:
             return await ctx.send(_("Could not delete file: ") + str(e))
-        await ctx.send(_("Background `") + f + _("` Has been removed!"))
+        await ctx.send(_("Background named {} has been removed!").format(f"`{file.name}`"))
 
-    @set_profile.command(name="fontpath")
+    @set_profile.command(name="defaultfontpath")
     @commands.is_owner()
     async def get_font_path(self, ctx: commands.Context):
-        """Get folder path for this cog's default backgrounds"""
-        fpath = os.path.join(self.path, "fonts")
+        """Get folder path for this cog's default fonts"""
+        fpath = bundled_data_path(self) / "fonts"
+        txt = _("Your default font folder path is \n")
+        await ctx.send(f"{txt}`{fpath}`")
+
+    @set_profile.command(name="savedfontpath")
+    @commands.is_owner()
+    async def get_saved_font_path(self, ctx: commands.Context):
+        """Get folder path for this cog's saved fonts"""
+        fpath = bundled_data_path(self) / "fonts"
         txt = _("Your custom font folder path is \n")
         await ctx.send(f"{txt}`{fpath}`")
 
@@ -385,9 +416,7 @@ class UserCommands(MixinMeta, ABC):
         url = content[0].url
         filename = content[0].filename
         if not any([i in filename.lower() for i in valid]):
-            return await ctx.send(
-                _("That is not a valid format, must be `.ttf` or `.otf` extensions")
-            )
+            return await ctx.send(_("That is not a valid format, must be `.ttf` or `.otf` extensions"))
         ext = ".ttf"
         for ext in valid:
             if ext in filename.lower():
@@ -396,42 +425,44 @@ class UserCommands(MixinMeta, ABC):
         if not bytes_file:
             return await ctx.send(_("I was not able to get the file from Discord"))
         if preferred_filename:
-            filename = f"{preferred_filename}{ext}"
-        fpath = os.path.join(self.path, "fonts")
-        filepath = os.path.join(fpath, filename)
-        with open(filepath, "wb") as f:
-            f.write(bytes_file)
+            if Path(filename).suffix.lower() == Path(preferred_filename).suffix.lower():
+                filename = preferred_filename
+            else:
+                filename = f"{preferred_filename}{ext}"
+
+        filepath = cog_data_path(self) / "fonts" / filename
+        filepath.write_bytes(bytes_file)
         await ctx.send(_("Your custom font file has been saved as ") + f"`{filename}`")
 
     @set_profile.command(name="remfont")
     @commands.is_owner()
     async def remove_font(self, ctx: commands.Context, *, filename: str):
         """Remove a font from the cog's font folder"""
-        fpath = os.path.join(self.path, "fonts")
-        for f in os.listdir(fpath):
-            if filename.lower() in f.lower():
+        savedir = cog_data_path(self) / "fonts"
+        for file in savedir.iterdir():
+            if filename.lower() in file.name.lower():
                 break
         else:
             return await ctx.send(_("I could not find any fonts with that name"))
-        file = os.path.join(fpath, f)
+
         try:
-            os.remove(file)
+            file.unlink(missing_ok=True)
         except Exception as e:
             return await ctx.send(_("Could not delete file: ") + str(e))
-        await ctx.send(_("Font `") + f + _("` Has been removed!"))
+        await ctx.send(_("Font named {} has been removed!").format(f"`{file.name}`"))
 
     @set_profile.command(name="backgrounds")
     @commands.cooldown(1, 30, commands.BucketType.user)
     @commands.bot_has_permissions(attach_files=True)
-    async def view_default_backgrounds(self, ctx: commands.Context):
-        """View the default backgrounds"""
+    async def view_all_backgrounds(self, ctx: commands.Context):
+        """View the all available backgrounds"""
         if not self.data[ctx.guild.id]["usepics"]:
             txt = _("Image profiles are disabled on this server so this command is off")
             if ctx.author.guild_permissions.manage_messages:
-                txt += _(
-                    "\nUse the `{}` command to toggle image profiles and enable this command."
-                ).format(f"{ctx.clean_prefix}lset embeds")
-            await ctx.send(txt)
+                txt += _("\nUse the `{}` command to toggle image profiles and enable this command.").format(
+                    f"{ctx.clean_prefix}lset embeds"
+                )
+            return await ctx.send(txt)
 
         async with ctx.typing():
             img = await self.get_or_fetch_backgrounds()
@@ -441,14 +472,12 @@ class UserCommands(MixinMeta, ABC):
             try:
                 img.save(buffer, format="WEBP")
                 buffer.name = f"{ctx.author.id}.webp"
-            except ValueError:
+            except (ValueError, KeyError):
                 img.save(buffer, format="PNG", quality=50)
                 buffer.name = f"{ctx.author.id}.png"
             buffer.seek(0)
             file = discord.File(buffer)
-            txt = _(
-                "Here are the current default backgrounds, to set one permanently you can use the "
-            )
+            txt = _("Here are the current default backgrounds, to set one permanently you can use the ")
             txt += f"`{ctx.clean_prefix}mypf background <filename>` " + _("command")
             try:
                 await ctx.send(txt, file=file)
@@ -463,9 +492,9 @@ class UserCommands(MixinMeta, ABC):
         if not self.data[ctx.guild.id]["usepics"]:
             txt = _("Image profiles are disabled on this server so this command is off")
             if ctx.author.guild_permissions.manage_messages:
-                txt += _(
-                    "\nUse the `{}` command to toggle image profiles and enable this command."
-                ).format(f"{ctx.clean_prefix}lset embeds")
+                txt += _("\nUse the `{}` command to toggle image profiles and enable this command.").format(
+                    f"{ctx.clean_prefix}lset embeds"
+                )
             await ctx.send(txt)
         async with ctx.typing():
             img = await self.get_or_fetch_fonts()
@@ -475,7 +504,7 @@ class UserCommands(MixinMeta, ABC):
             try:
                 img.save(buffer, format="WEBP")
                 buffer.name = f"{ctx.author.id}.webp"
-            except ValueError:
+            except (ValueError, KeyError):
                 img.save(buffer, format="PNG", quality=50)
                 buffer.name = f"{ctx.author.id}.png"
             buffer.seek(0)
@@ -496,15 +525,11 @@ class UserCommands(MixinMeta, ABC):
         Slim is a smaller slimmed down version
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server, this setting has no effect")
-            )
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
-            return await ctx.send(
-                _("You have no information stored about your account yet. Talk for a bit first")
-            )
+            return await ctx.send(_("You have no information stored about your account yet. Talk for a bit first"))
         full = users[user_id]["full"]
         if full:
             self.data[ctx.guild.id]["users"][user_id]["full"] = False
@@ -526,9 +551,7 @@ class UserCommands(MixinMeta, ABC):
         Set to `default` to randomize your name color each time you run the command
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server, this setting has no effect")
-            )
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
@@ -541,9 +564,7 @@ class UserCommands(MixinMeta, ABC):
         try:
             rgb = hex_to_rgb(hex_color)
         except ValueError:
-            return await ctx.send(
-                _("That is an invalid color, please use a valid integer color code or hex color.")
-            )
+            return await ctx.send(_("That is an invalid color, please use a valid integer color code or hex color."))
         try:
             embed = discord.Embed(
                 description="This is the color you chose",
@@ -551,10 +572,7 @@ class UserCommands(MixinMeta, ABC):
             )
             await ctx.send(embed=embed)
         except Exception as e:
-            await ctx.send(
-                _("Failed to set color, the following error occurred:\n")
-                + f"{box(str(e), lang='python')}"
-            )
+            await ctx.send(_("Failed to set color, the following error occurred:\n") + f"{box(str(e), lang='python')}")
             return
         self.data[ctx.guild.id]["users"][user_id]["colors"]["name"] = hex_color
         await ctx.tick()
@@ -571,9 +589,7 @@ class UserCommands(MixinMeta, ABC):
         Set to `default` to randomize your name color each time you run the command
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server, this setting has no effect")
-            )
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
@@ -586,9 +602,7 @@ class UserCommands(MixinMeta, ABC):
         try:
             rgb = hex_to_rgb(hex_color)
         except ValueError:
-            return await ctx.send(
-                _("That is an invalid color, please use a valid integer color code or hex color.")
-            )
+            return await ctx.send(_("That is an invalid color, please use a valid integer color code or hex color."))
 
         try:
             embed = discord.Embed(
@@ -597,10 +611,7 @@ class UserCommands(MixinMeta, ABC):
             )
             await ctx.send(embed=embed)
         except Exception as e:
-            await ctx.send(
-                _("Failed to set color, the following error occurred:\n")
-                + f"{box(str(e), lang='python')}"
-            )
+            await ctx.send(_("Failed to set color, the following error occurred:\n") + f"{box(str(e), lang='python')}")
             return
         self.data[ctx.guild.id]["users"][user_id]["colors"]["stat"] = hex_color
         await ctx.tick()
@@ -617,9 +628,7 @@ class UserCommands(MixinMeta, ABC):
         Set to `default` to randomize your name color each time you run the command
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server, this setting has no effect")
-            )
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
@@ -632,9 +641,7 @@ class UserCommands(MixinMeta, ABC):
         try:
             rgb = hex_to_rgb(hex_color)
         except ValueError:
-            return await ctx.send(
-                _("That is an invalid color, please use a valid integer color code or hex color.")
-            )
+            return await ctx.send(_("That is an invalid color, please use a valid integer color code or hex color."))
 
         try:
             embed = discord.Embed(
@@ -643,10 +650,7 @@ class UserCommands(MixinMeta, ABC):
             )
             await ctx.send(embed=embed)
         except Exception as e:
-            await ctx.send(
-                _("Failed to set color, the following error occurred:\n")
-                + f"{box(str(e), lang='python')}"
-            )
+            await ctx.send(_("Failed to set color, the following error occurred:\n") + f"{box(str(e), lang='python')}")
             return
         self.data[ctx.guild.id]["users"][user_id]["colors"]["levelbar"] = hex_color
         await ctx.tick()
@@ -677,48 +681,48 @@ class UserCommands(MixinMeta, ABC):
          - `filename` run `[p]mypf backgrounds` to view default options you can use by including their filename
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server, this setting has no effect")
-            )
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
 
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
         if user_id not in users:
             self.init_user(ctx.guild.id, user_id)
 
-        backgrounds = os.path.join(self.path, "backgrounds")
+        default_bg = bundled_data_path(self) / "backgrounds"
+        saved_bg = cog_data_path(self) / "backgrounds"
+
+        backgrounds = list(default_bg.iterdir()) + list(saved_bg.iterdir())
 
         # If image url is given, run some checks
+        if not image_url and not get_attachments(ctx):
+            return await ctx.send(_("You must provide a url, filename, or attach a file"))
+
         filepath = None
-        if image_url and image_url != "random":
-            # Check if they specified a default background filename
-            for filename in os.listdir(backgrounds):
-                if image_url.lower() in filename.lower():
-                    image_url = filename
-                    filepath = os.path.join(backgrounds, filename)
-                    break
-            else:
-                if not await self.valid_url(ctx, image_url):
-                    return
+        if att := get_attachments(ctx):
+            image_url = att[0].url
+            if not await self.valid_url(ctx, image_url):
+                return
+        elif image_url.lower().startswith("http"):
+            if not await self.valid_url(ctx, image_url):
+                return
         else:
-            if ctx.message.attachments:
-                image_url = ctx.message.attachments[0].url
-                if not await self.valid_url(ctx, image_url):
-                    return
+            for file in backgrounds:
+                if image_url.lower() in file.name.lower():
+                    image_url = file.name
+                    filepath = file
+                    break
 
         if image_url:
             self.data[ctx.guild.id]["users"][user_id]["background"] = image_url
             if image_url == "random":
-                await ctx.send(
-                    "Your profile background will be randomized each time you run the profile command!"
-                )
+                await ctx.send("Your profile background will be randomized each time you run the profile command!")
             else:
                 # Either a valid url or a specified default file
                 if filepath:
                     file = discord.File(filepath)
-                    await ctx.send(_("Your background image has been set!"), file=file)
+                    await ctx.send(_("Your background image has been set to `{}`!").format(image_url), file=file)
                 else:
-                    await ctx.send(_("Your background image has been set!"))
+                    await ctx.send(_("Your background image has been set to `{}`!").format(image_url))
         else:
             self.data[ctx.guild.id]["users"][user_id]["background"] = None
             await ctx.send(_("Your background has been removed since you did not specify a url!"))
@@ -733,9 +737,7 @@ class UserCommands(MixinMeta, ABC):
         To revert to the default font, use `default` for the `font_name` argument
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server, this setting has no effect")
-            )
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
 
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
@@ -746,15 +748,18 @@ class UserCommands(MixinMeta, ABC):
             self.data[ctx.guild.id]["users"][user_id]["font"] = None
             return await ctx.send(_("Your profile font has been reverted to default"))
 
-        fonts = os.path.join(self.path, "fonts")
-        for filename in os.listdir(fonts):
-            if font_name.lower() in filename.lower():
+        default_fonts = bundled_data_path(self) / "fonts"
+        saved_fonts = cog_data_path(self) / "fonts"
+
+        fonts = list(default_fonts.iterdir()) + list(saved_fonts.iterdir())
+        for file in fonts:
+            if font_name.lower() in file.name.lower():
                 break
         else:
             return await ctx.send(_("I could not find a font file with that name"))
 
-        self.data[ctx.guild.id]["users"][user_id]["font"] = filename
-        await ctx.send(_("Your profile font has been set to ") + filename)
+        self.data[ctx.guild.id]["users"][user_id]["font"] = file.name
+        await ctx.send(_("Your profile font has been set to ") + f"`{file.name}`")
 
     @set_profile.command(name="blur")
     async def set_user_blur(self, ctx: commands.Context):
@@ -762,9 +767,7 @@ class UserCommands(MixinMeta, ABC):
         Toggle a slight blur effect on the background image where the text is displayed.
         """
         if not self.data[ctx.guild.id]["usepics"]:
-            return await ctx.send(
-                _("Image profiles are disabled on this server, this setting has no effect")
-            )
+            return await ctx.send(_("Image profiles are disabled on this server, this setting has no effect"))
 
         users = self.data[ctx.guild.id]["users"]
         user_id = str(ctx.author.id)
@@ -856,13 +859,7 @@ class UserCommands(MixinMeta, ABC):
                 if showbal:
                     msg += f"💰｜{humanize_number(bal)} {currency_name}"
                 em = discord.Embed(description=msg, color=user.color)
-                footer = (
-                    _("Rank ")
-                    + position
-                    + _(", with ")
-                    + str(percentage)
-                    + _("% of global server Exp")
-                )
+                footer = _("Rank ") + position + _(", with ") + str(percentage) + _("% of global server Exp")
                 author_name = _("{}'s Profile").format(user.display_name)
                 em.set_author(name=author_name, icon_url=pfp)
                 em.set_footer(text=footer, icon_url=role_icon)
@@ -892,9 +889,7 @@ class UserCommands(MixinMeta, ABC):
                     "next_xp": xp_needed,  # xp required for next level
                     "user_position": position,  # User position in leaderboard
                     "user_name": user.name,  # username with discriminator
-                    "user_status": str(
-                        user.status
-                    ).strip(),  # User status eg. online, offline, idle, streaming, dnd
+                    "user_status": str(user.status).strip(),  # User status eg. online, offline, idle, streaming, dnd
                     "colors": usercolors,  # User's color
                     "messages": humanize_number(messages),
                     "voice": time_formatter(voice),
@@ -929,10 +924,7 @@ class UserCommands(MixinMeta, ABC):
                         log.error(f"Failed AGAIN to send profile pic: {e}")
                 mtime = round((perf_counter() - start2) * 1000)
                 if ctx.author.id == 350053505815281665:
-                    log.info(
-                        f"Render time: {humanize_number(rtime)}ms\n"
-                        f"Send Time: {humanize_number(mtime)}ms"
-                    )
+                    log.info(f"Render time: {humanize_number(rtime)}ms\n" f"Send Time: {humanize_number(mtime)}ms")
 
     @commands.command(name="prestige")
     @commands.guild_only()
@@ -973,9 +965,7 @@ class UserCommands(MixinMeta, ABC):
             return await ctx.send(embed=embed)
 
         if pending_prestige not in prestige_data:
-            return await ctx.send(
-                _("Prestige level ") + str(pending_prestige) + _(" has not been set yet!")
-            )
+            return await ctx.send(_("Prestige level ") + str(pending_prestige) + _(" has not been set yet!"))
 
         role_id = prestige_data[pending_prestige]["role"]
         prestige_role = ctx.guild.get_role(role_id) if role_id else None
@@ -1017,9 +1007,7 @@ class UserCommands(MixinMeta, ABC):
         level_roles = conf["levelroles"]
 
         # Remove all level roles from user
-        role_ids_to_remove = [
-            int(role_id) for level, role_id in level_roles.items() if int(level) > newlevel
-        ]
+        role_ids_to_remove = [int(role_id) for level, role_id in level_roles.items() if int(level) > newlevel]
         to_remove = [role for role in ctx.author.roles if role.id in role_ids_to_remove]
         try:
             await ctx.author.remove_roles(*to_remove)
@@ -1038,9 +1026,7 @@ class UserCommands(MixinMeta, ABC):
             try:
                 await ctx.author.add_roles(role)
             except discord.Forbidden:
-                await ctx.send(
-                    _("I was not able to re-add the {} role to your profile!").format(role.mention)
-                )
+                await ctx.send(_("I was not able to re-add the {} role to your profile!").format(role.mention))
 
     @commands.command(name="lvltop", aliases=["topstats", "membertop", "topranks"])
     @commands.guild_only()
@@ -1167,9 +1153,7 @@ class UserCommands(MixinMeta, ABC):
         if not conf["weekly"]["on"]:
             return await ctx.send(_("Weekly stats are disabled for this guild"))
         if not conf["weekly"]["users"]:
-            return await ctx.send(
-                _("There is no data for the weekly leaderboard yet, please chat a bit first.")
-            )
+            return await ctx.send(_("There is no data for the weekly leaderboard yet, please chat a bit first."))
         embeds = await asyncio.to_thread(get_leaderboard, ctx, conf, stat, "weekly")
         if isinstance(embeds, str):
             return await ctx.send(embeds)
@@ -1192,8 +1176,6 @@ class UserCommands(MixinMeta, ABC):
             return await ctx.send(_("There is no recorded weekly embed saved"))
         embed = discord.Embed.from_dict(conf["weekly"]["last_embed"])
         embed.title = _("Last Weekly Winners")
-        new_desc = _("{}\n`Last Reset:     `{}").format(
-            embed.description, f"<t:{conf['weekly']['last_reset']}:R>"
-        )
+        new_desc = _("{}\n`Last Reset:     `{}").format(embed.description, f"<t:{conf['weekly']['last_reset']}:R>")
         embed.description = new_desc
         await ctx.send(embed=embed)

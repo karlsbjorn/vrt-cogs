@@ -1,8 +1,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: vrt-cogs\n"
-"POT-Creation-Date: 2023-09-10 11:41-0400\n"
-"PO-Revision-Date: 2023-09-10 15:46\n"
+"POT-Creation-Date: 2023-10-10 15:00-0400\n"
+"PO-Revision-Date: 2023-10-16 00:17\n"
 "Last-Translator: \n"
 "Language-Team: Korean\n"
 "MIME-Version: 1.0\n"
@@ -717,10 +717,6 @@ msgstr "`이유 모달:   `"
 msgid "`Max Claims:     `"
 msgstr ""
 
-#: commands\admin.py:872
-msgid "Panel: "
-msgstr "패널: "
-
 #: commands\admin.py:877
 msgid "Panel Roles(Mention)"
 msgstr "패널 역할(언급)"
@@ -816,11 +812,11 @@ msgstr "블랙리스트"
 
 #: commands\admin.py:951
 msgid "Thread tickets will be closed/archived rather than deleted"
-msgstr ""
+msgstr "스레드 티켓은 삭제되지 않고 종료/보관됩니다"
 
 #: commands\admin.py:953
 msgid "Thread tickets will be deleted instead of closed/archived"
-msgstr ""
+msgstr "스레드 티켓이 종료/보관되는 대신 삭제됩니다"
 
 #: commands\admin.py:957
 msgid "Thread Ticket Auto-Add"
@@ -884,11 +880,11 @@ msgstr "패널 역할에 {}가 추가되었습니다"
 #: commands\admin.py:1041
 #, docstring
 msgid "Set how many staff members can claim/join a ticket before the join button is disabled (If using threads)"
-msgstr ""
+msgstr "참여 버튼이 비활성화되기 전에 티켓을 신청/참여할 수 있는 스태프 수를 설정합니다(스레드를 사용하는 경우)"
 
 #: commands\admin.py:1044
 msgid "Amount cannot be negative!"
-msgstr ""
+msgstr "금액은 음수일 수 없습니다!"
 
 #: commands\admin.py:1050
 msgid "Up to {} staff member(s) can claim a single ticket"
@@ -1010,15 +1006,15 @@ msgstr "개요 채널이 {}로 설정되었습니다"
 #: commands\admin.py:1212
 #, docstring
 msgid "Toggle whether channels are mentioned in the active ticket overview"
-msgstr ""
+msgstr "활성 티켓 개요에 채널이 언급되는지 여부 전환하기"
 
 #: commands\admin.py:1216
 msgid "Ticket channels will no longer be mentioned in the active ticket channel"
-msgstr ""
+msgstr "티켓 채널이 더 이상 활성 티켓 채널에 언급되지 않습니다"
 
 #: commands\admin.py:1219
 msgid "Ticket channels now be mentioned in the active ticket channel"
-msgstr ""
+msgstr "이제 활성 티켓 채널에 티켓 채널이 언급됩니다"
 
 #: commands\admin.py:1224
 #, docstring
@@ -1135,7 +1131,7 @@ msgstr "다른 메시지로 메시지를 업데이트합니다 (소스를 사용
 
 #: commands\admin.py:1340
 msgid "Failed to update message!"
-msgstr ""
+msgstr "메시지를 업데이트하지 못했습니다!"
 
 #: commands\admin.py:1352
 #, docstring
@@ -1211,32 +1207,36 @@ msgstr "임베드 전송에 실패했습니다!\n"
 msgid "Add a user to your ticket"
 msgstr "티켓에 사용자를 추가하세요"
 
-#: commands\base.py:32 commands\base.py:73
+#: commands\base.py:31 commands\base.py:75
 msgid "This is not a ticket channel, or it has been removed from config"
 msgstr "티켓 채널이 아니거나 구성에서 제거되었습니다"
 
-#: commands\base.py:54
+#: commands\base.py:52
 msgid "You do not have permissions to add users to this ticket"
 msgstr "이 티켓에 사용자를 추가할 수 있는 권한이 없습니다"
 
-#: commands\base.py:61
+#: commands\base.py:62
+msgid "Failed to add user to ticket: {}"
+msgstr ""
+
+#: commands\base.py:64
 msgid "has been added to this ticket!"
 msgstr "이 티켓에 추가되었습니다!"
 
-#: commands\base.py:67
+#: commands\base.py:70
 #, docstring
 msgid "Rename your ticket channel"
 msgstr "티켓 채널의 이름을 바꿔주세요"
 
-#: commands\base.py:94
+#: commands\base.py:95
 msgid "You do not have permissions to rename this ticket"
 msgstr "이 티켓의 이름을 바꿀 수 있는 권한이 없습니다"
 
-#: commands\base.py:98
+#: commands\base.py:99
 msgid "Ticket has been renamed"
 msgstr "티켓 이름이 변경되었습니다"
 
-#: commands\base.py:106
+#: commands\base.py:107
 #, docstring
 msgid "\n"
 "        Close your ticket\n\n"
@@ -1253,19 +1253,19 @@ msgstr "티켓을 닫으세요\n\n"
 "`[p]close 1h` - 이유 없이 1시간 후에 티켓을 닫습니다\n"
 "`[p]close 1m thanks for helping!` - \"도와주셔서 감사합니다!\"라는 이유와 함께 1분 후에 티켓을 닫습니다        "
 
-#: commands\base.py:120
-msgid "Cannot find the owner of this ticket! Maybe it was removed from config?"
-msgstr "이 티켓의 소유자를 찾을 수 없습니다! 구성에서 제거된 것일까요?"
+#: commands\base.py:121
+msgid "Cannot find the owner of this ticket! Maybe it is not a ticket channel or was cleaned from the config?"
+msgstr "이 티켓의 소유자를 찾을 수 없습니다! 티켓 채널이 아니거나 구성에서 정리된 것일까요?"
 
-#: commands\base.py:127
+#: commands\base.py:128
 msgid "You do not have permissions to close this ticket"
 msgstr "이 티켓을 닫을 수 있는 권한이 없습니다"
 
-#: commands\base.py:145
+#: commands\base.py:146
 msgid "This ticket will close {}"
 msgstr "이 티켓은 {}을 종료합니다"
 
-#: commands\base.py:153
+#: commands\base.py:154
 msgid "Closing cancelled!"
 msgstr "마감이 취소되었습니다!"
 

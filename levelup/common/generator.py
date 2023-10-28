@@ -4,16 +4,18 @@ import random
 from abc import ABC
 from io import BytesIO
 from math import ceil, sqrt
-from typing import Union
+from pathlib import Path
+from typing import List, Union
 
 import colorgram
 import requests
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, UnidentifiedImageError
+from redbot.core.data_manager import bundled_data_path, cog_data_path
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import humanize_number
 
-from .abc import MixinMeta
-from .utils.core import Pilmoji
+from ..abc import MixinMeta
+from ..utils.core import Pilmoji
 
 log = logging.getLogger("red.vrt.levelup.generator")
 _ = Translator("LevelUp", __file__)
@@ -22,6 +24,40 @@ ASPECT_RATIO = (21, 9)
 
 @cog_i18n(_)
 class Generator(MixinMeta, ABC):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Included Assets
+        maindir = bundled_data_path(self)
+        self.star = maindir / "star.png"
+        self.default_pfp = maindir / "defaultpfp.png"
+        self.status = {
+            "online": maindir / "online.png",
+            "offline": maindir / "offline.png",
+            "idle": maindir / "idle.png",
+            "dnd": maindir / "dnd.png",
+            "streaming": maindir / "streaming.png",
+        }
+        self.font = str(maindir / "font.ttf")
+        self.fonts = maindir / "fonts"
+        self.backgrounds = maindir / "backgrounds"
+
+        # Saved Assets
+        savedir = cog_data_path(self)
+        self.saved_bgs = savedir / "backgrounds"
+        self.saved_bgs.mkdir(exist_ok=True)
+        self.saved_fonts = savedir / "fonts"
+        self.saved_fonts.mkdir(exist_ok=True)
+
+        # Cleanup old files from conversion to webp
+        delete: List[Path] = []
+        for file in self.backgrounds.iterdir():
+            if file.name.endswith(".py") or file.is_dir():
+                continue
+            if not file.name.endswith(".webp"):
+                delete.append(file)
+        for i in delete:
+            i.unlink(missing_ok=True)
+
     def generate_profile(
         self,
         bg_image: str = None,
@@ -53,27 +89,30 @@ class Generator(MixinMeta, ABC):
             profile = Image.open(profile_bytes)
         else:
             profile = Image.open(self.default_pfp)
-
         # Get background
-        if bg_image and bg_image != "random":
-            bgpath = os.path.join(self.path, "backgrounds")
-            defaults = [i for i in os.listdir(bgpath)]
-            if bg_image in defaults:
-                card = Image.open(os.path.join(bgpath, bg_image))
-            else:
-                bg_bytes = self.get_image_content_from_url(bg_image)
+        available = list(self.backgrounds.iterdir()) + list(self.saved_bgs.iterdir())
+        card = None
+        if bg_image and str(bg_image) != "random":
+            if not bg_image.lower().startswith("http"):
+                for file in available:
+                    if bg_image.lower() in file.name.lower():
+                        try:
+                            card = Image.open(file)
+                            break
+                        except OSError:
+                            log.info(f"Failed to load {bg_image}")
+
+            if not card and bg_image.lower().startswith("http"):
                 try:
+                    bg_bytes = self.get_image_content_from_url(bg_image)
                     card = Image.open(BytesIO(bg_bytes))
                 except UnidentifiedImageError:
-                    card = self.get_random_background()
-        else:
+                    pass
+
+        if not card:
             card = self.get_random_background()
 
-        card = (
-            self.force_aspect_ratio(card)
-            .convert("RGBA")
-            .resize((1050, 450), Image.Resampling.LANCZOS)
-        )
+        card = self.force_aspect_ratio(card).convert("RGBA").resize((1050, 450), Image.Resampling.NEAREST)
 
         # Colors
         # Sample colors from profile pic to use for default colors
@@ -93,13 +132,13 @@ class Generator(MixinMeta, ABC):
                 base = colors["base"]
             if colors["name"]:
                 namecolor = colors["name"]
-                namedistance = 100
+                namedistance = 10
             if colors["stat"]:
                 statcolor = colors["stat"]
-                statdistance = 100
+                statdistance = 10
             if colors["levelbar"]:
                 lvlbarcolor = colors["levelbar"]
-                lvldistance = 100
+                lvldistance = 10
             else:
                 lvlbarcolor = base
 
@@ -205,7 +244,7 @@ class Generator(MixinMeta, ABC):
                 fill=lvlbarcolor,
                 radius=89,
             )
-        progress_bar = progress_bar.resize(card.size, Image.Resampling.LANCZOS)
+        progress_bar = progress_bar.resize(card.size, Image.Resampling.NEAREST)
         # Image with level bar and pfp on background
         final = Image.alpha_composite(final, progress_bar)
 
@@ -273,21 +312,19 @@ class Generator(MixinMeta, ABC):
         blank = Image.new("RGBA", card.size, (255, 255, 255, 0))
         status = self.status[user_status] if user_status in self.status else self.status["offline"]
         status_img = Image.open(status)
-        status = status_img.convert("RGBA").resize((60, 60), Image.Resampling.LANCZOS)
-        star = Image.open(self.star).resize((50, 50), Image.Resampling.LANCZOS)
+        status = status_img.convert("RGBA").resize((60, 60), Image.Resampling.NEAREST)
+        star = Image.open(self.star).resize((50, 50), Image.Resampling.NEAREST)
         # Role icon
         role_bytes = self.get_image_content_from_url(role_icon) if role_icon else None
         if role_bytes:
             role_bytes = BytesIO(role_bytes)
-            role_icon_img = Image.open(role_bytes).resize((50, 50), Image.Resampling.LANCZOS)
-            blank.paste(role_icon_img, (5, 5))
+            role_icon_img = Image.open(role_bytes).resize((50, 50), Image.Resampling.NEAREST)
+            blank.paste(role_icon_img, (10, 10))
         # Prestige icon
         prestige_bytes = self.get_image_content_from_url(emoji) if prestige else None
         if prestige_bytes:
             prestige_bytes = BytesIO(prestige_bytes)
-            prestige_img = Image.open(prestige_bytes).resize(
-                (stats_size, stats_size), Image.Resampling.LANCZOS
-            )
+            prestige_img = Image.open(prestige_bytes).resize((stats_size, stats_size), Image.Resampling.NEAREST)
             # Adjust prestige icon placement
             p_bbox = stats_font.getbbox(prestige_str)
             # Middle of stat text
@@ -408,7 +445,7 @@ class Generator(MixinMeta, ABC):
         circle_img = Image.new("RGBA", (1600, 1600))
         pfp_border = ImageDraw.Draw(circle_img)
         pfp_border.ellipse([4, 4, 1596, 1596], fill=(255, 255, 255, 0), outline=base, width=20)
-        circle_img = circle_img.resize((330, 330), Image.Resampling.LANCZOS)
+        circle_img = circle_img.resize((330, 330), Image.Resampling.NEAREST)
         final.paste(circle_img, (circle_x - 15, circle_y - 15), circle_img)
 
         # Handle profile pic image to paste to card
@@ -419,7 +456,7 @@ class Generator(MixinMeta, ABC):
             frames = []
             for i in range(profile.n_frames):
                 profile.seek(i)
-                prof_img = profile.convert("RGBA").resize((300, 300), Image.Resampling.LANCZOS)
+                prof_img = profile.convert("RGBA").resize((300, 300), Image.Resampling.NEAREST)
                 # Mask to crop profile pic image to a circle
                 # draw at 4x size and resample down to 1x for a nice smooth circle
                 mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
@@ -433,16 +470,14 @@ class Generator(MixinMeta, ABC):
                     ],
                     fill=(255, 255, 255, 255),
                 )
-                mask = mask.resize(card.size, Image.Resampling.LANCZOS)
+                mask = mask.resize(card.size, Image.Resampling.NEAREST)
                 # make a new Image to set up card-sized image for pfp layer and the circle mask for it
                 profile_pic_holder = Image.new("RGBA", card.size, (255, 255, 255, 0))
                 # paste on square profile pic in appropriate spot
                 profile_pic_holder.paste(prof_img, (circle_x, circle_y))
                 # make a new Image at card size to crop pfp with transparency to the circle mask
                 pfp_composite_holder = Image.new("RGBA", card.size, (0, 0, 0, 0))
-                pfp_composite_holder = Image.composite(
-                    profile_pic_holder, pfp_composite_holder, mask
-                )
+                pfp_composite_holder = Image.composite(profile_pic_holder, pfp_composite_holder, mask)
                 # Profile image is on the background tile now
                 pre = Image.alpha_composite(final, pfp_composite_holder)
                 # Paste status over profile ring
@@ -465,7 +500,7 @@ class Generator(MixinMeta, ABC):
             final = Image.open(tmp)
 
         else:
-            profile = profile.convert("RGBA").resize((300, 300), Image.Resampling.LANCZOS)
+            profile = profile.convert("RGBA").resize((300, 300), Image.Resampling.NEAREST)
             # Mask to crop profile pic image to a circle
             # draw at 4x size and resample down to 1x for a nice smooth circle
             mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
@@ -479,7 +514,7 @@ class Generator(MixinMeta, ABC):
                 ],
                 fill=(255, 255, 255, 255),
             )
-            mask = mask.resize(card.size, Image.Resampling.LANCZOS)
+            mask = mask.resize(card.size, Image.Resampling.NEAREST)
             # make a new Image to set up card-sized image for pfp layer and the circle mask for it
             profile_pic_holder = Image.new("RGBA", card.size, (255, 255, 255, 0))
             # paste on square profile pic in appropriate spot
@@ -534,13 +569,13 @@ class Generator(MixinMeta, ABC):
             base = colors["base"]
             if colors["name"]:
                 namecolor = colors["name"]
-                namedistance = 100
+                namedistance = 10
             if colors["stat"]:
                 statcolor = colors["stat"]
-                statdistance = 100
+                statdistance = 10
             if colors["levelbar"]:
                 lvlbarcolor = colors["levelbar"]
-                lvldistance = 100
+                lvldistance = 10
             else:
                 lvlbarcolor = base
 
@@ -549,22 +584,32 @@ class Generator(MixinMeta, ABC):
 
         # Set canvas
         aspect_ratio = (27, 7)
-        if bg_image and bg_image != "random":
-            bgpath = os.path.join(self.path, "backgrounds")
-            defaults = [i for i in os.listdir(bgpath)]
-            if bg_image in defaults:
-                card = Image.open(os.path.join(bgpath, bg_image))
-            else:
-                bg_bytes = self.get_image_content_from_url(bg_image)
+
+        # Get background
+        available = list(self.backgrounds.iterdir()) + list(self.saved_bgs.iterdir())
+        card = None
+        if bg_image and str(bg_image) != "random":
+            if not bg_image.lower().startswith("http"):
+                for file in available:
+                    if bg_image.lower() in file.name.lower():
+                        try:
+                            card = Image.open(file)
+                            break
+                        except OSError:
+                            log.info(f"Failed to load {bg_image}")
+
+            if not card and bg_image.lower().startswith("http"):
                 try:
+                    bg_bytes = self.get_image_content_from_url(bg_image)
                     card = Image.open(BytesIO(bg_bytes))
                 except UnidentifiedImageError:
-                    card = self.get_random_background()
-        else:
+                    pass
+
+        if not card:
             card = self.get_random_background()
 
         card = self.force_aspect_ratio(card, aspect_ratio)
-        card = card.convert("RGBA").resize((900, 240), Image.Resampling.LANCZOS)
+        card = card.convert("RGBA").resize((900, 240), Image.Resampling.NEAREST)
         try:
             bgcolor = self.get_img_color(card)
         except Exception as e:
@@ -623,9 +668,7 @@ class Generator(MixinMeta, ABC):
 
         rank = _("Rank: #") + str(user_position)
         level = _("Level: ") + str(level)
-        exp = (
-            f"Exp: {get_str(user_xp_progress)}/{get_str(next_xp_diff)} ({get_str(user_xp)} total)"
-        )
+        exp = f"Exp: {get_str(user_xp_progress)}/{get_str(next_xp_diff)} ({get_str(user_xp)} total)"
         messages = _("Messages: ") + str(messages)
         voice = _("Voice Time: ") + str(voice)
         name = user_name
@@ -738,7 +781,7 @@ class Generator(MixinMeta, ABC):
         circle_img = Image.new("RGBA", (800, 800))
         pfp_border = ImageDraw.Draw(circle_img)
         pfp_border.ellipse([4, 4, 796, 796], fill=(255, 255, 255, 0), outline=base, width=12)
-        circle_img = circle_img.resize((200, 200), Image.Resampling.LANCZOS)
+        circle_img = circle_img.resize((200, 200), Image.Resampling.NEAREST)
         card.paste(circle_img, (19, 19), circle_img)
 
         # get profile pic
@@ -749,14 +792,14 @@ class Generator(MixinMeta, ABC):
         else:
             profile = Image.open(self.default_pfp)
 
-        profile = profile.convert("RGBA").resize((180, 180), Image.Resampling.LANCZOS)
+        profile = profile.convert("RGBA").resize((180, 180), Image.Resampling.NEAREST)
 
         # Mask to crop profile pic image to a circle
         # draw at 4x size and resample down to 1x for a nice smooth circle
         mask = Image.new("RGBA", ((card.size[0] * 4), (card.size[1] * 4)), 0)
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.ellipse((116, 116, 836, 836), fill=(255, 255, 255, 255))
-        mask = mask.resize(card.size, Image.Resampling.LANCZOS)
+        mask = mask.resize(card.size, Image.Resampling.NEAREST)
 
         # make a new Image to set up card-sized image for pfp layer and the circle mask for it
         profile_pic_holder = Image.new("RGBA", card.size, (255, 255, 255, 0))
@@ -775,9 +818,9 @@ class Generator(MixinMeta, ABC):
 
         status = self.status[user_status] if user_status in self.status else self.status["offline"]
         status_img = Image.open(status)
-        status = status_img.convert("RGBA").resize((40, 40), Image.Resampling.LANCZOS)
+        status = status_img.convert("RGBA").resize((40, 40), Image.Resampling.NEAREST)
         rep_icon = Image.open(self.star)
-        rep_icon = rep_icon.convert("RGBA").resize((40, 40), Image.Resampling.LANCZOS)
+        rep_icon = rep_icon.convert("RGBA").resize((40, 40), Image.Resampling.NEAREST)
 
         # Status badge
         # Another blank
@@ -797,18 +840,26 @@ class Generator(MixinMeta, ABC):
         color: tuple = (0, 0, 0),
         font_name: str = None,
     ):
-        if bg_image and bg_image != "random":
-            bgpath = os.path.join(self.path, "backgrounds")
-            defaults = [i for i in os.listdir(bgpath)]
-            if bg_image in defaults:
-                card = Image.open(os.path.join(bgpath, bg_image))
-            else:
-                bg_bytes = self.get_image_content_from_url(bg_image)
+        available = list(self.backgrounds.iterdir()) + list(self.saved_bgs.iterdir())
+        card = None
+        if bg_image and str(bg_image) != "random":
+            if not bg_image.lower().startswith("http"):
+                for file in available:
+                    if bg_image.lower() in file.name.lower():
+                        try:
+                            card = Image.open(file)
+                            break
+                        except OSError:
+                            log.info(f"Failed to load {bg_image}")
+
+            if not card and bg_image.lower().startswith("http"):
                 try:
+                    bg_bytes = self.get_image_content_from_url(bg_image)
                     card = Image.open(BytesIO(bg_bytes))
                 except UnidentifiedImageError:
-                    card = self.get_random_background()
-        else:
+                    pass
+
+        if not card:
             card = self.get_random_background()
 
         # Get coords and fonts setup
@@ -828,9 +879,7 @@ class Generator(MixinMeta, ABC):
                 base_font = fontfile
         # base_font = self.get_random_font()
         font = ImageFont.truetype(base_font, fontsize)
-        while font.getlength(string) + int(card.height * 1.2) > card.width - (
-            int(card.height * 1.2) - card.height
-        ):
+        while font.getlength(string) + int(card.height * 1.2) > card.width - (int(card.height * 1.2) - card.height):
             fontsize -= 1
             font = ImageFont.truetype(base_font, fontsize)
 
@@ -861,7 +910,7 @@ class Generator(MixinMeta, ABC):
         mask = Image.new("RGBA", ((card.size[0]), (card.size[1])), 0)
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.ellipse((0, 0, pfpsize[0], pfpsize[1]), fill=(255, 255, 255, 255))
-        # mask = mask.resize(card.size, Image.Resampling.LANCZOS)
+        # mask = mask.resize(card.size, Image.Resampling.NEAREST)
 
         pfp_holder = Image.new("RGBA", card.size, (255, 255, 255, 0))
         pfp_holder.paste(profile, (0, 0))
@@ -889,7 +938,7 @@ class Generator(MixinMeta, ABC):
         final = final.resize(card_size, Image.Resampling.LANCZOS)
         return final
 
-    def get_all_fonts(self):
+    def get_all_fonts(self) -> Image.Image:
         fonts = [i for i in os.listdir(self.fonts)]
         count = len(fonts)
         fontsize = 50
@@ -900,36 +949,38 @@ class Generator(MixinMeta, ABC):
         for index, i in enumerate(fonts):
             fontname = i.replace(".ttf", "")
             font = ImageFont.truetype(os.path.join(self.fonts, i), fontsize)
-            draw.text(
-                (5, index * (fontsize + 15)),
-                fontname,
-                color,
-                font=font,
-                stroke_width=1,
-                stroke_fill=(0, 0, 0),
-            )
+            draw.text((5, index * (fontsize + 15)), fontname, color, font=font, stroke_width=1, stroke_fill=(0, 0, 0))
         return img
 
     def get_all_backgrounds(self):
-        backgrounds = os.path.join(self.path, "backgrounds")
-        choices = os.listdir(backgrounds)
-        if not choices:
-            return None
+        available: List[Path] = list(self.saved_bgs.iterdir()) + list(self.backgrounds.iterdir())
         imgs = []
-        for filename in choices:
-            filepath = os.path.join(backgrounds, filename)
-            img = self.force_aspect_ratio(Image.open(filepath))
-            img = img.convert("RGBA").resize((1050, 450), Image.Resampling.LANCZOS)
-            draw = ImageDraw.Draw(img)
-            ext_replace = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
-            txt = filename
-            for ext in ext_replace:
-                txt = txt.replace(ext, "")
-            draw.text((10, 10), txt, font=ImageFont.truetype(self.font, 100))
-            if not img:
-                log.error(f"Failed to load image for default background '{filename}`")
+        for file in available:
+            if file.is_dir() or file.suffix == ".py":
                 continue
-            imgs.append((img, filename))
+            try:
+                img = self.force_aspect_ratio(Image.open(file))
+                img = img.convert("RGBA").resize((1050, 450), Image.Resampling.NEAREST)
+                draw = ImageDraw.Draw(img)
+                ext_replace = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+                txt = file.name
+                for ext in ext_replace:
+                    txt = txt.replace(ext, "")
+                # Add a black outline to the text
+                draw.text(
+                    (10, 10),
+                    txt,
+                    font=ImageFont.truetype(self.font, 100),
+                    fill=(255, 255, 255),
+                    stroke_width=5,
+                    stroke_fill="#000000",
+                )
+                if not img:
+                    log.error(f"Failed to load image for default background '{file}`")
+                    continue
+                imgs.append((img, file.name))
+            except Exception as e:
+                log.warning(f"Failed to prep background image: {file}", exc_info=e)
 
         # Sort by name
         imgs = sorted(imgs, key=lambda key: key[1])
@@ -939,34 +990,28 @@ class Generator(MixinMeta, ABC):
         # Make a bunch of rows of 4
         rows = []
         index = 0
-        for i in range(rowcount):
-            first = None
+        for __ in range(rowcount):
             final = None
-            for x in range(4):
+            for __ in range(4):
                 if index >= len(imgs):
                     continue
+
                 img_obj = imgs[index][0]
                 index += 1
-                if first is None:
-                    first = img_obj
-                    continue
+
                 if final is None:
-                    final = self.concat_img_h(first, img_obj)
+                    final = img_obj
                 else:
                     final = self.concat_img_h(final, img_obj)
-            rows.append(final)
+
+            if final:
+                rows.append(final)
 
         # Now concat the rows vertically
-        first = None
         final = None
         for row_img_obj in rows:
-            if row_img_obj is None:
-                continue
-            if first is None:
-                first = row_img_obj
-                continue
             if final is None:
-                final = self.concat_img_v(first, row_img_obj)
+                final = row_img_obj
             else:
                 final = self.concat_img_v(final, row_img_obj)
 
@@ -1054,7 +1099,7 @@ class Generator(MixinMeta, ABC):
         return image.crop((box[0], box[1], box[2], box[3]))
 
     @staticmethod
-    def force_aspect_ratio(image: Image, aspect_ratio: tuple = ASPECT_RATIO) -> Image:
+    def force_aspect_ratio(image: Image.Image, aspect_ratio: tuple = ASPECT_RATIO) -> Image:
         x, y = aspect_ratio
         w, h = image.size
 
@@ -1078,16 +1123,18 @@ class Generator(MixinMeta, ABC):
         return cropped
 
     def get_random_background(self) -> Image:
-        bg_dir = os.path.join(self.path, "backgrounds")
-        choice = random.choice(os.listdir(bg_dir))
-        bg_file = os.path.join(bg_dir, choice)
-        return Image.open(bg_file)
+        available = list(self.backgrounds.iterdir()) + list(self.saved_bgs.iterdir())
+        random.shuffle(available)
+        for path in available:
+            try:
+                return Image.open(path)
+            except UnidentifiedImageError:
+                pass
+        return Image.new("RGBA", (2000, 1000), (0, 0, 0, 0))
 
     def get_random_font(self) -> str:
-        fdir = os.path.join(self.path, "fonts")
-        choice = random.choice(os.listdir(fdir))
-        f_file = os.path.join(fdir, choice)
-        return f_file
+        available = list(self.fonts.iterdir()) + list(self.saved_fonts.iterdir())
+        return random.choice(available)
 
     @staticmethod
     def has_emoji(text: str) -> Union[str, bool]:

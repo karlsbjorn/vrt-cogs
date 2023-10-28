@@ -2,7 +2,6 @@ import logging
 import typing as t
 
 import discord
-import googletrans
 from aiocache import cached
 from discord import app_commands
 from redbot.core import Config, commands
@@ -10,7 +9,8 @@ from redbot.core.bot import Red
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import pagify
 
-from .api import TranslateManager
+from .common.api import Result, TranslateManager
+from .common.constants import available_langs
 
 log = logging.getLogger("red.vrt.fluent")
 _ = Translator("Fluent", __file__)
@@ -34,13 +34,11 @@ class Fluent(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "2.0.1"
+    __version__ = "2.1.1"
 
     def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
-        return _("{}\nCog Version: {}\nAuthor: {}").format(
-            helpcmd, self.__version__, self.__author__
-        )
+        return _("{}\nCog Version: {}\nAuthor: {}").format(helpcmd, self.__version__, self.__author__)
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
         """No data to delete"""
@@ -49,23 +47,22 @@ class Fluent(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=11701170)
         self.config.register_guild(channels={})
+        logging.getLogger("hpack.hpack").setLevel(logging.INFO)
 
     @cached(ttl=10)
     async def get_channels(self, guild: discord.Guild) -> dict:
         return await self.config.guild(guild).channels()
 
     @cached(ttl=900)
-    async def translate(self, msg: str, dest: str):
+    async def translate(self, msg: str, dest: str, force: bool = False) -> Result:
         deepl_key = await self.bot.get_shared_api_tokens("deepl")
         translator = TranslateManager(deepl_key=deepl_key.get("key"))
-        return await translator.translate(msg, dest)
+        return await translator.translate(msg, dest, force=force)
 
     @commands.hybrid_command(name="translate")
     @app_commands.describe(to_language="Translate to this language")
     @commands.bot_has_permissions(embed_links=True)
-    async def translate_command(
-        self, ctx: commands.Context, to_language: str, *, message: t.Optional[str] = None
-    ):
+    async def translate_command(self, ctx: commands.Context, to_language: str, *, message: t.Optional[str] = None):
         """Translate a message"""
         translator = TranslateManager()
         lang = await translator.get_lang(to_language)
@@ -83,7 +80,7 @@ class Fluent(commands.Cog):
             return await ctx.send(txt)
 
         try:
-            trans = await self.translate(message, lang)
+            trans: t.Optional[Result] = await self.translate(message, to_language)
         except Exception as e:
             txt = _("An error occured while translating, Check logs for more info.")
             await ctx.send(txt)
@@ -96,7 +93,7 @@ class Fluent(commands.Cog):
             return await ctx.send(txt)
 
         embed = discord.Embed(description=trans.text, color=ctx.author.color)
-        embed.set_footer(text=f"{trans.src} -> {lang}")
+        embed.set_footer(text=f"{trans.src} -> {trans.dest}")
         try:
             await ctx.reply(embed=embed, mention_author=False)
         except (discord.NotFound, AttributeError):
@@ -109,9 +106,9 @@ class Fluent(commands.Cog):
     @cached(ttl=60)
     async def get_langs(self, current: str):
         return [
-            app_commands.Choice(name=i, value=i)
-            for i in googletrans.LANGUAGES.values()
-            if current.lower() in i.lower()
+            app_commands.Choice(name=i["name"], value=i["name"])
+            for i in available_langs
+            if current.lower() in i["name"].lower()
         ][:25]
 
     @commands.group()
@@ -145,16 +142,16 @@ class Fluent(commands.Cog):
             channel = ctx.channel
 
         translator = TranslateManager()
-        language1 = await translator.get_lang(language1)
-        language2 = await translator.get_lang(language2)
+        lang1 = await translator.get_lang(language1)
+        lang2 = await translator.get_lang(language2)
 
-        if not language1 and not language2:
+        if not lang1 and not lang2:
             txt = _("Both of those languages are invalid.")
             return await ctx.send(txt)
-        if not language1:
+        if not lang1:
             txt = _("Language 1 is invalid.")
             return await ctx.send(txt)
-        if not language2:
+        if not lang2:
             txt = _("Language 2 is invalid.")
             return await ctx.send(txt)
 
@@ -238,7 +235,7 @@ class Fluent(commands.Cog):
         async with channel.typing():
             # Attempts to translate message into language1.
             try:
-                trans = await self.translate(message.content, lang1)
+                trans = await self.translate(message.content, lang1, force=True)
             except Exception as e:
                 log.error("Initial listener translation failed", exc_info=e)
                 self.bot._last_exception = e
@@ -248,9 +245,17 @@ class Fluent(commands.Cog):
                 log.debug("Auto translation first phase returned None")
                 return
 
+            translator = TranslateManager()
+            source = await translator.get_lang(trans.src)
+            source = source.split("-")[0].lower()
+            target = await translator.get_lang(lang1)
+            target = target.split("-")[0].lower()
+            log.debug(f"Source: {source}, target: {target}")
+            log.debug(f"Raw Source: {trans.src}")
+
             # If the source language is also language1, translate into language2
             # If source language was language2, this saves api calls because translating gets the source and translation
-            if trans.src.lower() == lang1.lower():
+            if source == target:
                 try:
                     trans = await self.translate(message.content, lang2)
                 except Exception as e:
@@ -258,9 +263,7 @@ class Fluent(commands.Cog):
                     return
 
                 if trans is None:
-                    return await channel.send(
-                        _("Unable to finish translation, perhaps the API is down.")
-                    )
+                    return await channel.send(_("Unable to finish translation, perhaps the API is down."))
 
             # If translated text is the same as the source, no need to send
             if trans.text.lower() == message.content.lower():

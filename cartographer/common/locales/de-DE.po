@@ -1,0 +1,236 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: vrt-cogs\n"
+"POT-Creation-Date: 2023-10-16 17:37-0400\n"
+"PO-Revision-Date: 2023-10-17 14:22\n"
+"Last-Translator: \n"
+"Language-Team: German\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: redgettext 3.4.2\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Crowdin-Project: vrt-cogs\n"
+"X-Crowdin-Project-ID: 550681\n"
+"X-Crowdin-Language: de\n"
+"X-Crowdin-File: /main/cartographer/common/locales/messages.pot\n"
+"X-Crowdin-File-ID: 78\n"
+"Language: de_DE\n"
+
+#: common\formatting.py:11
+msgid "`Created:        `{}\n"
+"`Name:           `{}\n"
+"`AFK Channel:    `{}\n"
+"`AFK Timeout:    `{}\n"
+"`Verification:   `{}\n"
+"`Notifications:  `{}\n"
+"`Locale:         `{}\n"
+"`Role Count:     `{}\n"
+"`Members Saved:  `{}\n"
+"`Categories:     `{}\n"
+"`Text Channels:  `{}\n"
+"`Voice Channels: `{}\n"
+"`Forums:         `{}\n"
+msgstr ""
+
+#: common\formatting.py:45
+msgid "Controls"
+msgstr "Kontrolliert"
+
+#: common\formatting.py:46
+msgid "- Backup Current Server: 📥\n"
+"- Restore Here: 🔄\n"
+"- Switch Servers: 🔍\n"
+"- Set AutoBackup Interval: ⌛\n"
+"- Delete Backup: 🗑️\n"
+msgstr "- Sicherung des aktuellen Servers: 📥\n"
+"- Hier wiederherstellen: 🔄\n"
+"- Server wechseln: 🔍\n"
+"- AutoBackup-Intervall einstellen: ⌛\n"
+"- Sicherung löschen: 🗑️\n"
+
+#: common\formatting.py:53
+msgid "Settings"
+msgstr "Einstellungen"
+
+#: common\formatting.py:54
+msgid "- Auto Backup Interval Hours: {}\n"
+"- Last Backup: {}"
+msgstr ""
+
+#: common\formatting.py:57
+msgid "Cartographer Backups for {}"
+msgstr ""
+
+#: common\formatting.py:64
+msgid "Page {}"
+msgstr ""
+
+#: common\formatting.py:67
+msgid "There are no backups for this server yet!"
+msgstr "Für diesen Server gibt es noch keine Backups!"
+
+#: common\models.py:178 common\models.py:189 common\models.py:216
+msgid "Restored from backup"
+msgstr "Wiederhergestellt vom Backup"
+
+#: common\models.py:694
+msgid "Cartographer Restore"
+msgstr "Kartenmacher Wiederherstellen"
+
+#: common\models.py:695
+msgid " (Removal)"
+msgstr " (Entfernung)"
+
+#: common\models.py:835
+msgid "Server restore has completed successfully!"
+msgstr "Die Serverwiederherstellung wurde erfolgreich abgeschlossen!"
+
+#: common\views.py:36
+msgid "That is not a number!"
+msgstr "Das ist keine Zahl!"
+
+#: common\views.py:47
+msgid "Confirmation"
+msgstr "Konfirmation"
+
+#: common\views.py:49
+msgid "Are you SURE?"
+msgstr "Sind Sie SICHER?"
+
+#: common\views.py:52
+msgid "THIS CANNOT BE UNDONE!"
+msgstr "DIES KANN NICHT RÜCKGÄNGIG GEMACHT WERDEN!"
+
+#: common\views.py:56
+msgid "Remove Old"
+msgstr "Altes entfernen"
+
+#: common\views.py:59
+msgid "removes unsaved channels/roles"
+msgstr "entfernt ungespeicherte Kanäle/Rollen"
+
+#: common\views.py:64
+msgid "response must be a string!"
+msgstr "antwort muss eine Zeichenkette sein!"
+
+#: common\views.py:84
+msgid "Close"
+msgstr "Schließen Sie"
+
+#: common\views.py:88
+msgid "This isn't your menu!"
+msgstr "Das ist nicht Ihre Speisekarte!"
+
+#: common\views.py:129
+msgid "Backing up {}!"
+msgstr ""
+
+#: common\views.py:133
+msgid "Backup created!"
+msgstr "Backup erstellt!"
+
+#: common\views.py:136
+msgid "- Backup contains roles with duplcate names! Only one role per unique name can be restored!"
+msgstr "- Backup enthält Rollen mit doppeltem Namen! Es kann nur eine Rolle pro eindeutigem Namen wiederhergestellt werden!"
+
+#: common\views.py:140
+msgid "- Backup contains categories with duplcate names! Only one category per unique name can be restored!"
+msgstr "- Backup enthält Kategorien mit doppeltem Namen! Es kann nur eine Kategorie pro eindeutigem Namen wiederhergestellt werden!"
+
+#: common\views.py:144
+msgid "- Backup contains text channels with duplcate names! Only one text channel per unique name can be restored!"
+msgstr "- Backup enthält Textkanäle mit doppelten Namen! Es kann nur ein Textkanal pro eindeutigem Namen wiederhergestellt werden!"
+
+#: common\views.py:148
+msgid "- Backup contains voice channels with duplcate names! Only one voice channel per unique name can be restored!"
+msgstr "- Backup enthält Sprachkanäle mit doppelten Namen! Es kann nur ein Sprachkanal pro eindeutigem Namen wiederhergestellt werden!"
+
+#: common\views.py:152
+msgid "- Backup contains forum channels with duplcate names! Only one forum channel per unique name can be restored!"
+msgstr "- Das Backup enthält Forenkanäle mit doppeltem Namen! Nur ein Forumskanal pro eindeutigem Namen kann wiederhergestellt werden!"
+
+#: common\views.py:162
+msgid "No backups to restore!"
+msgstr "Keine Backups zum Wiederherstellen!"
+
+#: common\views.py:174
+msgid "Your backup is being restored!"
+msgstr "Ihr Backup wird wiederhergestellt!"
+
+#: common\views.py:176
+msgid "- Backup contains roles with duplcate names! Only one role per unique name will be restored!"
+msgstr "- Backup enthält Rollen mit doppeltem Namen! Es wird nur eine Rolle pro eindeutigem Namen wiederhergestellt!"
+
+#: common\views.py:180
+msgid "- Backup contains categories with duplcate names! Only one category per unique name will be restored!"
+msgstr "- Backup enthält Kategorien mit doppelten Namen! Es wird nur eine Kategorie pro eindeutigem Namen wiederhergestellt!"
+
+#: common\views.py:184
+msgid "- Backup contains text channels with duplcate names! Only one text channel per unique name will be restored!"
+msgstr "- Backup enthält Textkanäle mit doppeltem Namen! Es wird nur ein Textkanal pro eindeutigem Namen wiederhergestellt!"
+
+#: common\views.py:188
+msgid "- Backup contains voice channels with duplcate names! Only one voice channel per unique name will be restored!"
+msgstr "- Das Backup enthält Sprachkanäle mit doppeltem Namen! Es wird nur ein Sprachkanal pro eindeutigem Namen wiederhergestellt!"
+
+#: common\views.py:192
+msgid "- Backup contains forum channels with duplcate names! Only one forum channel per unique name will be restored!"
+msgstr "- Das Backup enthält Forenkanäle mit doppeltem Namen! Es wird nur ein Forumskanal pro eindeutigem Namen wiederhergestellt!"
+
+#: common\views.py:197
+msgid "Restore has been cancelled!"
+msgstr "Die Wiederherstellung wurde abgebrochen!"
+
+#: common\views.py:202
+msgid "Switch Servers"
+msgstr "Server wechseln"
+
+#: common\views.py:202
+msgid "Server ID"
+msgstr "Server-ID"
+
+#: common\views.py:202
+msgid "Enter the ID of the server"
+msgstr "Geben Sie die ID des Servers ein"
+
+#: common\views.py:209
+msgid "I am not in that server!"
+msgstr "Ich bin nicht auf diesem Server!"
+
+#: common\views.py:213
+msgid "You do not appear to be in that server!"
+msgstr "Sie scheinen nicht auf diesem Server zu sein!"
+
+#: common\views.py:216
+msgid "You can only switch to servers that you are an administrator of!"
+msgstr "Sie können nur zu Servern wechseln, bei denen Sie Administrator sind!"
+
+#: common\views.py:226
+msgid "Auto backups have been disabled by the bot owner!"
+msgstr "Automatische Backups wurden vom Bot-Besitzer deaktiviert!"
+
+#: common\views.py:228
+msgid "Auto Backup Interval"
+msgstr "Automatisches Sicherungsintervall"
+
+#: common\views.py:228
+msgid "Interval Hours"
+msgstr "Intervall-Stunden"
+
+#: common\views.py:228
+msgid "Hours in-between backups"
+msgstr "Stunden zwischen den Backups"
+
+#: common\views.py:234
+msgid "Auto-backup interval hours has been set to {}"
+msgstr ""
+
+#: common\views.py:246
+msgid "No backups to delete!"
+msgstr "Keine Backups zu löschen!"
+
+#: common\views.py:252
+msgid "Backup deleted!"
+msgstr "Backup gelöscht!"
+

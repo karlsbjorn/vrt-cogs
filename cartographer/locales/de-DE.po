@@ -1,0 +1,174 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: vrt-cogs\n"
+"POT-Creation-Date: 2023-10-16 17:37-0400\n"
+"PO-Revision-Date: 2023-10-17 14:22\n"
+"Last-Translator: \n"
+"Language-Team: German\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: redgettext 3.4.2\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Crowdin-Project: vrt-cogs\n"
+"X-Crowdin-Project-ID: 550681\n"
+"X-Crowdin-Language: de\n"
+"X-Crowdin-File: /main/cartographer/locales/messages.pot\n"
+"X-Crowdin-File-ID: 80\n"
+"Language: de_DE\n"
+
+#: main.py:26
+#, docstring
+msgid "\n"
+"    Backup & Restore tools for Discord servers.\n\n"
+"    This cog can backup & restore the following:\n"
+"    - Categories (permissions/order)\n"
+"    - Text channels (permissions/order)\n"
+"    - Voice channels (permissions/order)\n"
+"    - Forum channels  (permissions/order)[Not forum posts]\n"
+"    - Roles (permissions and what members they're assigned to)\n\n"
+"    **Caveats**\n"
+"    Note the following\n"
+"    - If there are multiple roles, channels, categories, or forums with the same name, only 1 of each will be restored.\n"
+"     - This is because object IDs cannot be restored so the bot relies on the name of the object.\n"
+"    - When restoring, some roles may not be fully restored (such as order) if they were higher than the bot's role.\n"
+"    "
+msgstr "\n"
+"    Sicherungs- und Wiederherstellungstools für Discord-Server.\n\n"
+"    Dieses Werkzeug kann folgendes sichern und wiederherstellen:\n"
+"    - Kategorien (Berechtigungen/Ordnung)\n"
+"    - Textkanäle (Berechtigungen/Bestellung)\n"
+"    - Sprachkanäle (Berechtigungen/Bestellung)\n"
+"    - Forumskanäle (Berechtigungen/Ordnung) [nicht Forenbeiträge]\n"
+"    - Rollen (Berechtigungen und die Mitglieder, denen sie zugewiesen sind)\n\n"
+"    **Caveats**\n"
+"    Beachten Sie Folgendes\n"
+"    - Wenn es mehrere Rollen, Channels, Kategorien oder Foren mit demselben Namen gibt, wird nur jeweils 1 davon wiederhergestellt.\n"
+"     - Das liegt daran, dass Objekt-IDs nicht wiederhergestellt werden können, so dass der Bot auf den Namen des Objekts angewiesen ist.\n"
+"    - Bei der Wiederherstellung werden einige Rollen möglicherweise nicht vollständig wiederhergestellt (z. B. Ordnung), wenn sie höher als die Rolle des Bots waren.\n"
+"    "
+
+#: main.py:82
+msgid "Version: {}\n"
+"Author: {}"
+msgstr ""
+
+#: main.py:86
+#, docstring
+msgid "No data to delete"
+msgstr "Keine Daten zu löschen"
+
+#: main.py:119
+#, docstring
+msgid "Open the Backup/Restore menu"
+msgstr "Öffnen Sie das Menü Sichern/Wiederherstellen"
+
+#: main.py:121 main.py:144 main.py:166
+msgid "This server is in the ingored list!"
+msgstr "Dieser Server steht auf der Liste der nicht berücksichtigten Server!"
+
+#: main.py:124 main.py:147 main.py:169
+msgid "This server is not in the allowed list!"
+msgstr "Dieser Server steht nicht auf der Liste der zugelassenen Server!"
+
+#: main.py:138
+#, docstring
+msgid "Backup & Restore Tools"
+msgstr "Tools zur Sicherung und Wiederherstellung"
+
+#: main.py:142
+#, docstring
+msgid "Create a backup of this server"
+msgstr "Erstellen Sie eine Sicherungskopie des Servers"
+
+#: main.py:153
+msgid "A backup has been created!"
+msgstr "Es wurde ein Backup erstellt!"
+
+#: main.py:159
+#, docstring
+msgid "\n"
+"        Restore the latest backup for this server\n\n"
+"        **Arguments**\n"
+"        - delete_existing: if True, deletes existing channels/roles that aren't part of the backup.\n"
+"        "
+msgstr "\n"
+"        Die letzte Sicherung für diesen Server wiederherstellen\n\n"
+"        **Argumente**\n"
+"        - delete_existing: falls True, löscht bestehende Channels/Rollen, die nicht Teil des Backups sind.\n"
+"        "
+
+#: main.py:175
+msgid "There are no backups for this guild!"
+msgstr "Für diese Gilde gibt es keine Backups!"
+
+#: main.py:178
+msgid "Server restore is complete!"
+msgstr "Die Wiederherstellung des Servers ist abgeschlossen!"
+
+#: main.py:183
+#, docstring
+msgid "View current global settings"
+msgstr "Aktuelle globale Einstellungen anzeigen"
+
+#: main.py:187
+msgid "### Global Settings\n"
+"- Global backups: {}\n"
+"- Max backups per server: {}\n"
+"- Allow auto-backups: {}\n"
+"- Ignored servers: {}\n"
+"- Allowed servers: {}\n"
+msgstr ""
+
+#: main.py:206
+#, docstring
+msgid "Enable/Disable allowing auto backups"
+msgstr "Aktivieren/Deaktivieren von automatischen Backups"
+
+#: main.py:209
+msgid "Auto backups have been **Disabled**"
+msgstr "Automatische Sicherungen wurden **Deaktiviert**"
+
+#: main.py:212
+msgid "Auto backups have been **Enabled**"
+msgstr "Automatische Backups wurden **aktiviert**"
+
+#: main.py:219
+#, docstring
+msgid "Set the max amount of backups a server can have"
+msgstr "Festlegen der maximalen Anzahl von Backups für einen Server"
+
+#: main.py:222
+msgid "Max backups set to 0, Cartographer has been **Disabled**"
+msgstr "Maximale Anzahl der Backups auf 0 gesetzt, Cartographer wurde **Deaktiviert**"
+
+#: main.py:224
+msgid "Max backup count has been set"
+msgstr "Maximale Anzahl von Backups wurde festgelegt"
+
+#: main.py:231
+#, docstring
+msgid "Add/Remove a server from the ignore list"
+msgstr "Hinzufügen/Entfernen eines Servers von der Ignorierliste"
+
+#: main.py:234
+msgid "Server removed from the ignore list"
+msgstr "Server von der Ignorierliste entfernt"
+
+#: main.py:237
+msgid "Server added to the ignore list"
+msgstr "Server zur Ignorierliste hinzugefügt"
+
+#: main.py:244
+#, docstring
+msgid "Add/Remove a server from the allow list"
+msgstr "Hinzufügen/Entfernen eines Servers aus der Zulassungsliste"
+
+#: main.py:247
+msgid "Server removed from the allow list"
+msgstr "Server von der Zulassungsliste entfernt"
+
+#: main.py:250
+msgid "Server added to the allow list"
+msgstr "Server zur Zulassungsliste hinzugefügt"
+

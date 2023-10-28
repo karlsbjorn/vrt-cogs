@@ -1,8 +1,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: vrt-cogs\n"
-"POT-Creation-Date: 2023-09-10 11:41-0400\n"
-"PO-Revision-Date: 2023-09-10 15:46\n"
+"POT-Creation-Date: 2023-10-10 15:00-0400\n"
+"PO-Revision-Date: 2023-10-16 00:17\n"
 "Last-Translator: \n"
 "Language-Team: German\n"
 "MIME-Version: 1.0\n"
@@ -720,10 +720,6 @@ msgstr "`grund Modal:   `"
 msgid "`Max Claims:     `"
 msgstr ""
 
-#: commands\admin.py:872
-msgid "Panel: "
-msgstr "Gremium: "
-
 #: commands\admin.py:877
 msgid "Panel Roles(Mention)"
 msgstr "Panel-Rollen (Erwähnung)"
@@ -819,11 +815,11 @@ msgstr "Schwarze Liste"
 
 #: commands\admin.py:951
 msgid "Thread tickets will be closed/archived rather than deleted"
-msgstr ""
+msgstr "Thread-Tickets werden nicht gelöscht, sondern geschlossen/archiviert"
 
 #: commands\admin.py:953
 msgid "Thread tickets will be deleted instead of closed/archived"
-msgstr ""
+msgstr "Thread-Tickets werden gelöscht statt geschlossen/archiviert"
 
 #: commands\admin.py:957
 msgid "Thread Ticket Auto-Add"
@@ -888,11 +884,11 @@ msgstr " wurde zu den {}-Panelrollen hinzugefügt"
 #: commands\admin.py:1041
 #, docstring
 msgid "Set how many staff members can claim/join a ticket before the join button is disabled (If using threads)"
-msgstr ""
+msgstr "Legen Sie fest, wie viele Mitarbeiter ein Ticket beanspruchen/beitreten können, bevor die Schaltfläche \"Beitreten\" deaktiviert wird (bei Verwendung von Threads)"
 
 #: commands\admin.py:1044
 msgid "Amount cannot be negative!"
-msgstr ""
+msgstr "Der Betrag kann nicht negativ sein!"
 
 #: commands\admin.py:1050
 msgid "Up to {} staff member(s) can claim a single ticket"
@@ -1014,15 +1010,15 @@ msgstr "Übersichtskanal wurde auf {} gesetzt"
 #: commands\admin.py:1212
 #, docstring
 msgid "Toggle whether channels are mentioned in the active ticket overview"
-msgstr ""
+msgstr "Umschalten, ob Kanäle in der aktiven Ticketübersicht erwähnt werden"
 
 #: commands\admin.py:1216
 msgid "Ticket channels will no longer be mentioned in the active ticket channel"
-msgstr ""
+msgstr "Ticket-Kanäle werden nicht mehr im aktiven Ticket-Kanal erwähnt"
 
 #: commands\admin.py:1219
 msgid "Ticket channels now be mentioned in the active ticket channel"
-msgstr ""
+msgstr "Ticket-Kanäle werden jetzt im aktiven Ticket-Kanal erwähnt"
 
 #: commands\admin.py:1224
 #, docstring
@@ -1139,7 +1135,7 @@ msgstr "Eine Nachricht mit einer anderen Nachricht aktualisieren (das Ziel wird 
 
 #: commands\admin.py:1340
 msgid "Failed to update message!"
-msgstr ""
+msgstr "Meldung konnte nicht aktualisiert werden!"
 
 #: commands\admin.py:1352
 #, docstring
@@ -1215,32 +1211,36 @@ msgstr "Die Einbettung konnte nicht gesendet werden!\n"
 msgid "Add a user to your ticket"
 msgstr "Hinzufügen eines Benutzers zu Ihrem Ticket"
 
-#: commands\base.py:32 commands\base.py:73
+#: commands\base.py:31 commands\base.py:75
 msgid "This is not a ticket channel, or it has been removed from config"
 msgstr "Dies ist kein Ticket-Kanal oder er wurde aus der Konfiguration entfernt"
 
-#: commands\base.py:54
+#: commands\base.py:52
 msgid "You do not have permissions to add users to this ticket"
 msgstr "Sie haben keine Berechtigung, Benutzer zu diesem Ticket hinzuzufügen"
 
-#: commands\base.py:61
+#: commands\base.py:62
+msgid "Failed to add user to ticket: {}"
+msgstr ""
+
+#: commands\base.py:64
 msgid "has been added to this ticket!"
 msgstr "wurde zu diesem Ticket hinzugefügt!"
 
-#: commands\base.py:67
+#: commands\base.py:70
 #, docstring
 msgid "Rename your ticket channel"
 msgstr "Benennen Sie Ihren Ticket-Kanal um"
 
-#: commands\base.py:94
+#: commands\base.py:95
 msgid "You do not have permissions to rename this ticket"
 msgstr "Sie haben nicht die Berechtigung, dieses Ticket umzubenennen"
 
-#: commands\base.py:98
+#: commands\base.py:99
 msgid "Ticket has been renamed"
 msgstr "Das Ticket wurde umbenannt"
 
-#: commands\base.py:106
+#: commands\base.py:107
 #, docstring
 msgid "\n"
 "        Close your ticket\n\n"
@@ -1258,19 +1258,19 @@ msgstr "\n"
 "`[p]close 1h` - schließt das Ticket in 1 Stunde ohne Angabe von Gründen        \n"
 "`[p]close 1m thanks for helping!` - schließt das Ticket in 1 Minute mit dem Grund \"Danke für die Hilfe!\"        "
 
-#: commands\base.py:120
-msgid "Cannot find the owner of this ticket! Maybe it was removed from config?"
-msgstr "Ich kann den Besitzer dieses Tickets nicht finden! Vielleicht wurde es aus der Konfiguration entfernt?"
+#: commands\base.py:121
+msgid "Cannot find the owner of this ticket! Maybe it is not a ticket channel or was cleaned from the config?"
+msgstr "Ich kann den Besitzer dieses Tickets nicht finden! Vielleicht ist es kein Ticketkanal oder wurde aus der Konfiguration entfernt?"
 
-#: commands\base.py:127
+#: commands\base.py:128
 msgid "You do not have permissions to close this ticket"
 msgstr "Sie haben keine Berechtigung, dieses Ticket zu schließen"
 
-#: commands\base.py:145
+#: commands\base.py:146
 msgid "This ticket will close {}"
 msgstr "Dieses Ticket wird geschlossen {}"
 
-#: commands\base.py:153
+#: commands\base.py:154
 msgid "Closing cancelled!"
 msgstr "Schließung abgesagt!"
 

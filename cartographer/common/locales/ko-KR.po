@@ -1,0 +1,236 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: vrt-cogs\n"
+"POT-Creation-Date: 2023-10-16 17:37-0400\n"
+"PO-Revision-Date: 2023-10-17 14:22\n"
+"Last-Translator: \n"
+"Language-Team: Korean\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: redgettext 3.4.2\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"X-Crowdin-Project: vrt-cogs\n"
+"X-Crowdin-Project-ID: 550681\n"
+"X-Crowdin-Language: ko\n"
+"X-Crowdin-File: /main/cartographer/common/locales/messages.pot\n"
+"X-Crowdin-File-ID: 78\n"
+"Language: ko_KR\n"
+
+#: common\formatting.py:11
+msgid "`Created:        `{}\n"
+"`Name:           `{}\n"
+"`AFK Channel:    `{}\n"
+"`AFK Timeout:    `{}\n"
+"`Verification:   `{}\n"
+"`Notifications:  `{}\n"
+"`Locale:         `{}\n"
+"`Role Count:     `{}\n"
+"`Members Saved:  `{}\n"
+"`Categories:     `{}\n"
+"`Text Channels:  `{}\n"
+"`Voice Channels: `{}\n"
+"`Forums:         `{}\n"
+msgstr ""
+
+#: common\formatting.py:45
+msgid "Controls"
+msgstr "컨트롤"
+
+#: common\formatting.py:46
+msgid "- Backup Current Server: 📥\n"
+"- Restore Here: 🔄\n"
+"- Switch Servers: 🔍\n"
+"- Set AutoBackup Interval: ⌛\n"
+"- Delete Backup: 🗑️\n"
+msgstr "- 현재 서버 백업: 📥\n"
+"- 여기에서 복원: 🔄\n"
+"- 서버 전환: 🔍\n"
+"- 자동 백업 간격 설정: ⌛\n"
+"- 백업 삭제: 🗑️\n"
+
+#: common\formatting.py:53
+msgid "Settings"
+msgstr "설정"
+
+#: common\formatting.py:54
+msgid "- Auto Backup Interval Hours: {}\n"
+"- Last Backup: {}"
+msgstr ""
+
+#: common\formatting.py:57
+msgid "Cartographer Backups for {}"
+msgstr ""
+
+#: common\formatting.py:64
+msgid "Page {}"
+msgstr ""
+
+#: common\formatting.py:67
+msgid "There are no backups for this server yet!"
+msgstr "아직 이 서버에 대한 백업이 없습니다!"
+
+#: common\models.py:178 common\models.py:189 common\models.py:216
+msgid "Restored from backup"
+msgstr "백업에서 복원"
+
+#: common\models.py:694
+msgid "Cartographer Restore"
+msgstr "지도 제작자 복원"
+
+#: common\models.py:695
+msgid " (Removal)"
+msgstr " (제거)"
+
+#: common\models.py:835
+msgid "Server restore has completed successfully!"
+msgstr "서버 복원이 성공적으로 완료되었습니다!"
+
+#: common\views.py:36
+msgid "That is not a number!"
+msgstr "숫자가 아닙니다!"
+
+#: common\views.py:47
+msgid "Confirmation"
+msgstr "확인"
+
+#: common\views.py:49
+msgid "Are you SURE?"
+msgstr "확실하신가요?"
+
+#: common\views.py:52
+msgid "THIS CANNOT BE UNDONE!"
+msgstr "이것은 되돌릴 수 없습니다!"
+
+#: common\views.py:56
+msgid "Remove Old"
+msgstr "이전 제거"
+
+#: common\views.py:59
+msgid "removes unsaved channels/roles"
+msgstr "저장되지 않은 채널/역할을 제거합니다"
+
+#: common\views.py:64
+msgid "response must be a string!"
+msgstr "응답은 문자열이어야 합니다!"
+
+#: common\views.py:84
+msgid "Close"
+msgstr "닫기"
+
+#: common\views.py:88
+msgid "This isn't your menu!"
+msgstr "이건 메뉴가 아닙니다!"
+
+#: common\views.py:129
+msgid "Backing up {}!"
+msgstr ""
+
+#: common\views.py:133
+msgid "Backup created!"
+msgstr "백업이 생성되었습니다!"
+
+#: common\views.py:136
+msgid "- Backup contains roles with duplcate names! Only one role per unique name can be restored!"
+msgstr "- 백업에 이름이 중복된 역할이 포함되어 있습니다! 고유 이름당 하나의 역할만 복원할 수 있습니다!"
+
+#: common\views.py:140
+msgid "- Backup contains categories with duplcate names! Only one category per unique name can be restored!"
+msgstr "- 백업에 이름이 중복된 카테고리가 포함되어 있습니다! 고유한 이름당 하나의 카테고리만 복원할 수 있습니다!"
+
+#: common\views.py:144
+msgid "- Backup contains text channels with duplcate names! Only one text channel per unique name can be restored!"
+msgstr "- 백업에 이름이 중복된 텍스트 채널이 포함되어 있습니다! 고유 이름당 하나의 텍스트 채널만 복원할 수 있습니다!"
+
+#: common\views.py:148
+msgid "- Backup contains voice channels with duplcate names! Only one voice channel per unique name can be restored!"
+msgstr "- 백업에 이름이 중복된 음성 채널이 포함되어 있습니다! 고유 이름당 하나의 음성 채널만 복원할 수 있습니다!"
+
+#: common\views.py:152
+msgid "- Backup contains forum channels with duplcate names! Only one forum channel per unique name can be restored!"
+msgstr "- 백업에 이름이 중복된 포럼 채널이 포함되어 있습니다! 고유 이름당 하나의 포럼 채널만 복원할 수 있습니다!"
+
+#: common\views.py:162
+msgid "No backups to restore!"
+msgstr "복원할 백업이 없습니다!"
+
+#: common\views.py:174
+msgid "Your backup is being restored!"
+msgstr "백업이 복원 중입니다!"
+
+#: common\views.py:176
+msgid "- Backup contains roles with duplcate names! Only one role per unique name will be restored!"
+msgstr "- 백업에 이름이 중복된 역할이 포함되어 있습니다! 고유 이름당 하나의 역할만 복원됩니다!"
+
+#: common\views.py:180
+msgid "- Backup contains categories with duplcate names! Only one category per unique name will be restored!"
+msgstr "- 백업에 이름이 중복된 카테고리가 포함되어 있습니다! 고유한 이름당 하나의 카테고리만 복원됩니다!"
+
+#: common\views.py:184
+msgid "- Backup contains text channels with duplcate names! Only one text channel per unique name will be restored!"
+msgstr "- 백업에 이름이 중복된 텍스트 채널이 포함되어 있습니다! 고유 이름당 하나의 텍스트 채널만 복원됩니다!"
+
+#: common\views.py:188
+msgid "- Backup contains voice channels with duplcate names! Only one voice channel per unique name will be restored!"
+msgstr "- 백업에 이름이 중복된 음성 채널이 포함되어 있습니다! 고유 이름당 하나의 음성 채널만 복원됩니다!"
+
+#: common\views.py:192
+msgid "- Backup contains forum channels with duplcate names! Only one forum channel per unique name will be restored!"
+msgstr "- 백업에 이름이 중복된 포럼 채널이 포함되어 있습니다! 고유 이름당 하나의 포럼 채널만 복원됩니다!"
+
+#: common\views.py:197
+msgid "Restore has been cancelled!"
+msgstr "복원이 취소되었습니다!"
+
+#: common\views.py:202
+msgid "Switch Servers"
+msgstr "서버 전환"
+
+#: common\views.py:202
+msgid "Server ID"
+msgstr "서버 ID"
+
+#: common\views.py:202
+msgid "Enter the ID of the server"
+msgstr "서버의 ID를 입력합니다"
+
+#: common\views.py:209
+msgid "I am not in that server!"
+msgstr "나는 그 서버에 있지 않습니다!"
+
+#: common\views.py:213
+msgid "You do not appear to be in that server!"
+msgstr "해당 서버에 접속하지 않은 것 같습니다!"
+
+#: common\views.py:216
+msgid "You can only switch to servers that you are an administrator of!"
+msgstr "자신이 관리자인 서버로만 전환할 수 있습니다!"
+
+#: common\views.py:226
+msgid "Auto backups have been disabled by the bot owner!"
+msgstr "봇 소유자에 의해 자동 백업이 비활성화되었습니다!"
+
+#: common\views.py:228
+msgid "Auto Backup Interval"
+msgstr "자동 백업 간격"
+
+#: common\views.py:228
+msgid "Interval Hours"
+msgstr "간격 시간"
+
+#: common\views.py:228
+msgid "Hours in-between backups"
+msgstr "백업 사이의 시간"
+
+#: common\views.py:234
+msgid "Auto-backup interval hours has been set to {}"
+msgstr ""
+
+#: common\views.py:246
+msgid "No backups to delete!"
+msgstr "삭제할 백업이 없습니다!"
+
+#: common\views.py:252
+msgid "Backup deleted!"
+msgstr "백업이 삭제되었습니다!"
+

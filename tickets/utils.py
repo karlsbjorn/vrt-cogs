@@ -9,7 +9,7 @@ from discord.utils import escape_markdown
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.i18n import Translator
-from redbot.core.utils.chat_formatting import humanize_list, pagify
+from redbot.core.utils.chat_formatting import humanize_list, pagify, text_to_file
 from redbot.core.utils.mod import is_admin_or_superior
 
 LOADING = "https://i.imgur.com/l3p6EMX.gif"
@@ -49,9 +49,7 @@ async def can_close(
     return can_close
 
 
-async def fetch_channel_history(
-    channel: discord.TextChannel, limit: int = None
-) -> List[discord.Message]:
+async def fetch_channel_history(channel: discord.TextChannel, limit: int = None) -> List[discord.Message]:
     history = []
     async for msg in channel.history(oldest_first=True, limit=limit):
         history.append(msg)
@@ -96,18 +94,10 @@ async def close_ticket(
     panel = conf["panels"][panel_name]
     panel.get("threads")
 
-    if not channel.permissions_for(guild.me).manage_channels and isinstance(
-        channel, discord.TextChannel
-    ):
-        return await channel.send(
-            _("I am missing the `Manage Channels` permission to close this ticket!")
-        )
-    if not channel.permissions_for(guild.me).manage_threads and isinstance(
-        channel, discord.Thread
-    ):
-        return await channel.send(
-            _("I am missing the `Manage Threads` permission to close this ticket!")
-        )
+    if not channel.permissions_for(guild.me).manage_channels and isinstance(channel, discord.TextChannel):
+        return await channel.send(_("I am missing the `Manage Channels` permission to close this ticket!"))
+    if not channel.permissions_for(guild.me).manage_threads and isinstance(channel, discord.Thread):
+        return await channel.send(_("I am missing the `Manage Threads` permission to close this ticket!"))
 
     opened = int(datetime.fromisoformat(ticket["opened"]).timestamp())
     closed = int(datetime.now().timestamp())
@@ -129,9 +119,7 @@ async def close_ticket(
         closer_name,
         str(reason),
     )
-    backup_text = _(
-        "Ticket Closed\n{}\nCurrently missing permissions to send embeds to this channel!"
-    ).format(desc)
+    backup_text = _("Ticket Closed\n{}\nCurrently missing permissions to send embeds to this channel!").format(desc)
     embed = discord.Embed(
         title=_("Ticket Closed"),
         description=desc,
@@ -261,26 +249,35 @@ async def prune_invalid_tickets(
             await ctx.send(_("There are no tickets stored in the database."))
         return False
 
-    member_ids = {m.id for m in guild.members}
-    channel_ids = [c.id for c in guild.channels]
-    channel_ids.extend([c.id for c in guild.threads])
-
-    valid_opened_tickets = {}
+    users_to_remove = []
+    tickets_to_remove = []
     count = 0
     for user_id, tickets in opened_tickets.items():
-        if int(user_id) not in member_ids:
+        member = guild.get_member(int(user_id))
+        if not member:
             count += len(list(tickets.keys()))
+            users_to_remove.append(user_id)
             log.info(f"Cleaning up user {user_id}'s tickets for leaving")
             continue
 
-        valid_user_tickets = {}
-        for channel_id, ticket in tickets.items():
-            if int(channel_id) in channel_ids:
-                valid_user_tickets[channel_id] = ticket
-                continue
+        if not tickets:
             count += 1
-            log.info(f"Ticket channel {channel_id} no longer exists for user {user_id}")
-            panel = conf["panels"][ticket["panel"]]
+            users_to_remove.append(user_id)
+            log.info(f"Cleaning member {member} for having no tickets opened")
+            continue
+
+        for channel_id, ticket in tickets.items():
+            if guild.get_channel_or_thread(int(channel_id)):
+                continue
+
+            count += 1
+            log.info(f"Ticket channel {channel_id} no longer exists for {member}")
+            tickets_to_remove.append((user_id, channel_id))
+
+            panel = conf["panels"].get(ticket["panel"])
+            if not panel:
+                # Panel has been deleted
+                continue
             log_message_id = ticket["logmsg"]
             log_channel_id = panel["log_channel"]
             if log_channel_id and log_message_id:
@@ -291,27 +288,26 @@ async def prune_invalid_tickets(
                 except (discord.NotFound, discord.Forbidden):
                     pass
 
-        if valid_user_tickets:
-            valid_opened_tickets[user_id] = valid_user_tickets
+    if users_to_remove or tickets_to_remove:
+        async with config.guild(guild).opened() as opened:
+            for uid in users_to_remove:
+                del opened[uid]
+            for uid, cid in tickets_to_remove:
+                del opened[uid][cid]
 
-    if count:
-        await config.guild(guild).opened.set(valid_opened_tickets)
-
+    grammar = _("ticket") if count == 1 else _("tickets")
     if count and ctx:
-        grammar = _("ticket") if count == 1 else _("tickets")
         txt = _("Pruned `{}` invalid {}").format(count, grammar)
         await ctx.send(txt)
     elif not count and ctx:
         await ctx.send(_("There are no tickets to prune"))
     elif count and not ctx:
-        log.info(f"{count} tickets pruned from {guild.name}")
+        log.info(f"{count} {grammar} pruned from {guild.name}")
 
     return True if count else False
 
 
-def prep_overview_embeds(
-    guild: discord.Guild, opened: dict, mention: bool = False
-) -> List[discord.Embed]:
+def prep_overview_text(guild: discord.Guild, opened: dict, mention: bool = False) -> str:
     title = _("Ticket Overview")
     active = []
     for uid, opened_tickets in opened.items():
@@ -335,6 +331,7 @@ def prep_overview_embeds(
             active.append(entry)
 
     if not active:
+        return _("There are no active tickets.")
         embed = discord.Embed(
             title=title,
             description=_("There are no active tickets."),
@@ -349,6 +346,7 @@ def prep_overview_embeds(
     for index, i in enumerate(sorted_active):
         chan_mention, panel, ts, username = i
         desc += f"{index + 1}. {chan_mention}({panel}) <t:{ts}:R> - {username}\n"
+    return desc
 
     embeds = []
     for p in pagify(desc, page_length=4000):
@@ -374,11 +372,42 @@ async def update_active_overview(guild: discord.Guild, conf: dict) -> Optional[i
     """
     if not conf["overview_channel"]:
         return
-    channel = guild.get_channel(conf["overview_channel"])
+    channel: discord.TextChannel = guild.get_channel(conf["overview_channel"])
     if not channel:
         return
 
-    embeds = prep_overview_embeds(guild, conf["opened"], conf.get("overview_mention", False))
+    txt = prep_overview_text(guild, conf["opened"], conf.get("overview_mention", False))
+    title = _("Ticket Overview")
+    embeds = []
+    attachments = []
+    if len(txt) < 4000:
+        embed = discord.Embed(
+            title=title,
+            description=txt,
+            color=discord.Color.greyple(),
+            timestamp=datetime.now(),
+        )
+        embeds.append(embed)
+    elif len(txt) < 5500:
+        for p in pagify(txt, page_length=3900):
+            embed = discord.Embed(
+                title=title,
+                description=p,
+                color=discord.Color.greyple(),
+                timestamp=datetime.now(),
+            )
+            embeds.append(embed)
+    else:
+        embed = discord.Embed(
+            title=title,
+            description=_("Too many active tickets to include in message!"),
+            color=discord.Color.red(),
+            timestamp=datetime.now(),
+        )
+        embeds.append(embed)
+        filename = _("Active Tickets") + ".txt"
+        file = text_to_file(txt, filename=filename)
+        attachments = [file]
 
     message = None
     if msg_id := conf["overview_msg"]:
@@ -388,7 +417,7 @@ async def update_active_overview(guild: discord.Guild, conf: dict) -> Optional[i
             pass
 
     if message:
-        await message.edit(embeds=embeds)
+        await message.edit(embeds=embeds, attachments=attachments)
     else:
-        message = await channel.send(embeds=embeds)
+        message = await channel.send(embeds=embeds, files=attachments)
         return message.id

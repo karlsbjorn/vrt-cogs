@@ -32,7 +32,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
     """
 
     __author__ = "Vertyco"
-    __version__ = "2.3.2"
+    __version__ = "2.4.2"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -41,6 +41,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
         """No data to delete"""
+        return
 
     def __init__(self, bot: Red):
         self.bot: Red = bot
@@ -73,6 +74,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
             "category_id": 0,  # <Required>
             "channel_id": 0,  # <Required>
             "message_id": 0,  # <Required>
+            "disabled": False,  # Whether panel is disabled
             "alt_channel": 0,  # (Optional) Open tickets from another channel/category
             "required_roles": [],  # (Optional) list of role IDs, empty list if anyone can open
             "close_reason": True,  # Throw a modal for closing reason on the ticket close button
@@ -223,6 +225,10 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
                 panel["row"] = None
                 panel["priority"] = 1
                 migrations = True
+            # v2.4.0 schema update (Disable panels)
+            if "disabled" not in panel:
+                panel["disabled"] = False
+                migrations = True
 
             panel["name"] = panel_name
             key = f"{channel_id}-{message_id}"
@@ -275,9 +281,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
                     continue
                 log_channel = guild.get_channel(int(panel["log_channel"]))
                 if not log_channel:
-                    log.warning(
-                        f"Log channel no longer exits for {member.display_name}'s ticket in {guild.name}"
-                    )
+                    log.warning(f"Log channel no longer exits for {member.display_name}'s ticket in {guild.name}")
                     continue
 
                 max_claims = ticket_info.get("max_claims", 0)
@@ -315,7 +319,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
                     channel = guild.get_channel_or_thread(int(channel_id))
                     if not channel:
                         continue
-                    now = datetime.datetime.now()
+                    now = datetime.datetime.now().astimezone()
                     opened_on = datetime.datetime.fromisoformat(ticket["opened"])
                     hastyped = await ticket_owner_hastyped(channel, member)
                     if hastyped and channel_id not in self.valid:
@@ -341,8 +345,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
                             guild,
                             channel,
                             conf,
-                            _("(Auto-Close) Opened ticket with no response for ")
-                            + f"{inactive} {time}",
+                            _("(Auto-Close) Opened ticket with no response for ") + f"{inactive} {time}",
                             self.bot.user.name,
                             self.config,
                         )
@@ -352,9 +355,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
                             f"Hours elapsed: {td}"
                         )
                     except Exception as e:
-                        log.error(
-                            f"Failed to auto-close ticket for {member} in {guild.name}\nException: {e}"
-                        )
+                        log.error(f"Failed to auto-close ticket for {member} in {guild.name}\nException: {e}")
 
         if tasks:
             await asyncio.gather(*actasks)
@@ -395,9 +396,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
                     config=self.config,
                 )
             except Exception as e:
-                log.error(
-                    f"Failed to auto-close ticket for {member} leaving {member.guild}\nException: {e}"
-                )
+                log.error(f"Failed to auto-close ticket for {member} leaving {member.guild}\nException: {e}")
 
     @commands.Cog.listener()
     async def on_thread_delete(self, thread: discord.Thread):
@@ -407,7 +406,7 @@ class Tickets(TicketCommands, commands.Cog, metaclass=CompositeMetaClass):
         conf = await self.config.guild(guild).all()
         pruned = await prune_invalid_tickets(guild, conf, self.config)
         if pruned:
-            log.info("Pruned old ticket channels")
+            log.info("Pruned old ticket threads")
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
