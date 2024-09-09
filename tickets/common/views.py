@@ -312,6 +312,21 @@ class SupportButton(Button):
         max_tickets = conf["max_tickets"]
         opened = conf["opened"]
         uid = str(user.id)
+        category = guild.get_channel(panel["category_id"]) if panel["category_id"] else None
+        # i dont believe in optimization
+        if guild.id in (742457855008964800, 362298824854863882):
+            for _channel in guild.channels:
+                if not _channel.category or not _channel.category.id == category.id:
+                    continue
+                for _member in _channel.members:
+                    if str(_member.id) == uid:
+                        em = discord.Embed(
+                            description=_("Već imaš svoj kanal!{}").format(
+                                f"\n{_channel.mention}"
+                            ),
+                            color=discord.Color.red(),
+                        )
+                        return await interaction.response.send_message(embed=em, ephemeral=True)
         if uid in opened and max_tickets <= len(opened[uid]):
             channels = "\n".join([f"<#{i}>" for i in opened[uid]])
             em = discord.Embed(
@@ -322,7 +337,6 @@ class SupportButton(Button):
             )
             return await interaction.response.send_message(embed=em, ephemeral=True)
 
-        category = guild.get_channel(panel["category_id"]) if panel["category_id"] else None
         if not category:
             em = discord.Embed(
                 description=_(
