@@ -220,7 +220,7 @@ class Tickets(TicketCommands, Functions, commands.Cog, metaclass=CompositeMetaCl
 
                 # v2.0.0 stores message id for close button to re-init views on reload
                 if message_id := ticket_info.get("message_id"):
-                    view = None
+                    view = CloseView(self.bot, self.config, int(uid), ticket_channel)
                     self.bot.add_view(view, message_id=message_id)
                     self.view_cache[guild.id].append(view)
 
