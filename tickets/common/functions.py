@@ -91,7 +91,9 @@ class Functions(MixinMeta):
         opened = conf["opened"]
         if str(user.id) in opened and conf["max_tickets"] <= len(opened[str(user.id)]):
             channels = "\n".join([f"<#{i}>" for i in opened[str(user.id)]])
-            txt = f"This user has the maximum amount of tickets opened already!\nTickets: {channels}"
+            txt = (
+                f"This user has the maximum amount of tickets opened already!\nTickets: {channels}"
+            )
             return txt
 
         panels = conf["panels"]
@@ -304,7 +306,11 @@ class Functions(MixinMeta):
             "longdate": now.strftime("%m-%d-%Y"),
             "time": now.strftime("%I-%M-%p"),
         }
-        channel_name = name_fmt.format(**params) if name_fmt else user.name
+        if user.guild.id in (362298824854863882, 742457855008964800):
+            char_name = answers["Ime maina in-game"].split("-")[0]
+            channel_name = char_name if answers else user.name
+        else:
+            channel_name = name_fmt.format(**params) if name_fmt else user.name
         default_channel_name = f"{panel_name}-{num}"
         try:
             if panel.get("threads"):
@@ -380,7 +386,9 @@ class Functions(MixinMeta):
         default_message = _("Welcome to your ticket channel ") + f"{user.display_name}!"
         user_can_close = conf["user_can_close"]
         if user_can_close:
-            default_message += _("\nYou or an admin can close this with the `{}close` command").format(prefix)
+            default_message += _(
+                "\nYou or an admin can close this with the `{}close` command"
+            ).format(prefix)
 
         messages = panel["ticket_messages"]
         params = {
@@ -442,7 +450,9 @@ class Functions(MixinMeta):
             try:
                 asyncio.create_task(form_msg.pin(reason=_("Ticket form questions")))
             except discord.Forbidden:
-                txt = _("I tried to pin the response message but don't have the manage messages permissions!")
+                txt = _(
+                    "I tried to pin the response message but don't have the manage messages permissions!"
+                )
                 asyncio.create_task(channel_or_thread.send(txt))
 
         if logchannel:
