@@ -583,12 +583,7 @@ class SupportButton(Button):
             content = " ".join(support_mentions)
 
         allowed_mentions = discord.AllowedMentions(roles=True)
-        close_view = CloseView(
-            self.view.bot,
-            self.view.config,
-            user.id,
-            channel_or_thread,
-        )
+        close_view = None
         if messages:
             embeds = []
             for index, einfo in enumerate(messages):

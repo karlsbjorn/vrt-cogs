@@ -414,12 +414,7 @@ class Functions(MixinMeta):
             content = " ".join(support_mentions)
 
         allowed_mentions = discord.AllowedMentions(roles=True)
-        close_view = CloseView(
-            self.bot,
-            self.config,
-            user.id,
-            channel_or_thread,
-        )
+        close_view = None
         if messages:
             embeds = []
             for index, einfo in enumerate(messages):
