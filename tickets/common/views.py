@@ -316,7 +316,11 @@ class SupportButton(Button):
         # i dont believe in optimization
         if guild.id in (742457855008964800, 362298824854863882):
             for _channel in guild.channels:
-                if not _channel.category or not _channel.category.id == category.id:
+                if not _channel.category or not _channel.category.id in (
+                    category.id,
+                    594612392919564307,
+                    1282397212269350942,
+                ):
                     continue
                 for _member in _channel.members:
                     if str(_member.id) == uid:

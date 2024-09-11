@@ -56,13 +56,13 @@ class Tickets(TicketCommands, Functions, commands.Cog, metaclass=CompositeMetaCl
         self.view_cache: t.Dict[int, t.List[discord.ui.View]] = {}  # Saved views to end on reload
         self.initializing = False
 
-        self.auto_close.start()
+        # self.auto_close.start()
 
     async def cog_load(self) -> None:
         asyncio.create_task(self._startup())
 
     async def cog_unload(self) -> None:
-        self.auto_close.cancel()
+        # self.auto_close.cancel()
         for view in self.views:
             view.stop()
 
@@ -245,121 +245,121 @@ class Tickets(TicketCommands, Functions, commands.Cog, metaclass=CompositeMetaCl
                 self.bot.add_view(logview, message_id=ticket_info["logmsg"])
                 self.view_cache[guild.id].append(logview)
 
-    @tasks.loop(minutes=20)
-    async def auto_close(self):
-        actasks = []
-        conf = await self.config.all_guilds()
-        for gid, conf in conf.items():
-            if not conf:
-                continue
-            guild = self.bot.get_guild(gid)
-            if not guild:
-                continue
-            inactive = conf["inactive"]
-            if not inactive:
-                continue
-            opened = conf["opened"]
-            if not opened:
-                continue
-            for uid, tickets in opened.items():
-                member = guild.get_member(int(uid))
-                if not member:
-                    continue
-                for channel_id, ticket in tickets.items():
-                    has_response = ticket.get("has_response")
-                    if has_response and channel_id not in self.valid:
-                        self.valid.append(channel_id)
-                        continue
-                    if channel_id in self.valid:
-                        continue
-                    channel = guild.get_channel_or_thread(int(channel_id))
-                    if not channel:
-                        continue
-                    now = datetime.datetime.now().astimezone()
-                    opened_on = datetime.datetime.fromisoformat(ticket["opened"])
-                    hastyped = await ticket_owner_hastyped(channel, member)
-                    if hastyped and channel_id not in self.valid:
-                        self.valid.append(channel_id)
-                        continue
-                    td = (now - opened_on).total_seconds() / 3600
-                    next_td = td + 0.33
-                    if td < inactive <= next_td:
-                        # Ticket hasn't expired yet but will in the next loop
-                        warning = _(
-                            "If you do not respond to this ticket "
-                            "within the next 20 minutes it will be closed automatically."
-                        )
-                        await channel.send(f"{member.mention}\n{warning}")
-                        continue
-                    elif td < inactive:
-                        continue
+    # @tasks.loop(minutes=20)
+    # async def auto_close(self):
+    #     actasks = []
+    #     conf = await self.config.all_guilds()
+    #     for gid, conf in conf.items():
+    #         if not conf:
+    #             continue
+    #         guild = self.bot.get_guild(gid)
+    #         if not guild:
+    #             continue
+    #         inactive = conf["inactive"]
+    #         if not inactive:
+    #             continue
+    #         opened = conf["opened"]
+    #         if not opened:
+    #             continue
+    #         for uid, tickets in opened.items():
+    #             member = guild.get_member(int(uid))
+    #             if not member:
+    #                 continue
+    #             for channel_id, ticket in tickets.items():
+    #                 has_response = ticket.get("has_response")
+    #                 if has_response and channel_id not in self.valid:
+    #                     self.valid.append(channel_id)
+    #                     continue
+    #                 if channel_id in self.valid:
+    #                     continue
+    #                 channel = guild.get_channel_or_thread(int(channel_id))
+    #                 if not channel:
+    #                     continue
+    #                 now = datetime.datetime.now().astimezone()
+    #                 opened_on = datetime.datetime.fromisoformat(ticket["opened"])
+    #                 hastyped = await ticket_owner_hastyped(channel, member)
+    #                 if hastyped and channel_id not in self.valid:
+    #                     self.valid.append(channel_id)
+    #                     continue
+    #                 td = (now - opened_on).total_seconds() / 3600
+    #                 next_td = td + 0.33
+    #                 if td < inactive <= next_td:
+    #                     # Ticket hasn't expired yet but will in the next loop
+    #                     warning = _(
+    #                         "If you do not respond to this ticket "
+    #                         "within the next 20 minutes it will be closed automatically."
+    #                     )
+    #                     await channel.send(f"{member.mention}\n{warning}")
+    #                     continue
+    #                 elif td < inactive:
+    #                     continue
 
-                    time = "hours" if inactive != 1 else "hour"
-                    try:
-                        await close_ticket(
-                            self.bot,
-                            member,
-                            guild,
-                            channel,
-                            conf,
-                            _("(Auto-Close) Opened ticket with no response for ")
-                            + f"{inactive} {time}",
-                            self.bot.user.name,
-                            self.config,
-                        )
-                        log.info(
-                            f"Ticket opened by {member.name} has been auto-closed.\n"
-                            f"Has typed: {hastyped}\n"
-                            f"Hours elapsed: {td}"
-                        )
-                    except Exception as e:
-                        log.error(
-                            f"Failed to auto-close ticket for {member} in {guild.name}\nException: {e}"
-                        )
+    #                 time = "hours" if inactive != 1 else "hour"
+    #                 try:
+    #                     await close_ticket(
+    #                         self.bot,
+    #                         member,
+    #                         guild,
+    #                         channel,
+    #                         conf,
+    #                         _("(Auto-Close) Opened ticket with no response for ")
+    #                         + f"{inactive} {time}",
+    #                         self.bot.user.name,
+    #                         self.config,
+    #                     )
+    #                     log.info(
+    #                         f"Ticket opened by {member.name} has been auto-closed.\n"
+    #                         f"Has typed: {hastyped}\n"
+    #                         f"Hours elapsed: {td}"
+    #                     )
+    #                 except Exception as e:
+    #                     log.error(
+    #                         f"Failed to auto-close ticket for {member} in {guild.name}\nException: {e}"
+    #                     )
 
-        if tasks:
-            await asyncio.gather(*actasks)
+    #     if tasks:
+    #         await asyncio.gather(*actasks)
 
-    @auto_close.before_loop
-    async def before_auto_close(self):
-        await self.bot.wait_until_red_ready()
-        await asyncio.sleep(300)
+    # @auto_close.before_loop
+    # async def before_auto_close(self):
+    #     await self.bot.wait_until_red_ready()
+    #     await asyncio.sleep(300)
 
     # Will automatically close/cleanup any tickets if a member leaves that has an open ticket
-    @commands.Cog.listener()
-    async def on_member_remove(self, member: discord.Member):
-        if not member:
-            return
-        guild = member.guild
-        if not guild:
-            return
-        conf = await self.config.guild(guild).all()
-        opened = conf["opened"]
-        if str(member.id) not in opened:
-            return
-        tickets = opened[str(member.id)]
-        if not tickets:
-            return
+    # @commands.Cog.listener()
+    # async def on_member_remove(self, member: discord.Member):
+    #     if not member:
+    #         return
+    #     guild = member.guild
+    #     if not guild:
+    #         return
+    #     conf = await self.config.guild(guild).all()
+    #     opened = conf["opened"]
+    #     if str(member.id) not in opened:
+    #         return
+    #     tickets = opened[str(member.id)]
+    #     if not tickets:
+    #         return
 
-        for cid in tickets:
-            chan = guild.get_channel_or_thread(int(cid))
-            if not chan:
-                continue
-            try:
-                await close_ticket(
-                    bot=self.bot,
-                    member=member,
-                    guild=guild,
-                    channel=chan,
-                    conf=conf,
-                    reason=_("User left guild(Auto-Close)"),
-                    closedby=self.bot.user.display_name,
-                    config=self.config,
-                )
-            except Exception as e:
-                log.error(
-                    f"Failed to auto-close ticket for {member} leaving {member.guild}\nException: {e}"
-                )
+    #     for cid in tickets:
+    #         chan = guild.get_channel_or_thread(int(cid))
+    #         if not chan:
+    #             continue
+    #         try:
+    #             await close_ticket(
+    #                 bot=self.bot,
+    #                 member=member,
+    #                 guild=guild,
+    #                 channel=chan,
+    #                 conf=conf,
+    #                 reason=_("User left guild(Auto-Close)"),
+    #                 closedby=self.bot.user.display_name,
+    #                 config=self.config,
+    #             )
+    #         except Exception as e:
+    #             log.error(
+    #                 f"Failed to auto-close ticket for {member} leaving {member.guild}\nException: {e}"
+    #             )
 
     @commands.Cog.listener()
     async def on_thread_delete(self, thread: discord.Thread):
