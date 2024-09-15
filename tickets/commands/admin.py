@@ -357,7 +357,7 @@ class AdminCommands(MixinMeta):
         self,
         ctx: commands.Context,
         panel_name: str,
-        channel: discord.TextChannel,
+        channel: discord.TextChannel | discord.Thread,
     ):
         """Set the logging channel for each panel's tickets"""
         panel_name = panel_name.lower()
