@@ -652,7 +652,7 @@ class SupportButton(Button):
 
         if (
             logchannel
-            and isinstance(logchannel, discord.TextChannel)
+            and isinstance(logchannel, (discord.TextChannel, discord.Thread))
             and logchannel.permissions_for(guild.me).send_messages
         ):
             ts = int(now.timestamp())
