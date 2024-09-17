@@ -881,6 +881,8 @@ class AdminCommands(MixinMeta):
                     channel = alt
                     extra = _("(alt)")
             logchannel = self.bot.get_channel(info["log_channel"]) if info["log_channel"] else "None"
+            if logchannel == "None":
+                ctx.guild.get_thread(info["log_channel"])
 
             panel_roles = ""
             for role_id, mention_toggle in info.get("roles", []):

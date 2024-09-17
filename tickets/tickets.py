@@ -233,7 +233,7 @@ class Tickets(TicketCommands, Functions, commands.Cog, metaclass=CompositeMetaCl
                 panel = all_panels[panel_name]
                 if not panel["log_channel"]:
                     continue
-                log_channel = guild.get_channel(int(panel["log_channel"]))
+                log_channel = guild.get_channel_or_thread(int(panel["log_channel"]))
                 if not log_channel:
                     log.warning(
                         f"Log channel no longer exits for {member.display_name}'s ticket in {guild.name}"

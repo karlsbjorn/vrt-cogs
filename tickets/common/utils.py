@@ -392,7 +392,7 @@ async def prune_invalid_tickets(
             log_message_id = ticket["logmsg"]
             log_channel_id = panel["log_channel"]
             if log_channel_id and log_message_id:
-                log_channel = guild.get_channel(log_channel_id)
+                log_channel = guild.get_channel_or_thread(log_channel_id)
                 try:
                     log_message = await log_channel.fetch_message(log_message_id)
                     await log_message.delete()
