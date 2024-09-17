@@ -361,7 +361,7 @@ class SupportButton(Button):
             return await interaction.response.send_message(embed=em, ephemeral=True)
 
         user_can_close = conf["user_can_close"]
-        logchannel = guild.get_channel(panel["log_channel"]) if panel["log_channel"] else None
+        logchannel = guild.get_channel_or_thread(panel["log_channel"]) if panel["log_channel"] else None
 
         # Throw modal before creating ticket if the panel has one
         form_embed = discord.Embed()

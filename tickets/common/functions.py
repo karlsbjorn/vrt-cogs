@@ -162,7 +162,7 @@ class Functions(MixinMeta):
             answer5 (str, optional): The answer to the fifth ticket question. Defaults to None.
         """
 
-        guild = user.guild
+        guild: discord.Guild = user.guild
         conf = await self.config.guild(guild).all()
         if conf["suspended_msg"]:
             return f"Tickets are suspended: {conf['suspended_msg']}"
@@ -181,7 +181,7 @@ class Functions(MixinMeta):
             return "That ticket panel is disabled!"
 
         panel = panels[panel_name]
-        logchannel = guild.get_channel(panel["log_channel"])
+        logchannel = guild.get_channel_or_thread(panel["log_channel"])
         category = guild.get_channel(panel["category_id"])
         channel = guild.get_channel(panel["channel_id"])
         if alt_cid := panel.get("alt_channel"):

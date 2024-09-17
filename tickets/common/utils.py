@@ -136,7 +136,7 @@ async def close_ticket(
         color=discord.Color.green(),
     )
     embed.set_thumbnail(url=pfp)
-    log_chan = guild.get_channel(panel["log_channel"]) if panel["log_channel"] else None
+    log_chan = guild.get_channel_or_thread(panel["log_channel"]) if panel["log_channel"] else None
 
     text = ""
     files: List[dict] = []
