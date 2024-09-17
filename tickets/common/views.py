@@ -683,7 +683,7 @@ class SupportButton(Button):
             for question, answer in answers.items():
                 em.add_field(name=f"__{question}__", value=answer, inline=False)
 
-            view = LogView(guild, channel_or_thread, panel.get("max_claims", 0))
+            view = None
             log_message = await logchannel.send(embed=em, view=view)
         else:
             log_message = None

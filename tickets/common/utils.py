@@ -389,15 +389,15 @@ async def prune_invalid_tickets(
             if not panel:
                 # Panel has been deleted
                 continue
-            log_message_id = ticket["logmsg"]
-            log_channel_id = panel["log_channel"]
-            if log_channel_id and log_message_id:
-                log_channel = guild.get_channel_or_thread(log_channel_id)
-                try:
-                    log_message = await log_channel.fetch_message(log_message_id)
-                    await log_message.delete()
-                except (discord.NotFound, discord.Forbidden):
-                    pass
+            # log_message_id = ticket["logmsg"]
+            # log_channel_id = panel["log_channel"]
+            # if log_channel_id and log_message_id:
+            #     log_channel = guild.get_channel_or_thread(log_channel_id)
+            #     try:
+            #         log_message = await log_channel.fetch_message(log_message_id)
+            #         await log_message.delete()
+            #     except (discord.NotFound, discord.Forbidden):
+            #         pass
 
     if users_to_remove or tickets_to_remove:
         async with config.guild(guild).opened() as opened:
