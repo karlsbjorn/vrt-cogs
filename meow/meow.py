@@ -1,6 +1,9 @@
 import random
+import re
 
-from redbot.core import commands
+import discord
+from redbot.core import Config, commands
+from redbot.core.bot import Red
 
 CATS = [
     "^._.^",
@@ -10,13 +13,15 @@ CATS = [
     "(=^･ω･^=)",
     "(^・x・^)",
     "(=^･ｪ･^=))ﾉ彡☆",
-    "/ᐠ｡▿｡ᐟ\*ᵖᵘʳʳ*",
+    "/ᐠ｡▿｡ᐟ\\*ᵖᵘʳʳ*",
     "✧/ᐠ-ꞈ-ᐟ\\",
     "/ᐠ –ꞈ –ᐟ\\",
     "龴ↀ◡ↀ龴",
     "^ↀᴥↀ^",
     "(,,,)=(^.^)=(,,,)",
 ]
+# Match all messages that contain "now" including messsages that end in now or start with it
+NOW_REGEX = re.compile(r"\bnow\b", re.IGNORECASE)
 
 
 class Meow(commands.Cog):
@@ -24,11 +29,13 @@ class Meow(commands.Cog):
     Meow!
 
 
-    My girlfriend had a dream about this cog, so I had to make it ¯\_(ツ)_/¯
+    My ~~girlfriend~~ (now wife!) had a dream about this cog, so I had to make it ¯\\_(ツ)_/¯
+
+    Use `[p]automeow` to toggle automatic meow response.
     """
 
-    __author__ = "Vertyco"
-    __version__ = "0.2.0"
+    __author__ = "[vertyco](https://github.com/vertyco/vrt-cogs)"
+    __version__ = "0.3.3"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -38,7 +45,19 @@ class Meow(commands.Cog):
         """No data to delete"""
 
     def __init__(self, bot):
-        self.bot = bot
+        self.bot: Red = bot
+        self.config = Config.get_conf(self, 117, True)
+        self.config.register_guild(auto_meow=False)
+
+        self.cache = {}  # {guild_id: bool}
+
+    @commands.command()
+    async def automeow(self, ctx: commands.Context):
+        """Toggle automatic meow response"""
+        auto_meow = await self.config.guild(ctx.guild).auto_meow()
+        await self.config.guild(ctx.guild).auto_meow.set(not auto_meow)
+        self.cache[ctx.guild.id] = not auto_meow
+        await ctx.send(f"Auto meow is now {'enabled' if not auto_meow else 'disabled'}")
 
     @commands.command()
     async def meow(self, ctx: commands.Context):
@@ -74,3 +93,43 @@ class Meow(commands.Cog):
             },
         }
         await cog.register_function("Meow", schema)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if not message.guild:
+            return
+        if message.author.bot:
+            return
+        if not NOW_REGEX.search(message.content):
+            return
+
+        if message.guild.id in self.cache:
+            enabled = self.cache[message.guild.id]
+        else:
+            enabled = await self.config.guild(message.guild).auto_meow()
+            self.cache[message.guild.id] = enabled
+
+        if not enabled:
+            return
+
+        channel = message.channel
+        if not channel.permissions_for(channel.guild.me).send_messages:
+            return
+
+        replaced = NOW_REGEX.sub("*meow*", message.content)
+        if channel.permissions_for(channel.guild.me).manage_webhooks:
+            webhooks = await channel.webhooks()
+            if webhooks:
+                hook = webhooks[0]
+            else:
+                hook = await channel.create_webhook(name="Meow", reason="Auto Meow")
+            await hook.send(
+                content=replaced,
+                username=message.author.display_name,
+                avatar_url=message.author.display_avatar.url,
+                files=[await i.to_file() for i in message.attachments],
+            )
+            if channel.permissions_for(channel.guild.me).manage_messages:
+                await message.delete()
+        else:
+            await message.channel.send(replaced)

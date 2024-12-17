@@ -1,29 +1,32 @@
-from abc import ABCMeta, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from multiprocessing.pool import Pool
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import discord
-import tiktoken
 from discord.ext.commands.cog import CogMeta
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from redbot.core import commands
 from redbot.core.bot import Red
 
-from .common.models import DB, Conversation, GuildSettings
+from .common.models import DB, GuildSettings
 
 
 class CompositeMetaClass(CogMeta, ABCMeta):
     """Type detection"""
 
 
-class MixinMeta(metaclass=ABCMeta):
+class MixinMeta(ABC):
     """Type hinting"""
 
-    bot: Red
-    db: DB
-    mp_pool: Pool
-    registry: Dict[str, Dict[str, dict]]
+    def __init__(self, *_args):
+        self.bot: Red
+        self.db: DB
+        self.mp_pool: Pool
+        self.registry: Dict[str, Dict[str, dict]]
 
-    tokenizer: tiktoken.core.Encoding
+    @abstractmethod
+    async def openai_status(self) -> str:
+        raise NotImplementedError
 
     @abstractmethod
     async def request_response(
@@ -33,7 +36,9 @@ class MixinMeta(metaclass=ABCMeta):
         functions: Optional[List[dict]] = None,
         member: discord.Member = None,
         response_token_override: int = None,
-    ) -> Dict[str, str]:
+        model_override: Optional[str] = None,
+        temperature_override: Optional[float] = None,
+    ) -> Union[ChatCompletionMessage, str]:
         raise NotImplementedError
 
     @abstractmethod
@@ -41,9 +46,7 @@ class MixinMeta(metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
-    async def can_call_llm(
-        self, conf: GuildSettings, ctx: Optional[commands.Context] = None
-    ) -> bool:
+    async def can_call_llm(self, conf: GuildSettings, ctx: Optional[commands.Context] = None) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -55,31 +58,27 @@ class MixinMeta(metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
-    async def cut_text_by_tokens(self, text: str, conf: GuildSettings, max_tokens: int) -> str:
+    async def cut_text_by_tokens(self, text: str, conf: GuildSettings, user: Optional[discord.Member] = None) -> str:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_token_count(self, text: str, conf: GuildSettings) -> int:
+    async def count_payload_tokens(self, messages: List[dict], model: str = "gpt-4o-mini") -> int:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_tokens(self, text: str, conf: GuildSettings) -> list:
+    async def count_function_tokens(self, functions: List[dict], model: str = "gpt-4o-mini") -> int:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_text(self, tokens: list, conf: GuildSettings) -> str:
+    async def count_tokens(self, text: str, model: str) -> int:
         raise NotImplementedError
 
     @abstractmethod
-    async def convo_token_count(self, conf: GuildSettings, convo: Conversation) -> int:
+    async def get_tokens(self, text: str, model: str = "gpt-4o-mini") -> list[int]:
         raise NotImplementedError
 
     @abstractmethod
-    async def prompt_token_count(self, conf: GuildSettings) -> int:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def function_token_count(self, conf: GuildSettings, functions: List[dict]) -> int:
+    async def get_text(self, tokens: list, model: str = "gpt-4o-mini") -> str:
         raise NotImplementedError
 
     @abstractmethod
@@ -89,7 +88,7 @@ class MixinMeta(metaclass=ABCMeta):
         function_list: List[dict],
         conf: GuildSettings,
         user: Optional[discord.Member],
-    ) -> Tuple[List[dict], List[dict], bool]:
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -101,9 +100,7 @@ class MixinMeta(metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_embbedding_menu_embeds(
-        self, conf: GuildSettings, place: int
-    ) -> List[discord.Embed]:
+    async def get_embbedding_menu_embeds(self, conf: GuildSettings, place: int) -> List[discord.Embed]:
         raise NotImplementedError
 
     # -------------------------------------------------------

@@ -62,6 +62,9 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# Piccolo stuff:
+*.sqlite
+
 # Flask stuff:
 instance/
 .webassets-cache
@@ -156,7 +159,6 @@ tests/
 testcog/
 /reqbackup.txt
 makereqs.py
-requirements.txt
 __pycache__/
 scratch*.py
 template/
@@ -167,6 +169,27 @@ uncomp/
 compress.py
 
 
-# Temporary
+# Misc
 backups/
 orchestrator/
+welcomer/
+cookiecutter*/
+dbtest/
+function_wizard.py
+dbtestnew/
+scratches/*
+levelup/data/tests/
+levelup/data/stock/rs-assets/
+
+# WIP cogs
+fishing/
+osmosis/
+botarena/
+heist/
+upchat/
+petcord/
+whosalt/
+design_docs/
+idlegather/
+locallm/
+llm/

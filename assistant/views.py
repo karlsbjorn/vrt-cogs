@@ -1,16 +1,16 @@
 import asyncio
+import inspect
 import json
 import logging
 from contextlib import suppress
-from io import BytesIO
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Tuple
 
 import discord
 import json5
 from rapidfuzz import fuzz
 from redbot.core import commands
 from redbot.core.i18n import Translator
-from redbot.core.utils.chat_formatting import box, pagify
+from redbot.core.utils.chat_formatting import box, pagify, text_to_file
 
 from .common.models import DB, CustomFunction, Embedding, GuildSettings
 from .common.utils import (
@@ -30,9 +30,9 @@ OFF_EMOJI = "\N{MOBILE PHONE OFF}"
 class APIModal(discord.ui.Modal):
     def __init__(self, key: str = None):
         self.key = key
-        super().__init__(title=_("Set OpenAI Key"), timeout=120)
+        super().__init__(title=_("Set API Key"), timeout=120)
         self.field = discord.ui.TextInput(
-            label=_("Enter your OpenAI Key below"),
+            label=_("Enter your API Key below"),
             style=discord.TextStyle.short,
             default=self.key,
             required=False,
@@ -57,7 +57,7 @@ class SetAPI(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Set OpenAI Key", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Set API Key", style=discord.ButtonStyle.primary)
     async def confirm(self, interaction: discord.Interaction, buttons: discord.ui.Button):
         modal = APIModal(key=self.key)
         await interaction.response.send_modal(modal)
@@ -96,14 +96,15 @@ class EmbeddingModal(discord.ui.Modal):
         self.stop()
 
 
-class EmbeddingSearch(discord.ui.Modal):
-    def __init__(self):
+class SearchModal(discord.ui.Modal):
+    def __init__(self, title: str, current: str = None):
         self.query = None
-        super().__init__(title=_("Search for an embedding"), timeout=120)
+        super().__init__(title=title, timeout=120)
         self.field = discord.ui.TextInput(
             label=_("Search Query"),
             style=discord.TextStyle.short,
             required=True,
+            default=current,
         )
         self.add_item(self.field)
 
@@ -188,14 +189,10 @@ class EmbeddingMenu(discord.ui.View):
     async def add_embedding(self, name: str, text: str):
         embedding = await self.embed_method(text, self.conf)
         if not embedding:
-            return await self.ctx.send(
-                _("Failed to process embedding `{}`\nContent: ```\n{}\n```").format(name, text)
-            )
+            return await self.ctx.send(_("Failed to process embedding `{}`\nContent: ```\n{}\n```").format(name, text))
         if name in self.conf.embeddings:
-            return await self.ctx.send(
-                _("An embedding with the name `{}` already exists!").format(name)
-            )
-        self.conf.embeddings[name] = Embedding(text=text, embedding=embedding)
+            return await self.ctx.send(_("An embedding with the name `{}` already exists!").format(name))
+        self.conf.embeddings[name] = Embedding(text=text, embedding=embedding, model=self.conf.embed_model)
         await self.get_pages()
         with suppress(discord.NotFound):
             self.message = await self.message.edit(embed=self.pages[self.page], view=self)
@@ -211,9 +208,7 @@ class EmbeddingMenu(discord.ui.View):
     )
     async def view(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.pages[self.page].fields:
-            return await interaction.response.send_message(
-                _("No embeddings to inspect!"), ephemeral=True
-            )
+            return await interaction.response.send_message(_("No embeddings to inspect!"), ephemeral=True)
         await interaction.response.defer()
         name = self.pages[self.page].fields[self.place].name.replace("➣ ", "", 1)
         embedding = self.conf.embeddings[name]
@@ -234,9 +229,7 @@ class EmbeddingMenu(discord.ui.View):
     @discord.ui.button(style=discord.ButtonStyle.primary, emoji="\N{MEMO}")
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.pages[self.page].fields:
-            return await interaction.response.send_message(
-                _("No embeddings to edit!"), ephemeral=True
-            )
+            return await interaction.response.send_message(_("No embeddings to edit!"), ephemeral=True)
         name = self.pages[self.page].fields[self.place].name.replace("➣ ", "", 1)
         embedding_obj = self.conf.embeddings[name]
         modal = EmbeddingModal(title="Edit embedding", name=name, text=embedding_obj.text[:4000])
@@ -304,9 +297,7 @@ class EmbeddingMenu(discord.ui.View):
         if not modal.name or not modal.text:
             return
         self.tasks.append(asyncio.create_task(self.add_embedding(modal.name, modal.text)))
-        await interaction.followup.send(
-            _("Your embedding is processing and will appear when ready!"), ephemeral=True
-        )
+        await interaction.followup.send(_("Your embedding is processing and will appear when ready!"), ephemeral=True)
 
     @discord.ui.button(
         style=discord.ButtonStyle.secondary,
@@ -319,18 +310,12 @@ class EmbeddingMenu(discord.ui.View):
             self.change_place(1)
             self.message = await self.message.edit(embed=self.pages[self.page], view=self)
 
-    @discord.ui.button(
-        style=discord.ButtonStyle.danger, emoji="\N{WASTEBASKET}\N{VARIATION SELECTOR-16}", row=2
-    )
+    @discord.ui.button(style=discord.ButtonStyle.danger, emoji="\N{WASTEBASKET}\N{VARIATION SELECTOR-16}", row=2)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.pages[self.page].fields:
-            return await interaction.response.send_message(
-                _("No embeddings to delete!"), ephemeral=True
-            )
+            return await interaction.response.send_message(_("No embeddings to delete!"), ephemeral=True)
         name = self.pages[self.page].fields[self.place].name.replace("➣ ", "", 1)
-        await interaction.response.send_message(
-            _("Deleted `{}` embedding.").format(name), ephemeral=True
-        )
+        await interaction.response.send_message(_("Deleted `{}` embedding.").format(name), ephemeral=True)
         del self.conf.embeddings[name]
         await self.get_pages()
         self.page %= len(self.pages)
@@ -356,30 +341,38 @@ class EmbeddingMenu(discord.ui.View):
     )
     async def search(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.conf.embeddings:
-            return await interaction.response.send_message(
-                _("No embeddings to search!"), ephemeral=True
-            )
-        modal = EmbeddingSearch()
+            return await interaction.response.send_message(_("No embeddings to search!"), ephemeral=True)
+        modal = SearchModal(_("Search for an embedding"))
         await interaction.response.send_modal(modal)
         await modal.wait()
         if modal.query is None:
             return
-
         query = modal.query.lower()
-        sorted_embeddings = sorted(
-            self.conf.embeddings.items(),
-            key=lambda x: fuzz.ratio(query, x[0].lower()),
-            reverse=True,
-        )
-        embedding = sorted_embeddings[0][0]
-        await interaction.followup.send(
-            _("Search result: **{}**").format(embedding), ephemeral=True
-        )
+
+        def _get_matches():
+            matches: List[Tuple[int, int]] = []
+            for name, embedding in self.conf.embeddings.items():
+                if query == name.lower():
+                    matches.append((name, 100))
+                    break
+                if query in embedding.text.lower():
+                    matches.append((name, 98))
+                    continue
+                matches.append((name, fuzz.ratio(query, name.lower())))
+                matches.append((name, fuzz.ratio(query, embedding.text.lower())))
+            if len(matches) > 1:
+                matches.sort(key=lambda x: x[1], reverse=True)
+
+            return matches
+
+        sorted_embeddings = await asyncio.to_thread(_get_matches)
+        embedding_name = sorted_embeddings[0][0]
+        await interaction.followup.send(_("Search result: **{}**").format(embedding_name), ephemeral=True)
         for page_index, embed in enumerate(self.pages):
             found = False
             for place_index, field in enumerate(embed.fields):
                 name = field.name.replace("➣ ", "", 1)
-                if name == embedding:
+                if name == embedding_name:
                     self.page = page_index
                     self.place = place_index
                     found = True
@@ -403,30 +396,42 @@ class EmbeddingMenu(discord.ui.View):
 
 
 class CodeModal(discord.ui.Modal):
-    def __init__(self, schema: str, code: str):
+    def __init__(self, schema: str, code: str, permission_level: str = None):
         super().__init__(title=_("Function Edit"), timeout=None)
 
         self.schema = ""
         self.code = ""
+        self.permission_level = ""
 
         self.schema_field = discord.ui.TextInput(
             label=_("JSON Schema"),
             style=discord.TextStyle.paragraph,
             default=schema,
-            required=True,
         )
         self.add_item(self.schema_field)
         self.code_field = discord.ui.TextInput(
             label=_("Code"),
             style=discord.TextStyle.paragraph,
             default=code,
-            required=True,
         )
         self.add_item(self.code_field)
+        self.perm_field = discord.ui.TextInput(
+            label=_("Permission Level"),
+            placeholder=_("User, Mod, Admin, or Owner"),
+            style=discord.TextStyle.short,
+            default=permission_level,
+        )
+        self.add_item(self.perm_field)
 
     async def on_submit(self, interaction: discord.Interaction):
         self.schema = self.schema_field.value
         self.code = self.code_field.value
+        if self.perm_field.value.lower() not in ("user", "mod", "admin", "owner"):
+            return await interaction.response.send_message(
+                _("Invalid permission level, must be one of `User`, `Mod`, `Admin`, or `Owner`"),
+                ephemeral=True,
+            )
+        self.permission_level = self.perm_field.value.lower()
         await interaction.response.defer()
         self.stop()
 
@@ -527,9 +532,7 @@ class CodeMenu(discord.ui.View):
             self.toggle.emoji = ON_EMOJI
             self.toggle.style = discord.ButtonStyle.success
 
-    @discord.ui.button(
-        style=discord.ButtonStyle.secondary, emoji="\N{BLACK LEFT-POINTING DOUBLE TRIANGLE}"
-    )
+    @discord.ui.button(style=discord.ButtonStyle.secondary, emoji="\N{BLACK LEFT-POINTING DOUBLE TRIANGLE}")
     async def left10(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.page -= 10
@@ -565,9 +568,7 @@ class CodeMenu(discord.ui.View):
         self.update_button()
         await self.message.edit(embed=self.pages[self.page], view=self)
 
-    @discord.ui.button(
-        style=discord.ButtonStyle.secondary, emoji="\N{BLACK RIGHT-POINTING DOUBLE TRIANGLE}"
-    )
+    @discord.ui.button(style=discord.ButtonStyle.secondary, emoji="\N{BLACK RIGHT-POINTING DOUBLE TRIANGLE}")
     async def right10(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.page += 10
@@ -575,30 +576,32 @@ class CodeMenu(discord.ui.View):
         self.update_button()
         await self.message.edit(embed=self.pages[self.page], view=self)
 
-    @discord.ui.button(
-        style=discord.ButtonStyle.primary, emoji="\N{PRINTER}\N{VARIATION SELECTOR-16}", row=1
-    )
+    @discord.ui.button(style=discord.ButtonStyle.primary, emoji="\N{PRINTER}\N{VARIATION SELECTOR-16}", row=1)
     async def view_function(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.pages[self.page].fields:
-            return await interaction.response.send_message(
-                _("No code to inspect!"), ephemeral=True
-            )
+            return await interaction.response.send_message(_("No code to inspect!"), ephemeral=True)
         function_name = self.pages[self.page].description
         if function_name in self.db.functions:
-            entry = self.db.functions[function_name].jsonschema
+            function_schema = self.db.functions[function_name].jsonschema
+            function_code = self.db.functions[function_name].code
         else:
-            for functions in self.registry.values():
+            # Registered function
+            for cog_name, functions in self.registry.items():
+                cog = self.ctx.bot.get_cog(cog_name)
+                if not cog:
+                    continue
                 if function_name in functions:
-                    entry = functions[function_name]
+                    function_schema = functions[function_name]
+                    function_obj = getattr(cog, function_name, None)
+                    if not function_obj:
+                        continue
+                    function_code = inspect.getsource(function_obj)
                     break
             else:
                 return await interaction.response.send_message("Cannot find function!")
         files = [
-            discord.File(
-                BytesIO(json.dumps(entry, indent=2).encode()),
-                filename=f"{function_name}.json",
-            ),
-            discord.File(BytesIO(entry.code.encode()), filename=f"{function_name}.py"),
+            text_to_file(function_code, f"{function_name}.py"),
+            text_to_file(json.dumps(function_schema, indent=2), f"{function_name}.json"),
         ]
         await interaction.response.send_message(_("Here are your custom functions"), files=files)
 
@@ -622,18 +625,16 @@ class CodeMenu(discord.ui.View):
             else:
                 text = message.content
             if extracted := extract_code_blocks(text):
-                schema = json5.loads(extracted[0].strip())
+                schema: dict = json5.loads(extracted[0].strip())
             else:
-                schema = json5.loads(text.strip())
+                schema: dict = json5.loads(text.strip())
         except Exception as e:
             return await interaction.followup.send(_("SchemaError\n{}").format(box(str(e), "py")))
         if not schema:
             return await interaction.followup.send(_("Empty schema!"))
 
         if missing := json_schema_invalid(schema):
-            return await interaction.followup.send(
-                _("Invalid schema!\n**Missing**\n{}").format(missing)
-            )
+            return await interaction.followup.send(_("Invalid schema!\n**Missing**\n{}").format(missing))
 
         function_name = schema["name"]
         embed = discord.Embed(
@@ -677,9 +678,7 @@ class CodeMenu(discord.ui.View):
                 if function_name in functions:
                     break
             else:
-                return await interaction.response.send_message(
-                    _("Could not find function!"), ephemeral=True
-                )
+                return await interaction.response.send_message(_("Could not find function!"), ephemeral=True)
             return await interaction.response.send_message(
                 _("This function is managed by the `{}` cog and cannot be edited").format(cog),
                 ephemeral=True,
@@ -687,9 +686,7 @@ class CodeMenu(discord.ui.View):
         entry = self.db.functions[function_name]
         if len(json.dumps(entry.jsonschema, indent=2)) > 4000:
             return await interaction.response.send_message(
-                _(
-                    "The json schema for this function is too long, you'll need to re-upload it to modify"
-                ),
+                _("The json schema for this function is too long, you'll need to re-upload it to modify"),
                 ephemeral=True,
             )
         if len(entry.code) > 4000:
@@ -698,18 +695,16 @@ class CodeMenu(discord.ui.View):
                 ephemeral=True,
             )
 
-        modal = CodeModal(json.dumps(entry.jsonschema, indent=2), entry.code)
+        modal = CodeModal(json.dumps(entry.jsonschema, indent=2), entry.code, entry.permission_level)
         await interaction.response.send_modal(modal)
         await modal.wait()
         if not modal.schema or not modal.code:
             return
         text = modal.schema
         try:
-            schema = json5.loads(text.strip())
+            schema: dict = json5.loads(text.strip())
         except Exception as e:
-            return await interaction.followup.send(
-                _("SchemaError\n{}").format(box(str(e), "py")), ephemeral=True
-            )
+            return await interaction.followup.send(_("SchemaError\n{}").format(box(str(e), "py")), ephemeral=True)
         if not schema:
             return await interaction.followup.send(_("Empty schema!"))
         if missing := json_schema_invalid(schema):
@@ -728,16 +723,13 @@ class CodeMenu(discord.ui.View):
         else:
             self.db.functions[function_name].code = code
             self.db.functions[function_name].jsonschema = schema
-        await interaction.followup.send(
-            _("`{}` function updated!").format(function_name), ephemeral=True
-        )
+            self.db.functions[function_name].permission_level = modal.permission_level
+        await interaction.followup.send(_("`{}` function updated!").format(function_name), ephemeral=True)
         await self.get_pages()
         await self.message.edit(embed=self.pages[self.page], view=self)
         await self.save()
 
-    @discord.ui.button(
-        style=discord.ButtonStyle.danger, emoji="\N{WASTEBASKET}\N{VARIATION SELECTOR-16}", row=2
-    )
+    @discord.ui.button(style=discord.ButtonStyle.danger, emoji="\N{WASTEBASKET}\N{VARIATION SELECTOR-16}", row=2)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.pages[self.page].fields:
             return await interaction.response.send_message(_("No code to delete!"), ephemeral=True)
@@ -747,9 +739,7 @@ class CodeMenu(discord.ui.View):
                 if function_name in functions:
                     break
             else:
-                return await interaction.response.send_message(
-                    _("Could not find function!"), ephemeral=True
-                )
+                return await interaction.response.send_message(_("Could not find function!"), ephemeral=True)
             return await interaction.response.send_message(
                 _("This function is managed by the `{}` cog and cannot be deleted").format(cog),
                 ephemeral=True,
@@ -758,9 +748,7 @@ class CodeMenu(discord.ui.View):
         await self.get_pages()
         self.page %= len(self.pages)
         self.update_button()
-        await interaction.response.send_message(
-            _("`{}` has been deleted!").format(function_name), ephemeral=True
-        )
+        await interaction.response.send_message(_("`{}` has been deleted!").format(function_name), ephemeral=True)
         await self.message.edit(embed=self.pages[self.page], view=self)
         await self.save()
 
@@ -777,3 +765,49 @@ class CodeMenu(discord.ui.View):
         self.update_button()
         await self.message.edit(view=self)
         await self.save()
+
+    @discord.ui.button(style=discord.ButtonStyle.secondary, emoji="\N{LEFT-POINTING MAGNIFYING GLASS}", row=2)
+    async def search(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = SearchModal(_("Search for a function"))
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        if modal.query is None:
+            return
+        if modal.query.isdigit():
+            self.page = int(modal.query) - 1
+            self.page %= len(self.pages)
+            return await self.message.edit(embed=self.pages[self.page], view=self)
+
+        query = modal.query.lower()
+        # Search by
+        # Description
+        # Field 0 (json schema)
+        # Field 1 (code)
+
+        def _get_matches():
+            matches: List[Tuple[int, int]] = []
+            for i, embed in enumerate(self.pages):
+                if query == embed.description.lower():
+                    matches.append((100, i))
+                    break
+                if query in embed.fields[0].value.lower():
+                    matches.append((98, i))
+                    continue
+                if query in embed.fields[1].value.lower():
+                    matches.append((98, i))
+                    continue
+                matches.append((fuzz.ratio(query, embed.description.lower()), i))
+                matches.append((fuzz.ratio(query, embed.fields[0].value.lower()), i))
+                matches.append((fuzz.ratio(query, embed.fields[1].value.lower()), i))
+
+            if len(matches) > 1:
+                matches.sort(key=lambda x: x[0], reverse=True)
+
+            return matches
+
+        sorted_functions = await asyncio.to_thread(_get_matches)
+        best = sorted_functions[0][1]
+
+        self.page = best
+        self.page %= len(self.pages)
+        await self.message.edit(embed=self.pages[self.page], view=self)

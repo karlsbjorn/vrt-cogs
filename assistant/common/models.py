@@ -1,10 +1,10 @@
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import discord
+import numpy as np
 import orjson
-from openai.embeddings_utils import cosine_similarity
 from pydantic import VERSION, BaseModel, Field
 from redbot.core.bot import Red
 
@@ -18,12 +18,10 @@ class AssistantBaseModel(BaseModel):
             return super().model_validate(obj, *args, **kwargs)
         return super().parse_obj(obj, *args, **kwargs)
 
-    def model_dump(self, *args, **kwargs):
+    def model_dump(self, exclude_defaults: bool = True):
         if VERSION >= "2.0.1":
-            return super().model_dump(*args, **kwargs)
-        if kwargs.pop("mode", "") == "json":
-            return orjson.loads(super().json(*args, **kwargs))
-        return super().dict(*args, **kwargs)
+            return super().model_dump(mode="json", exclude_defaults=exclude_defaults)
+        return orjson.loads(super().json(exclude_defaults=exclude_defaults))
 
 
 class Embedding(AssistantBaseModel):
@@ -32,6 +30,7 @@ class Embedding(AssistantBaseModel):
     ai_created: bool = False
     created: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
     modified: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    model: str = "text-embedding-3-small"
 
     def created_at(self, relative: bool = False):
         t_type = "R" if relative else "F"
@@ -53,6 +52,7 @@ class CustomFunction(AssistantBaseModel):
 
     code: str
     jsonschema: dict
+    permission_level: str = "user"  # user, mod, admin, owner
 
     def prep(self) -> Callable:
         """Prep function for execution"""
@@ -67,31 +67,41 @@ class Usage(AssistantBaseModel):
 
 
 class GuildSettings(AssistantBaseModel):
-    system_prompt: str = "You are a helpful discord assistant named {botname}"
-    prompt: str = "Current time: {timestamp}\nDiscord server you are chatting in: {server}"
+    system_prompt: str = "You are a discord bot named {botname}, and are chatting with {username}."
+    prompt: str = ""
+    channel_prompts: Dict[int, str] = {}
+    allow_sys_prompt_override: bool = False  # Per convo system prompt
     embeddings: Dict[str, Embedding] = {}
     usage: Dict[str, Usage] = {}
     blacklist: List[int] = []  # Channel/Role/User IDs
     tutors: List[int] = []  # Role or user IDs
     top_n: int = 3
-    min_relatedness: float = 0.75
-    embed_method: Literal["dynamic", "static", "hybrid"] = "dynamic"
+    min_relatedness: float = 0.78
+    embed_method: str = "dynamic"  # hybrid, dynamic, static, user
+    question_mode: bool = False  # If True, only the first message and messages that end with ? will have emebddings
     channel_id: Optional[int] = 0
     api_key: Optional[str] = None
     endswith_questionmark: bool = False
     min_length: int = 7
-    max_retention: int = 0
+    max_retention: int = 50
     max_retention_time: int = 1800
     max_response_tokens: int = 0
     max_tokens: int = 4000
     mention: bool = False
-    mention_respond: bool = True  # TODO: add command to toggle
-    enabled: bool = True
-    model: str = "gpt-3.5-turbo"
-    endpoint_override: Optional[str] = None
+    mention_respond: bool = True
+    enabled: bool = True  # Auto-reply channel
+    model: str = "gpt-4o-mini"
+    embed_model: str = "text-embedding-3-small"  # Or text-embedding-3-large, text-embedding-ada-002
+    collab_convos: bool = False
+
+    image_command: bool = True  # Allow image commands
 
     timezone: str = "UTC"
-    temperature: float = 0.0
+    temperature: float = 0.0  # 0.0 - 2.0
+    frequency_penalty: float = 0.0  # -2.0 - 2.0
+    presence_penalty: float = 0.0  # -2.0 - 2.0
+    seed: Union[int, None] = None
+
     regex_blacklist: List[str] = [r"^As an AI language model,"]
     block_failed_regex: bool = False
 
@@ -101,12 +111,12 @@ class GuildSettings(AssistantBaseModel):
     role_overrides: Dict[int, str] = Field(default_factory=dict, alias="model_role_overrides")
     max_time_role_override: Dict[int, int] = {}
 
-    image_tools: bool = True
-    image_size: Literal["256x256", "512x512", "1024x1024"] = "1024x1024"
+    vision_detail: str = "auto"  # high, low, auto
 
     use_function_calls: bool = False
-    max_function_calls: int = 10  # Max calls in a row
+    max_function_calls: int = 20  # Max calls in a row
     disabled_functions: List[str] = []
+    functions_called: int = 0
 
     def get_related_embeddings(
         self,
@@ -114,32 +124,39 @@ class GuildSettings(AssistantBaseModel):
         top_n_override: Optional[int] = None,
         relatedness_override: Optional[float] = None,
     ) -> List[Tuple[str, str, float, int]]:
-        # Name, text, score, dimensions
+        def cosine_similarity(a, b):
+            return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-        if not self.top_n or len(query_embedding) == 0 or not self.embeddings:
+        if not query_embedding:
+            return []
+
+        # Name, text, score, dimensions
+        q_length = len(query_embedding)
+        top_n = top_n_override or self.top_n
+        min_relatedness = relatedness_override or self.min_relatedness
+
+        if not top_n or q_length == 0 or not self.embeddings:
             return []
 
         strings_and_relatedness = []
         for name, em in self.embeddings.items():
-            if len(query_embedding) != len(em.embedding):
+            if q_length != len(em.embedding):
                 continue
             try:
                 score = cosine_similarity(query_embedding, em.embedding)
-                strings_and_relatedness.append((name, em.text, score, len(em.embedding)))
+                if score >= min_relatedness:
+                    strings_and_relatedness.append((name, em.text, score, len(em.embedding)))
             except ValueError as e:
                 log.error(
-                    f"Failed to match '{name}' embedding {len(query_embedding)} - {len(em.embedding)}",
+                    f"Failed to compare '{name}' embedding {q_length} - {len(em.embedding)}",
                     exc_info=e,
                 )
-
-        min_relatedness = relatedness_override or self.min_relatedness
-        strings_and_relatedness = [i for i in strings_and_relatedness if i[2] >= min_relatedness]
 
         if not strings_and_relatedness:
             return []
 
         strings_and_relatedness.sort(key=lambda x: x[2], reverse=True)
-        return strings_and_relatedness[: top_n_override or self.top_n]
+        return strings_and_relatedness[:top_n]
 
     def update_usage(
         self,
@@ -150,9 +167,12 @@ class GuildSettings(AssistantBaseModel):
     ) -> None:
         if model not in self.usage:
             self.usage[model] = Usage()
-        self.usage[model].total_tokens += total_tokens
-        self.usage[model].input_tokens += input_tokens
-        self.usage[model].output_tokens += output_tokens
+        if total_tokens:
+            self.usage[model].total_tokens += total_tokens
+        if input_tokens:
+            self.usage[model].input_tokens += input_tokens
+        if output_tokens:
+            self.usage[model].output_tokens += output_tokens
 
     def get_user_model(self, member: Optional[discord.Member] = None) -> str:
         if not member or not self.role_overrides:
@@ -203,11 +223,12 @@ class GuildSettings(AssistantBaseModel):
 class Conversation(AssistantBaseModel):
     messages: List[dict] = []
     last_updated: float = 0.0
+    system_prompt_override: Optional[str] = None
 
     def function_count(self) -> int:
         if not self.messages:
             return 0
-        return sum(i["role"] == "function" for i in self.messages)
+        return sum(i["role"] in ["function", "tool"] for i in self.messages)
 
     def is_expired(self, conf: GuildSettings, member: Optional[discord.Member] = None):
         if not conf.get_user_max_time(member):
@@ -232,24 +253,34 @@ class Conversation(AssistantBaseModel):
         self.last_updated = datetime.now().timestamp()
 
     def overwrite(self, messages: List[dict]):
-        self.reset()
-        for i in messages:
-            if i["role"] == "system":
-                continue
-            self.messages.append(i)
+        self.refresh()
+        self.messages = [i for i in messages if i["role"] != "system"]
 
-    def update_messages(self, message: str, role: str, name: str = None) -> None:
+    def update_messages(
+        self,
+        message: str,
+        role: str,
+        name: str = None,
+        tool_id: str = None,
+        position: int = None,
+    ) -> None:
         """Update conversation cache
 
         Args:
             message (str): the message
             role (str): 'system', 'user' or 'assistant'
             name (str): the name of the bot or user
+            position (int): the index to place the message in
         """
-        message = {"role": role, "content": message}
+        message: dict = {"role": role, "content": message}
         if name:
             message["name"] = name
-        self.messages.append(message)
+        if tool_id:
+            message["tool_call_id"] = tool_id
+        if position:
+            self.messages.insert(position, message)
+        else:
+            self.messages.append(message)
         self.refresh()
 
     def prepare_chat(
@@ -258,21 +289,59 @@ class Conversation(AssistantBaseModel):
         initial_prompt: str,
         system_prompt: str,
         name: str = None,
+        images: List[str] = None,
+        resolution: str = "auto",
     ) -> List[dict]:
         """Pre-appends the prmompts before the user's messages without motifying them"""
         prepared = []
-        if system_prompt:
+        if system_prompt.strip():
             prepared.append({"role": "system", "content": system_prompt})
-        if initial_prompt:
+        if initial_prompt.strip():
             prepared.append({"role": "user", "content": initial_prompt})
         prepared.extend(self.messages)
-        user_message = {"role": "user", "content": user_message}
+
+        if images:
+            content = [{"type": "text", "text": user_message}]
+            for img in images:
+                if img.lower().startswith("http"):
+                    content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": img, "detail": resolution},
+                        }
+                    )
+                else:
+                    content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img}", "detail": resolution},
+                        }
+                    )
+
+        else:
+            content = user_message
+
+        user_message_payload = {"role": "user", "content": content}
         if name:
-            user_message["name"] = name
-        prepared.append(user_message)
-        self.messages.append(user_message)
+            user_message_payload["name"] = name
+        prepared.append(user_message_payload)
+        self.messages.append(user_message_payload)
         self.refresh()
         return prepared
+
+
+class ContentObj(AssistantBaseModel):
+    type: str
+    text: Optional[str] = None
+    image_url: Optional[Union[str, dict]] = None
+
+
+class Message(AssistantBaseModel):
+    role: str
+    content: Union[str, ContentObj] = None
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    position: Optional[int] = None
 
 
 class DB(AssistantBaseModel):
@@ -281,8 +350,7 @@ class DB(AssistantBaseModel):
     persistent_conversations: bool = False
     functions: Dict[str, CustomFunction] = {}
     listen_to_bots: bool = False
-
-    endpoint_override: Optional[str] = None
+    brave_api_key: Optional[str] = None
 
     def get_conf(self, guild: Union[discord.Guild, int]) -> GuildSettings:
         gid = guild if isinstance(guild, int) else guild.id
@@ -295,17 +363,15 @@ class DB(AssistantBaseModel):
         guild_id: int,
     ) -> Conversation:
         key = f"{member_id}-{channel_id}-{guild_id}"
-        if key in self.conversations:
-            return self.conversations[key]
+        return self.conversations.setdefault(key, Conversation())
 
-        self.conversations[key] = Conversation()
-        return self.conversations[key]
-
-    def prep_functions(
+    async def prep_functions(
         self,
         bot: Red,
         conf: GuildSettings,
         registry: Dict[str, Dict[str, dict]],
+        member: discord.Member = None,
+        showall: bool = False,
     ) -> Tuple[List[dict], Dict[str, Callable]]:
         """Prep custom and registry functions for use with the API
 
@@ -317,12 +383,36 @@ class DB(AssistantBaseModel):
         Returns:
             Tuple[List[dict], Dict[str, Callable]]: List of json function schemas and a dict mapping to their callables
         """
+
+        async def can_use(perm_level: str) -> bool:
+            if perm_level == "user":
+                return True
+            if member is None:
+                return False
+            if perm_level == "mod":
+                perms = [
+                    member.guild_permissions.manage_messages,
+                    await bot.is_mod(member),
+                ]
+                return any(perms)
+            if perm_level == "admin":
+                perms = [
+                    member.guild_permissions.administrator,
+                    await bot.is_admin(member),
+                ]
+                return any(perms)
+            if perm_level == "owner":
+                return await bot.is_owner(member)
+            return False
+
         function_calls = []
         function_map = {}
 
         # Prep bot owner functions first
         for function_name, func in self.functions.items():
             if func.jsonschema["name"] in conf.disabled_functions:
+                continue
+            if not await can_use(func.permission_level) and not showall:
                 continue
             function_calls.append(func.jsonschema)
             function_map[function_name] = func.prep()
@@ -332,17 +422,24 @@ class DB(AssistantBaseModel):
             cog = bot.get_cog(cog_name)
             if not cog:
                 continue
-            for function_name, function_schema in function_schemas.items():
+            for function_name, data in function_schemas.items():
                 if function_name in conf.disabled_functions:
                     continue
                 if function_name in function_map:
                     continue
                 function_obj = getattr(cog, function_name, None)
                 if function_obj is None:
+                    log.error(f"{cog_name} doesnt have a function called {function_name}!")
                     continue
-                function_calls.append(function_schema)
+                if not await can_use(data["permission_level"]) and not showall:
+                    log.debug(
+                        f"{member.name} cannot use {function_name} with {data['permission_level']} permission level."
+                    )
+                    continue
+                function_calls.append(data["schema"])
                 function_map[function_name] = function_obj
 
+        log.debug(f"Prepped: {function_map.keys()}")
         return function_calls, function_map
 
 

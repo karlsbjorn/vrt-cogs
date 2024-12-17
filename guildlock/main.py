@@ -27,8 +27,8 @@ class GuildLock(BaseCommands, Listener, commands.Cog, metaclass=CompositeMetaCla
     Tools for managing guild joins and leaves.
     """
 
-    __author__ = "Vertyco#0117"
-    __version__ = "0.1.1"
+    __author__ = "[vertyco](https://github.com/vertyco/vrt-cogs)"
+    __version__ = "0.1.7"
 
     def __init__(self, bot: Red):
         super().__init__()
@@ -84,7 +84,7 @@ class GuildLock(BaseCommands, Listener, commands.Cog, metaclass=CompositeMetaCla
         return mapping[log_type]
 
     async def notify_guild(self, log_type: str, guild: discord.Guild):
-        message = await asyncio.to_thread(self.notify_reason(log_type, guild))
+        message = self.notify_reason(log_type, guild)
         if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
             await guild.system_channel.send(message)
         else:

@@ -45,7 +45,7 @@ class TranslateManager:
             text (str): the text to be translated
             target_lang (str): the target language
             formality (t.Optional[str], optional): whether the translation should be formal. Defaults to None.
-            force (bool, optional): Force res back to None if result is same as source text. Defaults to False.
+            force (bool, optional): If False, force res back to None if result is same as source text. Defaults to False.
 
         Returns:
             t.Optional[Result]: Result object containing source/target lang and translated text
@@ -58,15 +58,17 @@ class TranslateManager:
                 log.debug("Using deepl")
                 res = await self.deepl(text, lang, formality)
                 if res is None or (res.text == text and not force):
-                    log.debug("Deepl failed")
+                    log.warning(f"Deepl failed to translate to {target_lang}")
                     res = None
 
         if res is None:
             if lang := await self.fuzzy_google_flowery_lang(target_lang.lower()):
                 res = await self.google(text, lang)
                 if res is None or (res.text == text and not force):
-                    log.debug("Google failed. Calling flowery as fallback")
+                    log.info("Google failed. Calling flowery as fallback")
                     res = await self.flowery(text, lang)
+                    if res is None:
+                        log.info("Flowery returned None as well")
         return res
 
     async def get_lang(self, target: str) -> t.Optional[str]:

@@ -1,4 +1,5 @@
 import logging
+import typing as t
 
 import discord
 from redbot.core import Config, commands
@@ -12,8 +13,8 @@ class GuildLog(commands.Cog):
     Log when the bot joins or leaves a guild
     """
 
-    __author__ = "Vertyco"
-    __version__ = "0.1.2"
+    __author__ = "[vertyco](https://github.com/vertyco/vrt-cogs)"
+    __version__ = "0.1.3"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -67,6 +68,7 @@ class GuildLog(commands.Cog):
                         users += 1
                 params = {
                     "guild": new_guild.name,
+                    "guildid": new_guild.id,
                     "servers": len(self.bot.guilds),
                     "botname": self.bot.user.name,
                     "bots": bots,
@@ -114,6 +116,7 @@ class GuildLog(commands.Cog):
                         users += 1
                 params = {
                     "guild": old_guild.name,
+                    "guildid": old_guild.id,
                     "servers": len(self.bot.guilds),
                     "botname": self.bot.user.name,
                     "bots": bots,
@@ -160,7 +163,7 @@ class GuildLog(commands.Cog):
         await ctx.send(embed=embed)
 
     @gset.command(name="channel")
-    async def set_log_channel(self, ctx, *, channel: discord.TextChannel = None):
+    async def set_log_channel(self, ctx, *, channel: t.Optional[discord.TextChannel] = None):
         """Set a channel for the bot to log guilds it leaves/joins"""
         if channel:
             await self.config.guild(ctx.guild).channel.set(str(channel.id))
@@ -192,6 +195,7 @@ class GuildLog(commands.Cog):
 
         Valid placeholders are:
         `{guild}` - the name of the guild the bot just joined
+        `{guildid}` - the id of the guild the bot just joined
         `{servers}` - the amount of servers the bot is now in
         `{botname}` - the name of the bot
         `{bots}` - the amount of bots in the guild
@@ -212,9 +216,7 @@ class GuildLog(commands.Cog):
         Color value must be an integer
         """
         try:
-            embed = discord.Embed(
-                description="Your join messages will now use this color", color=color
-            )
+            embed = discord.Embed(description="Your join messages will now use this color", color=color)
             await ctx.send(embed=embed)
         except Exception as e:
             return await ctx.send(f"Failed to set embed color:\n{box(str(e))}")
@@ -233,6 +235,7 @@ class GuildLog(commands.Cog):
 
         Valid placeholders are:
         `{guild}` - the name of the guild the bot just joined
+        `{guildid}` - the id of the guild the bot just joined
         `{servers}` - the amount of servers the bot is now in
         `{botname}` - the name of the bot
         `{bots}` - the amount of bots that were in the guild
@@ -253,9 +256,7 @@ class GuildLog(commands.Cog):
         Color value must be an integer
         """
         try:
-            embed = discord.Embed(
-                description="Your leave messages will now use this color", color=color
-            )
+            embed = discord.Embed(description="Your leave messages will now use this color", color=color)
             await ctx.send(embed=embed)
         except Exception as e:
             return await ctx.send(f"Failed to set embed color:\n{box(str(e))}")

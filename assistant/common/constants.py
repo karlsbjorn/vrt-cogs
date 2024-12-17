@@ -1,31 +1,36 @@
 MODELS = {
     "gpt-3.5-turbo": 4096,
-    "gpt-3.5-turbo-0301": 4096,
-    "gpt-3.5-turbo-0613": 4096,
-    "gpt-3.5-turbo-16k": 16384,
-    "gpt-3.5-turbo-16k-0301": 16384,
-    "gpt-3.5-turbo-16k-0613": 16384,
-    "gpt-3.5-turbo-instruct": 8192,
-    "gpt-3.5-turbo-instruct-0914": 8192,
+    # "gpt-3.5-turbo-1106": 16385, - Depricated
+    # "gpt-3.5-turbo-0125": 16385, - Depricated
+    # "gpt-3.5-turbo-16k": 16384, - Depricated
+    # "gpt-3.5-turbo-16k-0301": 16384, - Depricated
+    # "gpt-3.5-turbo-16k-0613": 16384 - Depricated
+    # "gpt-3.5-turbo-instruct": 8192, - Depricated
     "gpt-4": 8192,
-    "gpt-4-0301": 8192,
-    "gpt-4-0613": 8192,
-    "gpt-4-32k": 32768,
-    "gpt-4-32k-0301": 32768,
-    "gpt-4-32k-0613": 32768,
-    "code-davinci-002": 8001,
-    "text-davinci-003": 4097,
-    "text-davinci-002": 4097,
-    "text-curie-001": 2049,
-    "text-babbage-001": 2049,
-    "text-ada-001": 2049,
-    "text-embedding-ada-002": 8191,
-    "text-embedding-ada-002-v2": 8191,
+    # "gpt-4-32k": 32768, - Depricated
+    "gpt-4-turbo": 128000,
+    "gpt-4-turbo-preview": 128000,
+    "gpt-4-1106-preview": 128000,
+    "gpt-4-0125-preview": 128000,
+    "gpt-4-vision-preview": 128000,
+    "gpt-4-turbo-2024-04-09": 128000,
+    "gpt-4o": 128000,
+    "gpt-4o-2024-05-13": 128000,
+    "gpt-4o-mini": 128000,
+    "gpt-4o-mini-2024-07-18": 128000,
+    "gpt-4o-2024-08-06": 128000,
+    "gpt-4o-2024-11-20": 128000,
+    "o1-preview": 128000,
+    "o1-preview-2024-09-12": 128000,
+    "o1-mini": 128000,
+    "o1-mini-2024-09-12": 128000,
 }
 PRICES = {
-    "gpt-3.5-turbo": [0.0015, 0.002],
+    "gpt-3.5-turbo": [0.001, 0.0015],
     "gpt-3.5-turbo-0301": [0.0015, 0.002],
     "gpt-3.5-turbo-0613": [0.0015, 0.002],
+    "gpt-3.5-turbo-1106": [0.001, 0.002],
+    "gpt-3.5-turbo-0125": [0.0005, 0.0015],
     "gpt-3.5-turbo-16k": [0.003, 0.004],
     "gpt-3.5-turbo-16k-0301": [0.003, 0.004],
     "gpt-3.5-turbo-16k-0613": [0.003, 0.004],
@@ -34,9 +39,25 @@ PRICES = {
     "gpt-4": [0.03, 0.06],
     "gpt-4-0301": [0.03, 0.06],
     "gpt-4-0613": [0.03, 0.06],
+    "gpt-4-turbo": [0.01, 0.03],
+    "gpt-4-turbo-preview": [0.01, 0.03],
+    "gpt-4-1106-preview": [0.01, 0.03],
+    "gpt-4-0125-preview": [0.01, 0.03],
+    "gpt-4-vision-preview": [0.01, 0.03],
+    "gpt-4-1106-vision-preview": [0.01, 0.03],
+    "gpt-4-turbo-2024-04-09": [0.01, 0.03],
     "gpt-4-32k": [0.06, 0.12],
     "gpt-4-32k-0301": [0.06, 0.12],
-    "gpt-4-32k-0613": [0.06, 0.12],
+    "gpt-4o": [0.005, 0.015],
+    "gpt-4o-2024-05-13": [0.005, 0.015],
+    "gpt-4o-2024-08-06": [0.0025, 0.01],
+    "gpt-4o-2024-11-20": [0.0025, 0.01],
+    "gpt-4o-mini": [0.00015, 0.0006],
+    "gpt-4o-mini-2024-07-18": [0.00015, 0.0006],
+    "o1-preview": [0.015, 0.06],
+    "o1-preview-2024-09-12": [0.015, 0.06],
+    "o1-mini": [0.003, 0.012],
+    "o1-mini-2024-09-12": [0.003, 0.012],
     "text-ada-001": [0.0004, 0.0016],
     "text-babbage-001": [0.0006, 0.0024],
     "text-curie-001": [0.003, 0.012],
@@ -45,40 +66,67 @@ PRICES = {
     "code-davinci-002": [0.03, 0.12],
     "text-embedding-ada-002": [0.0001, 0.0001],
     "text-embedding-ada-002-v2": [0.0001, 0.0001],
+    "text-embedding-3-small": [0.00002, 0.00002],
+    "text-embedding-3-large": [0.00013, 0.00013],
 }
-SUPPORTS_FUNCTIONS = [
-    "gpt-3.5-turbo",
-    "gpt-3.5-turbo-0613",
-    "gpt-3.5-turbo-16k",
-    "gpt-3.5-turbo-16k-0613",
-    "gpt-4",
-    "gpt-4-0613",
-    "gpt-4-32k",
-    "gpt-4-32k-0613",
+IMAGE_COSTS = {
+    "standard1024x1024": 0.04,
+    "standard1792x1024": 0.08,
+    "standard1024x1792": 0.08,
+    "hd1024x1024": 0.08,
+    "hd1792x1024": 0.12,
+    "hd1024x1792": 0.12,
+}
+SUPPORTS_SEED = [
+    "gpt-3.5-turbo-1106",
+    "gpt-3.5-turbo-0125",
+    "gpt-4-1106-preview",
+    "gpt-4-vision-preview",
+    "gpt-4-1106-vision-preview",
+    "gpt-4-turbo-preview",
+    "gpt-4-0125-preview",
+    "gpt-4-turbo-2024-04-09",
+    "gpt-4o",
+    "gpt-4o-2024-05-13",
+    "gpt-4o-2024-08-06",
+    "gpt-4o-2024-11-20",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18",
+    "gpt-4o-2024-08-06",
 ]
-CHAT = [
-    "gpt-3.5-turbo",
-    "gpt-3.5-turbo-0301",
-    "gpt-3.5-turbo-0613",
-    "gpt-3.5-turbo-16k",
-    "gpt-3.5-turbo-16k-0301",
-    "gpt-3.5-turbo-16k-0613",
-    "gpt-4",
-    "gpt-4-0301",
-    "gpt-4-0613",
-    "gpt-4-32k",
-    "gpt-4-32k-0301",
-    "gpt-4-32k-0613",
-    "code-davinci-002",
+NO_SYSTEM_MESSAGES = [
+    "o1-preview",
+    "o1-preview-2024-09-12",
+    "o1-mini",
+    "o1-mini-2024-09-12",
 ]
-COMPLETION = [
-    "text-davinci-003",
-    "text-davinci-002",
-    "text-curie-001",
-    "text-babbage-001",
-    "text-ada-001",
-    "gpt-3.5-turbo-instruct",
-    "gpt-3.5-turbo-instruct-0914",
+SUPPORTS_VISION = [
+    "gpt-4-vision-preview",
+    "gpt-4-1106-vision-preview",
+    "gpt-4-turbo-2024-04-09",
+    "gpt-4o",
+    "gpt-4o-2024-05-13",
+    "gpt-4o-2024-08-06",
+    "gpt-4o-2024-11-20",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18",
+    "gpt-4o-2024-08-06",
+]
+SUPPORTS_TOOLS = [
+    "gpt-3.5-turbo-1106",
+    "gpt-3.5-turbo-0125",
+    "gpt-4",
+    "gpt-4-turbo",
+    "gpt-4-turbo-preview",
+    "gpt-4-0125-preview",
+    "gpt-4-1106-preview",
+    "gpt-4o",
+    "gpt-4o-2024-05-13",
+    "gpt-4o-2024-08-06",
+    "gpt-4o-2024-11-20",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18",
+    "gpt-4o-2024-08-06",
 ]
 READ_EXTENSIONS = [
     ".txt",
@@ -94,8 +142,9 @@ READ_EXTENSIONS = [
     ".md",
     ".ini",
     ".conf",
-    ".go",
+    ".config",
     ".cfg",
+    ".go",
     ".java",
     ".c",
     ".php",
@@ -109,19 +158,91 @@ READ_EXTENSIONS = [
     ".ts",
     ".cs",
     ".c++",
+    ".cpp",
+    ".cbp",
+    ".h",
     ".cc",
     ".ps1",
     ".bat",
     ".batch",
     ".shell",
     ".env",
+    ".sh",
+    ".bat",
+    ".pde",
+    ".spec",
+    ".sql",
 ]
+LOADING = "https://i.imgur.com/l3p6EMX.gif"
 REACT_SUMMARY_MESSAGE = """
-Your job is to summarize text to use as embeddings. Respond only with the summary of the text.
+Ignore previous instructions. You will be given a snippet of text, your job is to create a "memory" for the given text to provide context for future conversations.
+
+# RULES
+- Output a summary of the text in your own words.
+- This is a contextual memory about a topic, do not include irrelevant information like names of who is speaking.
+- Do not include the original text in your response.
 """
-REACT_NAME_MESSAGE = """
-Your job is to read a snippet of text and come up with a short descriptive name for it. Only respond with the name of the summary.
+TLDR_PROMPT = """
+Write a TLDR based on the messages provided.
+
+The messages you are reviewing will be formatted as follows:
+[<t:Discord Timestamp:t>](Message ID) Author Name: Message Content
+
+TLDR tips:
+- Include details like names and info that might be relevant to a Discord moderation team
+- To create a jump URL for a message, format it as "https://discord.com/channels/<guild_id>/<channel_id/<message_id>"
+- When you reference a message directly, make sure to include [<t:Discord Timestamp:t>](jump url)
+- Separate topics with bullet points
 """
+
+GENERATE_IMAGE = {
+    "name": "generate_image",
+    "description": "Use this to generate an image from a text prompt.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "A sentence or phrase that describes what you want to visualize, must be less than 1000 characters",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["standard", "hd"],
+                "description": "The quality of the image, defaults to standard",
+            },
+            "style": {
+                "type": "string",
+                "enum": ["natural", "vivid"],
+                "description": "Vivid leans toward more hyper-real and dramatic images. Natural creates more natural, less hyper-real looking images. Defaults to 'vivid'",
+            },
+            "size": {
+                "type": "string",
+                "enum": ["1024x1024", "1792x1024", "1024x1792"],
+                "description": "The size of the image, defaults to 1024x1024",
+            },
+        },
+        "required": ["prompt"],
+    },
+}
+
+SEARCH_INTERNET = {
+    "name": "search_internet",
+    "description": "Use this to search the internet for information.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "search_query": {
+                "type": "string",
+                "description": "a sentence or phrase that describes what you are looking for",
+            },
+            "amount": {
+                "type": "integer",
+                "description": "Max amount of search results to fetch. Defaults to 10",
+            },
+        },
+        "required": ["search_query"],
+    },
+}
 
 CREATE_MEMORY = {
     "name": "create_memory",
@@ -149,7 +270,7 @@ SEARCH_MEMORIES = {
         "properties": {
             "search_query": {
                 "type": "string",
-                "description": "the keyword or query you want to find information about",
+                "description": "a sentence or phrase that describes what you are looking for, this should be as specific as possible, it will be tokenized to find the best match with related embeddings.",
             },
             "amount": {
                 "type": "integer",
@@ -177,49 +298,11 @@ EDIT_MEMORY = {
         "required": ["memory_name", "memory_text"],
     },
 }
-GET_CHANNEL_ID = {
-    "name": "get_channel_name_from_id",
-    "description": "Get the channel name from an ID.",
+LIST_MEMORIES = {
+    "name": "list_memories",
+    "description": "Get a list of all your available memories",
     "parameters": {
         "type": "object",
-        "properties": {
-            "channel_id": {
-                "type": "integer",
-                "description": "The ID of a Discord channel",
-            },
-        },
-        "required": ["channel_id"],
-    },
-}
-GET_CHANNEL_NAMED = {
-    "name": "get_channel_id_from_name",
-    "description": "Get the channel ID from its name.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "channel_name": {
-                "type": "string",
-                "description": "The name of a Discord channel",
-            },
-        },
-        "required": ["channel_name"],
-    },
-}
-GET_SEARCH_URL = {
-    "name": "make_search_url",
-    "description": "Generate a link to search google or youtube, use this if you arent sure of the answer to help the user find it themselves.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "site": {
-                "type": "string",
-                "description": "the website to search, can be 'youtube' or 'google'",
-            },
-            "search_query": {
-                "type": "string",
-                "description": "what to search for",
-            },
-        },
-        "required": ["site", "search_query"],
+        "properties": {},
     },
 }

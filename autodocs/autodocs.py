@@ -28,8 +28,8 @@ class AutoDocs(commands.Cog):
     Easily create documentation for any cog in Markdown format.
     """
 
-    __author__ = "Vertyco"
-    __version__ = "0.6.7"
+    __author__ = "[vertyco](https://github.com/vertyco/vrt-cogs)"
+    __version__ = "1.1.1"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -46,24 +46,26 @@ class AutoDocs(commands.Cog):
     def generate_readme(
         self,
         cog: commands.Cog,
-        guild: discord.Guild,
         prefix: str,
         replace_botname: bool,
         extended_info: bool,
         include_hidden: bool,
-        privilege_level: str,
+        include_help: bool,
+        max_privilege_level: str,
+        min_privilage_level: str = "user",
         embedding_style: bool = False,
     ) -> Tuple[str, pd.DataFrame]:
         columns = [_("name"), _("text")]
         rows = []
         cog_name = cog.qualified_name
-        helptxt = _("Help")
-        docs = f"# {cog_name} {helptxt}\n\n"
-        cog_help = cog.help if cog.help else None
-        if not embedding_style and cog_help:
+
+        docs = ""
+        cog_help = cog.help.strip() if cog.help else ""
+        if not embedding_style:
             cog_help = cog_help.replace("\n", "<br/>")
-        if cog_help:
-            docs += f"{cog_help}\n\n"
+
+        if cog_help and include_help:
+            docs = cog_help + "\n\n"
             entry_name = _("{} cog description").format(cog_name)
             rows.append([entry_name, f"{entry_name}\n{cog_help}"])
 
@@ -74,8 +76,9 @@ class AutoDocs(commands.Cog):
                 prefix,
                 replace_botname,
                 extended_info,
-                privilege_level,
+                max_privilege_level,
                 embedding_style,
+                min_privilage_level,
             )
             doc = c.get_doc()
             if not doc:
@@ -94,8 +97,9 @@ class AutoDocs(commands.Cog):
                 prefix,
                 replace_botname,
                 extended_info,
-                privilege_level,
+                max_privilege_level,
                 embedding_style,
+                min_privilage_level,
             )
             doc = c.get_doc()
             if doc is None:
@@ -121,11 +125,13 @@ class AutoDocs(commands.Cog):
         replace_botname=_("Replace all occurrences of [botname] with the bots name"),
         extended_info=_("Include extra info like converters and their docstrings"),
         include_hidden=_("Include hidden commands"),
-        privilege_level=_("Hide commands above specified privilege level (user, mod, admin, guildowner, botowner)"),
+        max_privilege_level=_("Hide commands above specified privilege level (user, mod, admin, guildowner, botowner)"),
+        min_privilage_level=_("Hide commands below specified privilege level (user, mod, admin, guildowner, botowner)"),
         csv_export=_("Include a csv with each command isolated per row"),
     )
     @commands.is_owner()
     @commands.bot_has_permissions(attach_files=True)
+    @commands.guild_only()
     async def makedocs(
         self,
         ctx: commands.Context,
@@ -134,21 +140,25 @@ class AutoDocs(commands.Cog):
         replace_botname: Optional[bool] = False,
         extended_info: Optional[bool] = False,
         include_hidden: Optional[bool] = False,
-        privilege_level: Literal["user", "mod", "admin", "guildowner", "botowner"] = "botowner",
+        include_help: Optional[bool] = True,
+        max_privilege_level: Literal["user", "mod", "admin", "guildowner", "botowner"] = "botowner",
+        min_privilage_level: Literal["user", "mod", "admin", "guildowner", "botowner"] = "user",
         csv_export: Optional[bool] = False,
     ):
         """
         Create a Markdown docs page for a cog and send to discord
 
         **Arguments**
-        `cog_name:           `(str) The name of the cog you want to make docs for (Case Sensitive)
-        `replace_prefix:     `(bool) If True, replaces the `prefix` placeholder with the bots prefix
-        `replace_botname:    `(bool) If True, replaces the `botname` placeholder with the bots name
-        `extended_info:      `(bool) If True, include extra info like converters and their docstrings
-        `include_hidden:     `(bool) If True, includes hidden commands
-        `privilege_level:    `(str) Hide commands above specified privilege level
+        `cog_name:            `(str) The name of the cog you want to make docs for (Case Sensitive)
+        `replace_prefix:      `(bool) If True, replaces the `prefix` placeholder with the bots prefix
+        `replace_botname:     `(bool) If True, replaces the `botname` placeholder with the bots name
+        `extended_info:       `(bool) If True, include extra info like converters and their docstrings
+        `include_hidden:      `(bool) If True, includes hidden commands
+        `include_help:        `(bool) If True, includes the cog help text at the top of the docs
+        `max_privilege_level: `(str) Hide commands above specified privilege level
+        `min_privilage_level: `(str) Hide commands below specified privilege level
         - (user, mod, admin, guildowner, botowner)
-        `csv_export:         `(bool) Include a csv with each command isolated per row for use as embeddings
+        `csv_export:          `(bool) Include a csv with each command isolated per row for use as embeddings
 
         **Note** If `all` is specified for cog_name, all currently loaded non-core cogs will have docs generated for
         them and sent in a zip file
@@ -160,7 +170,10 @@ class AutoDocs(commands.Cog):
                 buffer = BytesIO()
                 folder_name = _("AllCogDocs")
                 with ZipFile(buffer, "w", compression=ZIP_DEFLATED, compresslevel=9) as arc:
-                    arc.mkdir(folder_name, mode=755)
+                    try:
+                        arc.mkdir(folder_name, mode=755)
+                    except AttributeError:
+                        arc.writestr(f"{folder_name}/", "")
                     for cog in self.bot.cogs:
                         cog = self.bot.get_cog(cog)
                         if cog.qualified_name in IGNORE:
@@ -168,12 +181,13 @@ class AutoDocs(commands.Cog):
                         partial_func = functools.partial(
                             self.generate_readme,
                             cog,
-                            ctx.guild,
                             prefix,
                             replace_botname,
                             extended_info,
                             include_hidden,
-                            privilege_level,
+                            include_help,
+                            max_privilege_level,
+                            min_privilage_level,
                             csv_export,
                         )
                         docs, df = await self.bot.loop.run_in_executor(None, partial_func)
@@ -207,12 +221,13 @@ class AutoDocs(commands.Cog):
                 partial_func = functools.partial(
                     self.generate_readme,
                     cog,
-                    ctx.guild,
                     prefix,
                     replace_botname,
                     extended_info,
                     include_hidden,
-                    privilege_level,
+                    include_help,
+                    max_privilege_level,
+                    min_privilage_level,
                     csv_export,
                 )
                 docs, df = await self.bot.loop.run_in_executor(None, partial_func)
@@ -263,9 +278,9 @@ class AutoDocs(commands.Cog):
             level = "botowner"
         elif user.id == guild.owner_id or user.guild_permissions.manage_guild:
             level = "guildowner"
-        elif (await is_admin_or_superior(self, user)) or user.guild_permissions.manage_roles:
+        elif (await is_admin_or_superior(self.bot, user)) or user.guild_permissions.manage_roles:
             level = "admin"
-        elif (await is_mod_or_superior(self, user)) or user.guild_permissions.manage_messages:
+        elif (await is_mod_or_superior(self.bot, user)) or user.guild_permissions.manage_messages:
             level = "mod"
         else:
             level = "user"

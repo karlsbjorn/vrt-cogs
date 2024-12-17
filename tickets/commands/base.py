@@ -11,7 +11,7 @@ from redbot.core.i18n import Translator
 from redbot.core.utils.mod import is_admin_or_superior
 
 from ..abc import MixinMeta
-from ..utils import can_close, close_ticket, get_ticket_owner
+from ..common.utils import can_close, close_ticket, get_ticket_owner
 
 LOADING = "https://i.imgur.com/l3p6EMX.gif"
 log = logging.getLogger("red.vrt.tickets.base")
@@ -93,12 +93,20 @@ class BaseCommands(MixinMeta):
 
         if not can_rename:
             return await ctx.send(_("You do not have permissions to rename this ticket"))
-        await ctx.channel.edit(name=new_name)
-        # Threads already alert to name changes
+        if not ctx.channel.permissions_for(ctx.me).manage_channels:
+            return await ctx.send(_("I no longer have permission to edit this channel"))
+
         if isinstance(ctx.channel, discord.TextChannel):
-            await ctx.send(_("Ticket has been renamed"))
-        elif ctx.interaction:
-            await ctx.interaction.response.defer()
+            txt = _("Renaming channel to {}").format(f"**{new_name}**")
+            if ctx.interaction:
+                await ctx.interaction.response.send_message(txt)
+            else:
+                await ctx.send(txt)
+        else:
+            # Threads already alert to name changes
+            await ctx.tick()
+
+        await ctx.channel.edit(name=new_name)
 
     @commands.hybrid_command(name="close", description="Close your ticket")
     @app_commands.describe(reason="Reason for closing the ticket")
@@ -163,6 +171,7 @@ class BaseCommands(MixinMeta):
         if ctx.interaction:
             await ctx.interaction.response.send_message(_("Closing..."), ephemeral=True, delete_after=4)
         await close_ticket(
+            bot=self.bot,
             member=owner,
             guild=ctx.guild,
             channel=ctx.channel,

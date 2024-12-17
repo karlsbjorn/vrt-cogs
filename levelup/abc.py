@@ -1,9 +1,17 @@
+import asyncio
+import multiprocessing as mp
+import typing as t
 from abc import ABC, ABCMeta, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
 
+import discord
 from discord.ext.commands.cog import CogMeta
+from redbot.core import commands
 from redbot.core.bot import Red
-from redbot.core.config import Config
+
+from .common.models import DB, GuildSettings, Profile, VoiceTracking
+from .generator.tenor.converter import TenorAPI
 
 
 class CompositeMetaClass(CogMeta, ABCMeta):
@@ -13,86 +21,109 @@ class CompositeMetaClass(CogMeta, ABCMeta):
 class MixinMeta(ABC):
     """Type hinting"""
 
-    bot: Red
-    config: Config
-    executor: ThreadPoolExecutor
+    def __init__(self, *_args):
+        self.bot: Red
 
-    # Cog cache
-    data: dict
-    cache_seconds: int
-    render_gifs: bool
-    bgdata: dict
-    fdata: dict
-    stars: dict
-    profiles: dict
+        # Cache
+        self.db: DB
+        self.lastmsg: t.Dict[int, t.Dict[int, float]]
+        self.voice_tracking: t.Dict[int, t.Dict[int, VoiceTracking]]
+        self.profile_cache: t.Dict[int, t.Dict[int, t.Tuple[str, bytes]]]
+        self.stars: t.Dict[int, t.Dict[int, datetime]]
+
+        self.cog_path: Path
+        self.bundled_path: Path
+        # Custom
+        self.custom_fonts: Path
+        self.custom_backgrounds: Path
+        # Bundled
+        self.stock: Path
+        self.fonts: Path
+        self.backgrounds: Path
+
+        # Save state
+        self.last_save: float
+
+        # Tenor
+        self.tenor: TenorAPI
+
+        # Internal API
+        self.api_proc: t.Union[asyncio.subprocess.Process, mp.Process]
 
     @abstractmethod
-    def generate_profile(
+    def save(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def start_api(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def stop_api(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def initialize_voice_states(self) -> int:
+        raise NotImplementedError
+
+    # -------------------------- levelups.py --------------------------
+    @abstractmethod
+    async def check_levelups(
         self,
-        bg_image: str = None,
-        profile_image: str = "https://i.imgur.com/sUYWCve.png",
-        level: int = 1,
-        user_xp: int = 0,
-        next_xp: int = 100,
-        user_position: str = "1",
-        user_name: str = "Unknown#0117",
-        user_status: str = "online",
-        colors: dict = None,
-        messages: str = "0",
-        voice: str = "None",
-        prestige: int = 0,
-        emoji: str = None,
-        stars: str = "0",
-        balance: int = 0,
-        currency: str = "credits",
-        role_icon: str = None,
-        font_name: str = None,
-        render_gifs: bool = False,
-        blur: bool = False,
-    ):
+        guild: discord.Guild,
+        member: discord.Member,
+        profile: Profile,
+        conf: GuildSettings,
+        message: t.Optional[discord.Message] = None,
+        channel: t.Optional[
+            t.Union[discord.TextChannel, discord.VoiceChannel, discord.Thread, discord.ForumChannel]
+        ] = None,
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod
-    def generate_slim_profile(
+    async def ensure_roles(
         self,
-        bg_image: str = None,
-        profile_image: str = "https://i.imgur.com/sUYWCve.png",
-        level: int = 1,
-        user_xp: int = 0,
-        next_xp: int = 100,
-        user_position: str = "1",
-        user_name: str = "Unknown#0117",
-        user_status: str = "online",
-        colors: dict = None,
-        messages: str = "0",
-        voice: str = "None",
-        prestige: int = 0,
-        emoji: str = None,
-        stars: str = "0",
-        balance: int = 0,
-        currency: str = "credits",
-        role_icon: str = None,
-        font_name: str = None,
-        render_gifs: bool = False,
-        blur: bool = False,
-    ):
+        member: discord.Member,
+        conf: t.Optional[GuildSettings] = None,
+        reason: t.Optional[str] = None,
+    ) -> t.Tuple[t.List[discord.Role], t.List[discord.Role]]:
+        raise NotImplementedError
+
+    # -------------------------- weeklyreset.py --------------------------
+    @abstractmethod
+    async def reset_weekly(self, guild: discord.Guild, ctx: commands.Context = None) -> bool:
+        raise NotImplementedError
+
+    # -------------------------- profile.py --------------------------
+    @abstractmethod
+    async def add_xp(self, member: discord.Member, xp: int) -> int:
         raise NotImplementedError
 
     @abstractmethod
-    def generate_levelup(
-        self,
-        bg_image: str = None,
-        profile_image: str = None,
-        level: int = 1,
-        color: tuple = (0, 0, 0),
-        font_name: str = None,
-    ):
+    async def set_xp(self, member: discord.Member, xp: int) -> int:
         raise NotImplementedError
 
     @abstractmethod
-    def get_all_fonts(self):
+    async def remove_xp(self, member: discord.Member, xp: int) -> int:
         raise NotImplementedError
 
     @abstractmethod
-    def get_all_backgrounds(self):
+    async def get_profile_background(
+        self, user_id: int, profile: Profile, try_return_url: bool = False
+    ) -> t.Union[bytes, str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_banner(self, user_id: int) -> t.Optional[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user_profile(
+        self, member: discord.Member, reraise: bool = False
+    ) -> t.Union[discord.Embed, discord.File]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user_profile_cached(self, member: discord.Member) -> t.Union[discord.File, discord.Embed]:
         raise NotImplementedError

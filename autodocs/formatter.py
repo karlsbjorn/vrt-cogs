@@ -36,6 +36,10 @@ IGNORE = [
 ]
 
 
+def is_block_start_or_end(line: str) -> bool:
+    return line.startswith("```")
+
+
 class CustomCmdFmt:
     """Formats documentation for a single command"""
 
@@ -54,6 +58,7 @@ class CustomCmdFmt:
         extended_info: bool,
         privilege_level: str,
         embedding_style: bool = False,
+        min_privilage_level: str = "user",
     ):
         self.bot = bot
         self.cmd = cmd
@@ -62,6 +67,7 @@ class CustomCmdFmt:
         self.extended_info = extended_info
         self.privilege_level = privilege_level
         self.embedding_style = embedding_style
+        self.min_privilage_level = min_privilage_level
 
         self.is_slash: bool = isinstance(cmd, SlashCommand)
         self.is_hybrid: bool = any(
@@ -81,7 +87,10 @@ class CustomCmdFmt:
         self.hashes: str = len(self.name.split(" ")) * "#"
 
         if self.is_slash:
-            self.options = cmd.to_dict()["options"]
+            try:
+                self.options = cmd.to_dict()["options"]
+            except TypeError:
+                self.options = cmd.to_dict(self.bot.tree)["options"]
             self.desc: str = cmd.description
         else:
             try:
@@ -103,43 +112,55 @@ class CustomCmdFmt:
             self.aliases: str = humanize_list(aliases) if aliases else ""
 
         if not self.embedding_style:
-            self.desc = self.desc.replace("\n", "<br/>")
+            # Replace any newlines NOT inside a code block with <br/>
+            lines = self.desc.split("\n")
+            inside_code_block = False
+            for i, line in enumerate(lines):
+                if is_block_start_or_end(line):
+                    inside_code_block = not inside_code_block
+                elif not inside_code_block and line:
+                    lines[i] = line + "<br/>"
+            self.desc = "\n".join(lines)
 
     def get_doc(self) -> Optional[str]:
         # Get header of command
         SLASH = _("Slash")
         COMMAND = _("Command")
+        prefix = self.prefix if self.prefix else "[p]"
         if self.is_slash:
-            doc = f"{self.hashes} {self.name} ({SLASH} {COMMAND})\n"
+            doc = f"{self.hashes} /{self.name} ({SLASH} {COMMAND})\n"
         elif self.is_hybrid:
             HYBRID = _("Hybrid")
-            doc = f"{self.hashes} {self.name} ({HYBRID} {COMMAND})\n"
+            doc = f"{self.hashes} {prefix}{self.name} ({HYBRID} {COMMAND})\n"
         else:
-            doc = f"{self.hashes} {self.name}\n"
+            doc = f"{self.hashes} {prefix}{self.name}\n"
 
         if self.embedding_style:
             doc = doc.replace("#", "").strip() + "\n"
+
+        # Get command docstring
+        doc += f"{self.desc.strip()}\n"
 
         USAGE = _("Usage")
         CHECKS = _("Checks")
 
         # Get command usage info
         if self.is_slash:
-            usage = f"/{self.name} "
+            usage = f"/{self.name}"
             arginfo = ""
             for i in self.options:
                 name = i["name"]
-                desc = i["description"]
+                desc = f" {i['description']}" if i["description"] != "..." else ""
                 required = i.get("required", False)
 
                 if required:
                     REQUIRED = _("Required")
-                    usage += f"<{name}> "
-                    arginfo += f" - `{name}:` ({REQUIRED}) {desc}\n"
+                    usage += f" <{name}>"
+                    arginfo += f" - `{name}:` ({REQUIRED}){desc}\n"
                 else:
                     OPTIONAL = _("Optional")
-                    usage += f"[{name}] "
-                    arginfo += f" - `{name}:` ({OPTIONAL}) {desc}\n"
+                    usage += f" [{name}]"
+                    arginfo += f" - `{name}:` ({OPTIONAL}){desc}\n"
 
             doc += f" - {USAGE}: `{usage}`\n"
             if arginfo:
@@ -151,20 +172,20 @@ class CustomCmdFmt:
             if self.cmd.guild_only:
                 GUILDONLY = _("Server Only")
                 checks.append(GUILDONLY)
-            if self.checks:
-                doc += f" - {CHECKS}: `{humanize_list(checks)}\n"
+            if checks:
+                doc += f" - {CHECKS}: `{humanize_list(checks)}`\n"
         else:
-            usage = f"[p]{self.name} "
+            usage = f"[p]{self.name}"
             try:
                 for k, v in self.cmd.clean_params.items():
                     arg = v.name
 
                     if v.required:
-                        usage += f"<{arg}> "
+                        usage += f" <{arg}>"
                     elif v.kind == v.KEYWORD_ONLY:
-                        usage += f"[{arg}] "
+                        usage += f" [{arg}]"
                     else:
-                        usage += f"[{arg}={v.default}] "
+                        usage += f" [{arg}={v.default}]"
             except AttributeError:
                 pass
 
@@ -174,10 +195,13 @@ class CustomCmdFmt:
                 doc += f" - {SLASH} {USAGE}: `{usage}`\n"
 
             limit = PRIVILEGES[self.privilege_level]
+            minimum = PRIVILEGES[self.min_privilage_level]
             if perms := self.perms:
                 priv = perms.privilege_level
                 if priv:
                     if priv.value > limit:
+                        return None
+                    if priv.value < minimum:
                         return None
                     if priv.value > 1:
                         RESTRICTED = _("Restricted to")
@@ -189,13 +213,8 @@ class CustomCmdFmt:
             if self.cooldown:
                 COOLDOWN = _("Cooldown")
                 doc += f" - {COOLDOWN}: `{self.cooldown}`\n"
-            if self.checks:
-                doc += f" - {CHECKS}: `{self.checks}`\n"
-
-        # Get command docstring
-        if not doc.endswith("\n\n"):
-            doc += "\n"
-        doc += f"{self.desc}\n\n"
+            if self.checks.strip():
+                doc += f" - {CHECKS}: `{self.checks.strip()}`\n"
 
         # Get extended info
         if self.extended_info:

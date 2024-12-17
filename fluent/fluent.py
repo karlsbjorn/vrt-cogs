@@ -1,5 +1,6 @@
 import logging
 import typing as t
+from contextlib import suppress
 
 import discord
 from aiocache import cached
@@ -16,7 +17,32 @@ log = logging.getLogger("red.vrt.fluent")
 _ = Translator("Fluent", __file__)
 
 
-# redgettext -D fluent.py --command-docstring
+@app_commands.context_menu(name="Translate")
+async def translate_message_ctx(interaction: discord.Interaction, message: discord.Message):
+    """Translate a message"""
+    if not message.content and not message.embeds:
+        return await interaction.response.send_message(_("❌ No content to translate."), ephemeral=True)
+    with suppress(discord.HTTPException):
+        await interaction.response.defer(ephemeral=True)
+    bot: Red = interaction.client
+    content = message.content or message.embeds[0].description
+    res: t.Optional[Result] = await bot.get_cog("Fluent").translate(content, message.guild.preferred_locale.value)
+    if res is None:
+        return await interaction.followup.send(_("❌ Translation failed."), ephemeral=True)
+    if res.src == res.dest:
+        return await interaction.followup.send(
+            _("❌ The detected language is the same as the target language."), ephemeral=True
+        )
+    if res.text == content:
+        return await interaction.followup.send(_("❌ Translated content matches the source."), ephemeral=True)
+    embed = discord.Embed(
+        description=res.text,
+        color=await bot.get_embed_color(message),
+    ).set_footer(text=f"{res.src} -> {res.dest}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# redgettext -D fluent/fluent.py --command-docstring
 @cog_i18n(_)
 class Fluent(commands.Cog):
     """
@@ -33,8 +59,8 @@ class Fluent(commands.Cog):
     If a deepl key is set, it will use that before falling back to google translate and then flowery.
     """
 
-    __author__ = "Vertyco"
-    __version__ = "2.1.1"
+    __author__ = "[vertyco](https://github.com/vertyco/vrt-cogs)"
+    __version__ = "2.2.0"
 
     def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
@@ -48,16 +74,39 @@ class Fluent(commands.Cog):
         self.config = Config.get_conf(self, identifier=11701170)
         self.config.register_guild(channels={})
         logging.getLogger("hpack.hpack").setLevel(logging.INFO)
+        logging.getLogger("deepl").setLevel(logging.WARNING)
+
+    async def cog_load(self):
+        self.bot.tree.add_command(translate_message_ctx)
+
+    async def cog_unload(self):
+        self.bot.tree.remove_command(translate_message_ctx)
 
     @cached(ttl=10)
     async def get_channels(self, guild: discord.Guild) -> dict:
         return await self.config.guild(guild).channels()
 
     @cached(ttl=900)
-    async def translate(self, msg: str, dest: str, force: bool = False) -> Result:
+    async def translate(self, msg: str, dest: str, force: bool = False) -> t.Optional[Result]:
+        """Get the translation of a message
+
+        Args:
+            msg (str): the message to be translated
+            dest (str): the target language
+            force (bool, optional): If False, force res back to None if result is same as source text. Defaults to False.
+
+        Returns:
+            t.Optional[Result]: Result object containing source/target lang and translated text
+        """
         deepl_key = await self.bot.get_shared_api_tokens("deepl")
         translator = TranslateManager(deepl_key=deepl_key.get("key"))
         return await translator.translate(msg, dest, force=force)
+
+    @commands.command(name="serverlocale")
+    async def server_locale(self, ctx: commands.Context):
+        """Check the current server's locale"""
+        locale = ctx.guild.preferred_locale
+        await ctx.send(f"Server locale is set to: {locale.name} - {locale.value}")
 
     @commands.hybrid_command(name="translate")
     @app_commands.describe(to_language="Translate to this language")
@@ -140,6 +189,12 @@ class Fluent(commands.Cog):
         """
         if not channel:
             channel = ctx.channel
+
+        if language1.lower() == language2.lower():
+            txt = _("You can't use the same language for both parameters. {} to {} is still {}...").format(
+                language1, language1, language1
+            )
+            return await ctx.send(txt)
 
         translator = TranslateManager()
         lang1 = await translator.get_lang(language1)

@@ -30,8 +30,8 @@ class EconomyTrack(commands.Cog, EconomyTrackCommands, PlotGraph, metaclass=Comp
     Also track you server's member count!
     """
 
-    __author__ = "Vertyco"
-    __version__ = "0.5.4"
+    __author__ = "[vertyco](https://github.com/vertyco/vrt-cogs)"
+    __version__ = "0.5.6"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -147,9 +147,7 @@ class EconomyTrack(commands.Cog, EconomyTrackCommands, PlotGraph, metaclass=Comp
         }
         await cog.register_functions("EconomyTrack", [schema1, schema2])
 
-    async def get_member_count_info(
-        self, guild: discord.Guild, timespan: str = "1d", *args, **kwargs
-    ) -> str:
+    async def get_member_count_info(self, guild: discord.Guild, timespan: str = "1d", *args, **kwargs) -> str:
         if timespan.lower() == "all":
             delta = timedelta(days=36500)
         else:
@@ -207,9 +205,7 @@ class EconomyTrack(commands.Cog, EconomyTrackCommands, PlotGraph, metaclass=Comp
         reply += f"Since <t:{int(df.index[0].timestamp())}:D>\n{box(field, 'diff')}"
         return reply
 
-    async def get_economy_info(
-        self, guild: discord.Guild, timespan: str = "1d", *args, **kwargs
-    ) -> str:
+    async def get_economy_info(self, guild: discord.Guild, timespan: str = "1d", *args, **kwargs) -> str:
         if timespan.lower() == "all":
             delta = timedelta(days=36500)
         else:

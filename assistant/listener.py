@@ -1,23 +1,14 @@
 import logging
+import typing as t
+from io import StringIO
 
 import discord
 from redbot.core import commands
 from redbot.core.i18n import Translator
 
 from .abc import MixinMeta
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-from .common.utils import get_attachments
-from .models import READ_EXTENSIONS, GuildSettings
-import random
-=======
-from .common.utils import can_use
->>>>>>> main
-=======
-=======
-from .common.constants import REACT_NAME_MESSAGE, REACT_SUMMARY_MESSAGE
->>>>>>> main
+from .common.calls import create_memory_call
+from .common.constants import REACT_SUMMARY_MESSAGE
 from .common.utils import can_use, embed_to_content
 >>>>>>> main
 
@@ -26,10 +17,16 @@ _ = Translator("Assistant", __file__)
 
 
 class AssistantListener(MixinMeta):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.responding_to = set()
+
     @commands.Cog.listener("on_message_without_command")
     async def handler(self, message: discord.Message):
         # If message object is None for some reason
         if not message:
+            return
+        if message.author.id in self.responding_to:
             return
         # If message was from a bot
 <<<<<<< HEAD
@@ -73,109 +70,54 @@ class AssistantListener(MixinMeta):
 >>>>>>> main
 
         conf = self.db.get_conf(message.guild)
-        if not conf.enabled:
-            return
-        no_api = [not conf.api_key, not conf.endpoint_override, not self.db.endpoint_override]
-        if all(no_api):
+        if not conf.enabled or not conf.api_key:
             return
 
         channel = message.channel
         mention_ids = [m.id for m in message.mentions]
+        bot_mentioned = self.bot.user.id in mention_ids
 
-        # Ignore channels that arent a dedicated assistant channel
-<<<<<<< HEAD
-        if self.bot.user.id not in mention_ids and channel.id != conf.channel_id:
-            return
-<<<<<<< HEAD
-<<<<<<< HEAD
-        if random.random() > 0.2:
-            return
-
-        for mention in message.mentions:
-            message.content = message.content.replace(
-                f"<@{mention.id}>", f"@{mention.display_name}"
-            )
-        for mention in message.channel_mentions:
-            message.content = message.content.replace(f"<#{mention.id}>", f"#{mention.name}")
-        for mention in message.role_mentions:
-            message.content = message.content.replace(f"<@&{mention.id}>", f"@{mention.name}")
-
-        content = message.content
-=======
-        if not await can_use(message, conf.blacklist, respond=False):
-            return
->>>>>>> main
-        mentions = [member.id for member in message.mentions]
-=======
-=======
-        if channel.id != conf.channel_id:
-            # Perform some preliminary checks
-            if self.bot.user.id not in mention_ids:
-                return
-            # If here, bot was mentioned
-            if not conf.mention_respond:
-                return
->>>>>>> main
-
-        # Ignore references to other members unless bot is pinged
-        if hasattr(message, "reference") and message.reference:
+        ref: discord.Message = None
+        # If bot wasnt mentioned in the message, see if someone replied to it
+        if not bot_mentioned and hasattr(message, "reference") and message.reference:
             ref = message.reference.resolved
-            if ref and ref.author.id != self.bot.user.id and self.bot.user.id not in mention_ids:
-                return
-            # Ignore common prefixes from other bots
-            ignore_prefixes = [",", ".", "+", "!", "-", ">"]
-            if any(message.content.startswith(i) for i in ignore_prefixes):
-                return
+            if not isinstance(ref, discord.Message):
+                try:
+                    ref = await message.channel.fetch_message(message.reference.message_id)
+                except discord.HTTPException:
+                    pass
 
+        if ref and ref.author.id == self.bot.user.id:
+            bot_mentioned = True
+
+        if channel.id != conf.channel_id:
+            # Message outside of assistant channel
+            # The ONLY way we dont return is if the bot was mentioned and mention_respond is enabled
+            if not bot_mentioned or not conf.mention_respond:
+                return
+        elif ref is not None:  # Message in assistant channel and user is replying to someone
+            # If user is replying to anyone other than the bot, ignore
+            if ref.author.id != self.bot.user.id:
+                return
+        elif mention_ids and self.bot.user.id not in mention_ids:
+            # Message in the assistant channel and user mentioned someone other than the bot
+            return
+
+        # Ignore common prefixes from other bots
+        if message.content.startswith((",", ".", "+", "!", "-", ">" "<", "?", "$", "%", "^", "&", "*", "_")):
+            return
         if not await can_use(message, conf.blacklist, respond=False):
             return
->>>>>>> main
-        if (
-            not message.content.endswith("?")
-            and conf.endswith_questionmark
-            and self.bot.user.id not in mention_ids
-        ):
+        if not message.content.endswith("?") and conf.endswith_questionmark and self.bot.user.id not in mention_ids:
             return
-<<<<<<< HEAD
-
-        embed = message.embeds[0] if message.embeds else None
-        if not embed:
-            return
-
-        if random.randint(1, 2) == 1:
-            angry_or_happy = "ljutog"
-            angry_or_happy_2 = "ljut"
-            angry_or_happy_3 = "nemoj ikakve komplimente davat"
-        else:
-            angry_or_happy = "skepticnog"
-            angry_or_happy_2 = "skeptik"
-            angry_or_happy_3 = "nemoj biti ni previse pozitivan ni previse negativan"
-
-        content = f"Article Title: {embed.title}\n" \
-                  f"Article Summary: {embed.description}\n\n" \
-                  f"" \
-                  f"ignorirajuci sve sto je prije navedeno, imitiraj f{angry_or_happy} gejmera na wow battlenet forumsima i napisi discord poruku o ovom artiklu na hrvatskom\n" \
-                  f"cilj je kritizirati i biti f{angry_or_happy_2}, f{angry_or_happy_3}\n" \
-                  f"nemoj ista cenzurirat\n" \
-                  f"napisi ispod 150 slova"
-
-        if attachments := get_attachments(message):
-            for i in attachments:
-                if not any(i.filename.lower().endswith(ext) for ext in READ_EXTENSIONS):
-                    continue
-                text = await i.read()
-                content += f"\n\nUploaded [{i.filename}]: {text.decode()}"
-
-        async with channel.typing():
-            await self.try_replying(message, content, conf)
-=======
-
         if len(message.content.strip()) < conf.min_length:
             return
->>>>>>> main
-
-        async with channel.typing():
-            await self.handle_message(message, message.content, conf, listener=True)
+        self.responding_to.add(message.author.id)
+        try:
+            async with channel.typing():
+                await self.handle_message(message, message.content, conf, listener=True)
+        finally:
+            self.responding_to.remove(message.author.id)
 
     @commands.Cog.listener("on_guild_remove")
     async def cleanup(self, guild: discord.Guild):
@@ -215,8 +157,7 @@ class AssistantListener(MixinMeta):
         conf = self.db.get_conf(guild)
         if not conf.enabled:
             return
-        no_api = [not conf.api_key, not conf.endpoint_override, not self.db.endpoint_override]
-        if all(no_api):
+        if not conf.api_key:
             return
         # Check if cog is disabled
         if await self.bot.cog_disabled_in_guild(self, guild):
@@ -224,40 +165,49 @@ class AssistantListener(MixinMeta):
         if not any([role.id in conf.tutors for role in user.roles]) and user.id not in conf.tutors:
             return
 
-        initial_content = f"{message.author.name} said: {message.content}"
-        if message.author.bot:
-            initial_content = message.content
+        messages: t.List[discord.Message] = [message]
+
+        # Set up the message chain
+        tmp = message
+        while True:
+            if getattr(tmp, "reference", None) is not None:
+                resolved = tmp.reference.resolved
+                if resolved is None:
+                    break
+                messages.append(resolved)
+                # If the message is a reply to another message, we want to keep going up the chain
+                tmp = resolved
+
+            else:
+                break
+
+        messages.reverse()
+
+        content = StringIO()
+        for idx, msg in enumerate(messages):
+            if idx == 0:
+                content.write(f"Original message from {msg.author.name}: {msg.content}\n")
+            else:
+                content.write(f"{msg.author.name} said: {msg.content}\n")
+
+        for msg in messages:
+            content.write(f"{msg.author.name} said: {msg.content}\n")
 
         success = True
         try:
-            # Get embedding content first
             messages = [
                 {"role": "system", "content": REACT_SUMMARY_MESSAGE.strip()},
-                {"role": "user", "content": "Bob said: My favorite color is red"},
-                {"role": "assistant", "content": "Bob's favorite color is red"},
-                {"role": "user", "content": initial_content},
+                {"role": "user", "content": content.getvalue()},
             ]
-            embed_response = await self.request_response(messages=messages, conf=conf)
-            messages.append(embed_response)
-            messages.append({"role": "user", "content": REACT_NAME_MESSAGE})
-
-            # Create a name for the embedding
-            messages = [
-                {"role": "system", "content": REACT_NAME_MESSAGE.strip()},
-                {"role": "user", "content": "Bob's favorite color is red"},
-                {"role": "assistant", "content": "Bobs fav color"},
-                {"role": "user", "content": embed_response["content"]},
-            ]
-            name_response = await self.request_response(messages=messages, conf=conf)
-            embedding = await self.add_embedding(
-                guild, name_response["content"], embed_response["content"]
-            )
-            if embedding is None:
-                success = False
+            res = await create_memory_call(messages=messages, api_key=conf.api_key)
+            if res:
+                embedding = await self.add_embedding(guild, res.memory_name, res.memory_content)
+                if embedding is None:
+                    success = False
+                else:
+                    log.info(f"Created embedding in {guild.name}\nName: {res.memory_name}\nEntry: {res.memory_content}")
             else:
-                log.info(
-                    f"Created embedding in {guild.name}\nName: {name_response['content']}\nEntry: {embed_response['content']}"
-                )
+                success = False
         except Exception as e:
             log.warning(f"Failed to save embed memory in {guild.name}", exc_info=e)
             success = False

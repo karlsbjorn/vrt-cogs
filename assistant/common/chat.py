@@ -11,26 +11,36 @@ from io import BytesIO
 from typing import Callable, Dict, List, Optional, Union
 
 import discord
+import httpx
+import openai
 import pytz
-from openai.error import (
-    APIConnectionError,
-    AuthenticationError,
-    InvalidRequestError,
-    RateLimitError,
+from openai.types.chat.chat_completion_message import (
+    ChatCompletionMessage,
+    FunctionCall,
+)
+from openai.types.chat.chat_completion_message_tool_call import (
+    ChatCompletionMessageToolCall,
 )
 from redbot.core import bank
 from redbot.core.i18n import Translator, cog_i18n
-from redbot.core.utils.chat_formatting import box, humanize_number, pagify
+from redbot.core.utils.chat_formatting import box, humanize_number, pagify, text_to_file
+from sentry_sdk import add_breadcrumb
 
 from ..abc import MixinMeta
-from .constants import READ_EXTENSIONS, SUPPORTS_FUNCTIONS
+from .constants import READ_EXTENSIONS, SUPPORTS_VISION
 from .models import Conversation, GuildSettings
 from .utils import (
+    clean_name,
+    clean_response,
+    clean_responses,
+    ensure_message_compatibility,
+    ensure_supports_vision,
+    ensure_tool_consistency,
     extract_code_blocks,
     extract_code_blocks_with_lang,
     get_attachments,
     get_params,
-    process_username,
+    purge_images,
     remove_code_blocks,
 )
 
@@ -42,25 +52,32 @@ _ = Translator("Assistant", __file__)
 class ChatHandler(MixinMeta):
     async def handle_message(
         self, message: discord.Message, question: str, conf: GuildSettings, listener: bool = False
-    ) -> str:
+    ):
         outputfile_pattern = r"--outputfile\s+([^\s]+)"
         extract_pattern = r"--extract"
         get_last_message_pattern = r"--last"
+        image_url_pattern = r"(https?:\/\/\S+\.(?:png|gif|webp|jpg|jpeg)\b)"
 
         # Extract the optional arguments and their values
         outputfile_match = re.search(outputfile_pattern, question)
         extract_match = re.search(extract_pattern, question)
         get_last_message_match = re.search(get_last_message_pattern, question)
+        image_url_match = re.findall(image_url_pattern, question)
 
         # Remove the optional arguments from the input string to obtain the question variable
         question = re.sub(outputfile_pattern, "", question)
         question = re.sub(extract_pattern, "", question)
         question = re.sub(get_last_message_pattern, "", question)
+        question = re.sub(image_url_pattern, "", question)
 
         # Check if the optional arguments were present and set the corresponding variables
         outputfile = outputfile_match.group(1) if outputfile_match else None
         extract = bool(extract_match)
         get_last_message = bool(get_last_message_match)
+        images = []
+        if image_url_match:
+            for url in image_url_match:
+                images.append(url)
 
         question = question.replace(self.bot.user.mention, self.bot.user.display_name)
 
@@ -75,13 +92,21 @@ class ChatHandler(MixinMeta):
                 f"[Channel: {mention.name} | Mention: {mention.mention}]",
             )
         for mention in message.role_mentions:
-            mention.__dict__
             question = question.replace(
                 f"<@&{mention.id}>",
                 f"[Role: {mention.name} | Mention: {mention.mention}]",
             )
+
+        img_ext = ["png", "jpg", "jpeg", "gif", "webp"]
         for i in get_attachments(message):
             has_extension = i.filename.count(".") > 0
+            if any(i.filename.lower().endswith(ext) for ext in img_ext):
+                # No reason to download the image now, we can just use the url
+                # image_bytes: bytes = await i.read()
+                # image_b64 = base64.b64encode(image_bytes).decode()
+                images.append(i.url)
+                continue
+
             if not any(i.filename.lower().endswith(ext) for ext in READ_EXTENSIONS) and has_extension:
                 continue
 
@@ -93,17 +118,20 @@ class ChatHandler(MixinMeta):
                 except UnicodeDecodeError:
                     pass
                 except Exception as e:
-                    log.info(f"Failed to decode content of {i.filename}", exc_info=e)
+                    log.error(f"Failed to decode content of {i.filename}", exc_info=e)
 
             if i.filename == "message.txt":
                 question += f"\n\n### Uploaded File:\n{text}\n"
             else:
                 question += f"\n\n### Uploaded File ({i.filename}):\n{text}\n"
 
+        mem_id = message.channel.id if conf.collab_convos else message.author.id
+        conversation = self.db.get_conversation(mem_id, message.channel.id, message.guild.id)
+
         # If referencing a message that isnt part of the user's conversation, include the context
         if hasattr(message, "reference") and message.reference:
             ref = message.reference.resolved
-            if ref and ref.author.id != message.author.id:
+            if ref and ref.author.id != message.author.id and ref.author.id != self.bot.user.id:
                 # If we're referencing the bot, make sure the bot's message isnt referencing the convo
                 include = True
                 if hasattr(ref, "reference") and ref.reference:
@@ -113,13 +141,9 @@ class ChatHandler(MixinMeta):
                         include = False
 
                 if include:
-                    question = (
-                        f"{ref.author.name} said: {ref.content}\n\n"
-                        f"{message.author.name} replying to {ref.author.name}: {question}"
-                    )
+                    question = f"# {ref.author.name} SAID:\n{ref.content}\n\n" f"# REPLY\n{question}"
 
         if get_last_message:
-            conversation = self.db.get_conversation(message.author.id, message.channel.id, message.guild.id)
             reply = conversation.messages[-1]["content"] if conversation.messages else _("No message history!")
         else:
             try:
@@ -130,39 +154,39 @@ class ChatHandler(MixinMeta):
                     message.channel,
                     conf,
                     message_obj=message,
+                    images=images,
                 )
-            except APIConnectionError as e:
-                reply = _("Failed to communicate with endpoint!")
-                log.error(f"APIConnectionError (From listener: {listener})", exc_info=e)
-            except InvalidRequestError as e:
-                if error := e.error:
-                    # OpenAI related error, doesn't need to be restricted to bot owner only
-                    reply = _("Error: {}").format(error["message"])
-                    log.error(
-                        f"Invalid Request Error (From listener: {listener})\nERROR: {error}",
-                        exc_info=e,
-                    )
+            except openai.InternalServerError as e:
+                if e.body and isinstance(e.body, dict):
+                    if msg := e.body.get("message"):
+                        log.warning("InternalServerError [message]", exc_info=e)
+                        reply = _("Internal Server Error({}): {}").format(e.status_code, msg)
+                    else:
+                        log.error(f"Internal Server Error (From listener: {listener})", exc_info=e)
+                        reply = _("Internal Server Error({}): {}").format(e.status_code, e.body)
                 else:
-                    log.error(f"Invalid Request Error (From listener: {listener})", exc_info=e)
-                    return
-            except AuthenticationError:
+                    reply = _("Internal Server Error({}): {}").format(e.status_code, e.message)
+            except openai.APIConnectionError as e:
+                reply = _("Failed to communicate with API!")
+                log.error(f"APIConnectionError (From listener: {listener})", exc_info=e)
+            except openai.AuthenticationError:
                 if message.author == message.guild.owner:
                     reply = _("Invalid API key, please set a new valid key!")
                 else:
                     reply = _("Uh oh, looks like my API key is invalid!")
-            except RateLimitError as e:
-                reply = str(e)
-            except KeyError as e:
-                log.debug("get_chat_response error", exc_info=e)
-                await message.channel.send(_("**KeyError in prompt or system message**\n{}").format(box(str(e), "py")))
-                return
+            except openai.RateLimitError as e:
+                reply = _("Rate limit error: {}").format(e.message)
+            except httpx.ReadTimeout as e:
+                reply = _("Read timeout error: {}").format(str(e))
             except Exception as e:
                 prefix = (await self.bot.get_valid_prefixes(message.guild))[0]
                 log.error(f"API Error (From listener: {listener})", exc_info=e)
-                self.bot._last_exception = traceback.format_exc()
+                status = await self.openai_status()
+                self.bot._last_exception = f"{traceback.format_exc()}\nAPI Status: {status}"
                 reply = _("Uh oh, something went wrong! Bot owner can use `{}` to view the error.").format(
                     f"{prefix}traceback"
                 )
+                reply += "\n\n" + _("API Status: {}").format(status)
 
         if reply is None:
             return
@@ -230,27 +254,64 @@ class ChatHandler(MixinMeta):
 >>>>>>> main
         extend_function_calls: bool = True,
         message_obj: Optional[discord.Message] = None,
-    ) -> str:
->>>>>>> main
+        images: list[str] = None,
+    ) -> Union[str, None]:
         """Call the API asynchronously"""
-        if function_calls is None:
-            function_calls = []
-        if function_map is None:
-            function_map = {}
+        functions = function_calls.copy() if function_calls else []
+        mapping = function_map.copy() if function_map else {}
 
-        if conf.use_function_calls and extend_function_calls and conf.model in SUPPORTS_FUNCTIONS:
+        if conf.use_function_calls and extend_function_calls:
             # Prepare registry and custom functions
-            prepped_function_calls, prepped_function_map = self.db.prep_functions(
-                bot=self.bot, conf=conf, registry=self.registry
+            prepped_function_calls, prepped_function_map = await self.db.prep_functions(
+                bot=self.bot, conf=conf, registry=self.registry, member=author
             )
-            function_calls.extend(prepped_function_calls)
-            function_map.update(prepped_function_map)
+            functions.extend(prepped_function_calls)
+            mapping.update(prepped_function_map)
 
+        mem_id = author if isinstance(author, int) else author.id
+        chan_id = channel if isinstance(channel, int) else channel.id
+        if conf.collab_convos:
+            mem_id = chan_id
         conversation = self.db.get_conversation(
-            member_id=author if isinstance(author, int) else author.id,
-            channel_id=channel if isinstance(channel, int) else channel.id,
+            member_id=mem_id,
+            channel_id=chan_id,
             guild_id=guild.id,
         )
+        # if conf.collab_convos and isinstance(author, discord.Member):
+        #     message = f"{author.display_name}: {message}"
+
+        conversation.cleanup(conf, author)
+        conversation.refresh()
+        try:
+            return await self._get_chat_response(
+                message,
+                author,
+                guild,
+                channel,
+                conf,
+                conversation,
+                functions,
+                mapping,
+                message_obj,
+                images,
+            )
+        finally:
+            conversation.cleanup(conf, author)
+            conversation.refresh()
+
+    async def _get_chat_response(
+        self,
+        message: str,
+        author: Union[discord.Member, int],
+        guild: discord.Guild,
+        channel: Union[discord.TextChannel, discord.Thread, discord.ForumChannel, int],
+        conf: GuildSettings,
+        conversation: Conversation,
+        function_calls: List[dict],
+        function_map: Dict[str, Callable],
+        message_obj: Optional[discord.Message] = None,
+        images: list[str] = None,
+    ) -> Union[str, None]:
         if isinstance(author, int):
             author = guild.get_member(author)
         if isinstance(channel, int):
@@ -280,11 +341,30 @@ class ChatHandler(MixinMeta):
 =======
 
         query_embedding = []
-        message_tokens = await self.get_token_count(message, conf)
+        user = author if isinstance(author, discord.Member) else None
+        model = conf.get_user_model(user)
+
+        # Ensure the message is not longer than 1048576 characters
+        message = message[:1048576]
+
+        # Determine if we should embed the user's message
+        message_tokens = await self.count_tokens(message, model)
         words = message.split(" ")
-        if conf.top_n and message_tokens < 8191 and len(words) > 5:
-            # Save on tokens by only getting embeddings if theyre enabled
-            query_embedding = await self.request_embedding(message, conf)
+        get_embed_conditions = [
+            conf.embeddings,  # We actually have embeddings to compare with
+            len(words) > 1,  # Message is long enough
+            conf.top_n,  # Top n is greater than 0
+            message_tokens < 8191,
+        ]
+        if all(get_embed_conditions):
+            if conf.question_mode:
+                # If question mode is enabled, only the first message and messages that end with a ? will be embedded
+                if message.endswith("?") or not conversation.messages:
+                    query_embedding = await self.request_embedding(message, conf)
+            else:
+                query_embedding = await self.request_embedding(message, conf)
+
+        log.debug(f"Query embedding: {len(query_embedding)}")
 
         mem = guild.get_member(author) if isinstance(author, int) else author
         bal = humanize_number(await bank.get_balance(mem)) if mem else _("None")
@@ -304,29 +384,32 @@ class ChatHandler(MixinMeta):
 >>>>>>> main
         }
 
-        def pop_schema(name: str, calls: List[dict]):
-            return [func for func in calls if func["name"] != name]
-
         # Don't include if user is not a tutor
         not_tutor = [
             author.id not in conf.tutors,
             not any([role.id in conf.tutors for role in author.roles]),
         ]
-        if all(not_tutor):
-            if "create_memory" in function_map:
-                function_calls = pop_schema("create_memory", function_calls)
-                del function_map["create_memory"]
+
+        if "create_memory" in function_map and all(not_tutor):
+            function_calls = [i for i in function_calls if i["name"] != "create_memory"]
+            del function_map["create_memory"]
 
         if "edit_memory" in function_map and (not conf.embeddings or all(not_tutor)):
-            function_calls = pop_schema("edit_memory", function_calls)
+            function_calls = [i for i in function_calls if i["name"] != "edit_memory"]
             del function_map["edit_memory"]
 
         # Don't include if there are no embeddings
         if "search_memories" in function_map and not conf.embeddings:
-            function_calls = pop_schema("search_memories", function_calls)
+            function_calls = [i for i in function_calls if i["name"] != "search_memories"]
             del function_map["search_memories"]
+        if "list_memories" in function_map and not conf.embeddings:
+            function_calls = [i for i in function_calls if i["name"] != "list_memories"]
+            del function_map["list_memories"]
 
-        max_tokens = self.get_max_tokens(conf, author)
+        if "search_internet" in function_map and not self.db.brave_api_key:
+            function_calls = [i for i in function_calls if i["name"] != "search_internet"]
+            del function_map["search_internet"]
+
         messages = await self.prepare_messages(
             message,
             guild,
@@ -337,166 +420,252 @@ class ChatHandler(MixinMeta):
             query_embedding,
             extras,
             function_calls,
+            images,
         )
         reply = None
 
         calls = 0
-        last_func = None
-        repeats = 0
+        tries = 0
         while True:
+            if tries > 2:
+                log.error("breaking after 3 tries, purge_images function must have failed")
+                break
             if calls >= conf.max_function_calls:
                 function_calls = []
 
-            if len(messages) > 1:
-                # Iteratively degrade the conversation to ensure it is always under the token limit
-                messages, function_calls, degraded = await self.degrade_conversation(
-                    messages, function_calls, conf, author
-                )
-                if degraded:
-                    conversation.overwrite(messages)
+            await ensure_supports_vision(messages, conf, author)
+            await ensure_message_compatibility(messages, conf, author)
+
+            # Iteratively degrade the conversation to ensure it is always under the token limit
+            degraded = await self.degrade_conversation(messages, function_calls, conf, author)
+
+            before = len(messages)
+            cleaned = await ensure_tool_consistency(messages)
+            if cleaned and before == len(messages):
+                log.error("Something went wrong while ensuring tool call consistency")
+
+            await clean_responses(messages)
+
+            if cleaned or degraded:
+                conversation.overwrite(messages)
 
             if not messages:
                 log.error("Messages got pruned too aggressively, increase token limit!")
                 break
             try:
-                response = await self.request_response(
+                response: ChatCompletionMessage = await self.request_response(
                     messages=messages,
                     conf=conf,
                     functions=function_calls,
                     member=author,
                 )
-            except InvalidRequestError as e:
-                log.warning(f"Function response failed. functions: {len(function_calls)}", exc_info=e)
-                if await self.bot.is_owner(author) and len(function_calls) > 64:
-                    dump = json.dumps(function_calls, indent=2)
-                    buffer = BytesIO(dump.encode())
-                    buffer.name = "FunctionDump.json"
-                    buffer.seek(0)
-                    file = discord.File(buffer)
-                    try:
-                        await channel.send(_("Too many functions called"), file=file)
-                    except discord.HTTPException:
-                        pass
-                try:
-                    response = await self.request_response(
-                        messages=messages,
-                        conf=conf,
-                        member=author,
-                    )
-                except InvalidRequestError as e:
-                    log.error(f"MESSAGES: {json.dumps(messages)}", exc_info=e)
-                    raise e
-            # except APIError as e:
-            #     reply = e.user_message
-            #     break
+            except httpx.ReadTimeout:
+                reply = _("Request timed out, please try again.")
+                break
+            except openai.BadRequestError as e:
+                if "Invalid image" in str(e):
+                    await purge_images(messages)
+                    tries += 1
+                    continue
+
+                if e.body and isinstance(e.body, dict):
+                    msg = e.body.get("message", f"Unknown error: {str(e)}")
+                    log.error("BadRequestError2 [message]", exc_info=e)
+                    reply = _("Bad Request Error2({}): {}").format(e.status_code, msg)
+                else:
+                    reply = _("Bad Request Error({}): {}").format(e.status_code, e.message)
+                if guild.id == 625757527765811240:
+                    # Dump payload for debugging if its my guild
+                    dump_file = text_to_file(json.dumps(messages, indent=2), filename=f"{author}_convo_BadRequest.json")
+                    await channel.send(file=dump_file)
+                break
             except Exception as e:
-                log.error(f"Exception occured for chat response.\nMessages: {messages}", exc_info=e)
+                add_breadcrumb(
+                    category="chat",
+                    message=f"Response Exception: {model}",
+                    level="info",
+                )
+                if guild.id == 625757527765811240:
+                    # Dump payload for debugging if its my guild
+                    dump_file = text_to_file(json.dumps(messages, indent=2), filename=f"{author}_convo_Exception.json")
+                    await channel.send(file=dump_file)
+
+                raise e
+
+            if reply := response.content:
                 break
 
-            if reply := response["content"]:
-                break
+            await clean_response(response)
 
-            # If content is None then function call must exist
-            function_call = response.get("function_call")
-            if not function_call:
+            if response.tool_calls:
+                log.debug("Tool calls detected")
+                response_functions: list[ChatCompletionMessageToolCall] = response.tool_calls
+            elif response.function_call:
+                log.debug("Function call detected")
+                response_functions: list[FunctionCall] = [response.function_call]
+            else:
+                log.error("No reply and no function calls???")
                 continue
 
-            calls += 1
+            if len(response_functions) > 1:
+                log.debug(f"Calling {len(response_functions)} functions at once")
 
-            function_name = function_call["name"]
-            if last_func is None:
-                last_func = function_name
-            elif last_func == function_name:
-                repeats += 1
-                if repeats > 4:  # Skip before calling same function a 5th time
-                    log.error(f"Too many repeats: {function_name}")
-                    function_calls = pop_schema(function_name, function_calls)
-                    continue
-            else:
-                repeats = 0
+            dump = response.model_dump()
+            if not dump["function_call"]:
+                del dump["function_call"]
+            if not dump["tool_calls"]:
+                del dump["tool_calls"]
 
-            if function_name not in function_map:
-                log.error(f"GPT suggested a function not provided: {function_name}")
-                function_calls = pop_schema(function_name, function_calls)  # Just in case
-                messages.append(
-                    {
-                        "role": "system",
+            conversation.messages.append(dump)
+            messages.append(dump)
+
+            # Add function call count
+            conf.functions_called += len(response_functions)
+
+            for function_call in response_functions:
+                if isinstance(function_call, ChatCompletionMessageToolCall):
+                    function_name = function_call.function.name
+                    arguments = function_call.function.arguments
+                    tool_id = function_call.id
+                    role = "tool"
+                else:
+                    function_name = function_call.name
+                    arguments = function_call.arguments
+                    tool_id = None
+                    role = "function"
+
+                calls += 1
+
+                if function_name not in function_map:
+                    log.error(f"GPT suggested a function not provided: {function_name}")
+                    e = {
+                        "role": role,
+                        "name": "invalid_function",
                         "content": f"{function_name} is not a valid function name",
                     }
-                )
-                continue
+                    if tool_id:
+                        e["tool_call_id"] = tool_id
+                    messages.append(e)
+                    conversation.messages.append(e)
+                    # Remove the function call from the list
+                    function_calls = [i for i in function_calls if i["name"] != function_name]
+                    continue
 
-            # Add function call to messages
-            messages.append(response)
-            conversation.messages.append(response)
-            conversation.refresh()
-
-            arguments = function_call.get("arguments", "{}")
-            try:
-                params = json.loads(arguments)
-            except json.JSONDecodeError:
-                params = {}
-                log.error(f"Failed to parse parameters for custom function {function_name}\nArguments: {arguments}")
-            # Try continuing anyway
-
-            extras = {
-                "user": guild.get_member(author) if isinstance(author, int) else author,
-                "channel": guild.get_channel_or_thread(channel) if isinstance(channel, int) else channel,
-                "guild": guild,
-                "bot": self.bot,
-                "conf": conf,
-            }
-            kwargs = {**params, **extras}
-            func = function_map[function_name]
-            try:
-                if iscoroutinefunction(func):
-                    func_result = await func(**kwargs)
+                if arguments != "{}":
+                    try:
+                        args = json.loads(arguments)
+                        parse_success = True
+                    except json.JSONDecodeError:
+                        args = {}
+                        parse_success = False
                 else:
-                    func_result = await asyncio.to_thread(func, **kwargs)
-            except Exception as e:
-                log.error(
-                    f"Custom function {function_name} failed to execute!\nArgs: {arguments}",
-                    exc_info=e,
+                    args = {}
+                    parse_success = True
+
+                if parse_success:
+                    extras = {
+                        "user": guild.get_member(author) if isinstance(author, int) else author,
+                        "channel": guild.get_channel_or_thread(channel) if isinstance(channel, int) else channel,
+                        "guild": guild,
+                        "bot": self.bot,
+                        "conf": conf,
+                    }
+                    kwargs = {**args, **extras}
+                    func = function_map[function_name]
+                    try:
+                        if iscoroutinefunction(func):
+                            func_result = await func(**kwargs)
+                        else:
+                            func_result = await asyncio.to_thread(func, **kwargs)
+                    except Exception as e:
+                        log.error(
+                            f"Custom function {function_name} failed to execute!\nArgs: {arguments}",
+                            exc_info=e,
+                        )
+                        func_result = traceback.format_exc()
+                        function_calls = [i for i in function_calls if i["name"] != function_name]
+                else:
+                    # Help the model self-correct
+                    func_result = f"JSONDecodeError: Failed to parse arguments for function {function_name}"
+
+                return_null = False
+
+                if isinstance(func_result, discord.Embed):
+                    result = func_result.description or _("Result sent!")
+                    try:
+                        await channel.send(embed=func_result)
+                    except discord.Forbidden:
+                        result = "You do not have permissions to embed links in this channel"
+                        function_calls = [i for i in function_calls if i["name"] != function_name]
+                elif isinstance(func_result, discord.File):
+                    result = "File uploaded!"
+                    try:
+                        await channel.send(file=func_result)
+                    except discord.Forbidden:
+                        result = "You do not have permissions to upload files in this channel"
+                        function_calls = [i for i in function_calls if i["name"] != function_name]
+                elif isinstance(func_result, dict):
+                    # For complex responses
+                    result = func_result["result_text"]
+                    return_null = func_result.get("return_null", False)
+                    kwargs = {}
+                    if "embed" in func_result and channel.permissions_for(guild.me).embed_links:
+                        if not isinstance(func_result["embed"], discord.Embed):
+                            raise TypeError("Embed must be a discord.Embed object")
+                        kwargs["embed"] = func_result["embed"]
+                    if "file" in func_result and channel.permissions_for(guild.me).attach_files:
+                        if not isinstance(func_result["file"], discord.File):
+                            raise TypeError("File must be a discord.File object")
+                        kwargs["file"] = func_result["file"]
+                    if "embeds" in func_result and channel.permissions_for(guild.me).embed_links:
+                        if not isinstance(func_result["embeds"], list):
+                            raise TypeError("Embeds must be a list of discord.Embed objects")
+                        if not all(isinstance(i, discord.Embed) for i in func_result["embeds"]):
+                            raise TypeError("Embeds must be a list of discord.Embed objects")
+                        kwargs["embeds"] = func_result["embeds"]
+                    if "files" in func_result and channel.permissions_for(guild.me).attach_files:
+                        if not isinstance(func_result["files"], list):
+                            raise TypeError("Files must be a list of discord.File objects")
+                        if not all(isinstance(i, discord.File) for i in func_result["files"]):
+                            raise TypeError("Files must be a list of discord.File objects")
+                        kwargs["files"] = func_result["files"]
+                    if kwargs:
+                        try:
+                            await channel.send(**kwargs)
+                        except discord.HTTPException as e:
+                            result = f"discord.HTTPException: {e.text}"
+                            function_calls = [i for i in function_calls if i["name"] != function_name]
+
+                elif isinstance(func_result, bytes):
+                    result = func_result.decode()
+                else:  # Is a string
+                    result = str(func_result)
+
+                # Ensure response isnt too large
+                result = await self.cut_text_by_tokens(result, conf, author)
+                info = (
+                    f"Called function {function_name} in {guild.name} for {author.display_name}\n"
+                    f"Params: {args}\nResult: {result}"
                 )
-                function_calls = pop_schema(function_name, function_calls)
-                continue
+                log.debug(info)
+                e = {"role": role, "name": function_name, "content": result}
+                if tool_id:
+                    e["tool_call_id"] = tool_id
+                messages.append(e)
+                conversation.messages.append(e)
 
-            # Prep framework for alternative response types!
-            if isinstance(func_result, dict):
-                result = func_result["content"]
-                file = discord.File(
-                    BytesIO(func_result["file_bytes"]),
-                    filename=func_result["file_name"],
-                )
-                try:
-                    await channel.send(file=file)
-                except discord.Forbidden:
-                    result = "You do not have permissions to upload files in this channel"
-                    function_calls = pop_schema(function_name, function_calls)
+                if return_null:
+                    return None
 
-            if isinstance(func_result, bytes):
-                result = func_result.decode()
-            else:  # Is a string
-                result = str(func_result)
-
-            # Ensure response isnt too large
-            result = await self.cut_text_by_tokens(result, conf, max_tokens)
-            info = (
-                f"Called function {function_name} in {guild.name} for {author.display_name}\n"
-                f"Params: {params}\nResult: {result}"
-            )
-            log.info(info)
-            messages.append({"role": "function", "name": function_name, "content": result})
-            conversation.update_messages(result, "function", process_username(function_name))
-            if message_obj and function_name in ["create_memory", "edit_memory"]:
-                try:
-                    await message_obj.add_reaction("\N{BRAIN}")
-                except (discord.Forbidden, discord.NotFound):
-                    pass
+                if message_obj and function_name in ["create_memory", "edit_memory"]:
+                    try:
+                        await message_obj.add_reaction("\N{BRAIN}")
+                    except (discord.Forbidden, discord.NotFound):
+                        pass
 
         # Handle the rest of the reply
         if calls > 1:
-            log.info(f"Made {calls} function calls in a row")
+            log.debug(f"Made {calls} function calls in a row")
 
         block = False
         if reply:
@@ -510,11 +679,11 @@ class ChatHandler(MixinMeta):
                 except Exception as e:
                     log.error("Regex sub error", exc_info=e)
 
-            conversation.update_messages(reply, "assistant", process_username(self.bot.user.name))
+            conversation.update_messages(reply, "assistant", clean_name(self.bot.user.name))
 
         if block:
             reply = _("Response failed due to invalid regex, check logs for more info.")
-        conversation.cleanup(conf, author)
+
         return reply
 
     async def safe_regex(self, regex: str, content: str):
@@ -606,7 +775,7 @@ class ChatHandler(MixinMeta):
 =======
         extras: dict,
         function_calls: List[dict],
->>>>>>> main:assistant/common/chat.py
+        images: list[str] | None,
     ) -> List[dict]:
 >>>>>>> main
         """Prepare content for calling the GPT API
@@ -673,53 +842,53 @@ class ChatHandler(MixinMeta):
                 text = text.replace(key, str(v))
             return text
 
-        system_prompt = format_string(conf.system_prompt)
-        initial_prompt = format_string(conf.prompt)
+        if channel.id in conf.channel_prompts:
+            system_prompt = format_string(conf.channel_prompts[channel.id])
+        else:
+            system_prompt = format_string(conversation.system_prompt_override or conf.system_prompt)
 
-        current_tokens = await self.get_token_count(message + system_prompt + initial_prompt, conf)
-        current_tokens += await self.convo_token_count(conf, conversation)
-        current_tokens += await self.function_token_count(conf, function_calls)
+        initial_prompt = format_string(conf.prompt)
+        model = conf.get_user_model(author)
+        current_tokens = await self.count_tokens(message + system_prompt + initial_prompt, model)
+        current_tokens += await self.count_payload_tokens(conversation.messages, model)
+        current_tokens += await self.count_function_tokens(function_calls, model)
 
         max_tokens = self.get_max_tokens(conf, author)
 
         related = await asyncio.to_thread(conf.get_related_embeddings, query_embedding)
 
-        embeddings = []
+        embeds: List[str] = []
         # Get related embeddings (Name, text, score, dimensions)
         for i in related:
-            embed_tokens = await self.get_token_count(i[1], conf)
+            embed_tokens = await self.count_tokens(i[1], model)
             if embed_tokens + current_tokens > max_tokens:
                 log.debug("Cannot fit anymore embeddings")
                 break
-            embeddings.append(i)
+            embeds.append(f"[{i[0]}](Relatedness: {round(i[2], 4)}): {i[1]}\n")
 
-        if embeddings:
-            results = []
-            for embed in embeddings:
-                entry = {"memory name": embed[0], "relatedness": embed[2], "content": embed[1]}
-                results.append(entry)
-
-            role = "function" if function_calls else "user"
-            name = "search_memories" if function_calls else process_username(author.name) if author else None
-
+        if embeds:
             if conf.embed_method == "static":
-                conversation.update_messages(json.dumps(results, indent=2), role, name)
-
+                # Ebeddings go directly into the user message
+                message += f"\n\n# RELATED EMBEDDINGS\n{''.join(embeds)}"
             elif conf.embed_method == "dynamic":
-                joined = "\n".join([i[1] for i in embeddings])
-                initial_prompt += f"\n\n{joined}"
+                # Embeddings go into the system prompt
+                system_prompt += f"\n\n# RELATED EMBEDDINGS\n{''.join(embeds)}"
+            elif conf.embed_method == "user":
+                # Embeddings get injected into the initial user message
+                initial_prompt += f"\n\n# RELATED EMBEDDINGS\n{''.join(embeds)}"
+            else:  # Hybrid, first embed goes into user message, rest go into system prompt
+                message += f"\n\n# RELATED EMBEDDINGS\n{embeds[0]}"
+                if len(embeds) > 1:
+                    system_prompt += f"\n\n# RELATED EMBEDDINGS\n{''.join(embeds[1:])}"
 
-            else:  # Hybrid embedding
-                conversation.update_messages(json.dumps(results[0], indent=2), role, name)
-                if len(embeddings) > 1:
-                    joined = "\n".join([i[1] for i in embeddings[1:]])
-                    initial_prompt += f"\n\n{joined}"
-
+        images = images if model in SUPPORTS_VISION else []
         messages = conversation.prepare_chat(
             message,
             initial_prompt.strip(),
             system_prompt.strip(),
-            name=process_username(author.name) if author else None,
+            name=clean_name(author.name) if author else None,
+            images=images,
+            resolution=conf.vision_detail,
         )
         return messages
 

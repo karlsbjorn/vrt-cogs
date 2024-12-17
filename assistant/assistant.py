@@ -1,16 +1,12 @@
 import asyncio
-import json
 import logging
-import string
 from multiprocessing.pool import Pool
 from time import perf_counter
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Literal, Optional, Union
 
 import discord
-import tiktoken
 from discord.ext import tasks
 from pydantic import ValidationError
-from rapidfuzz import fuzz
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
@@ -21,10 +17,12 @@ from .common.chat import ChatHandler
 from .common.constants import (
     CREATE_MEMORY,
     EDIT_MEMORY,
-    GET_CHANNEL_ID,
-    GET_CHANNEL_NAMED,
+    GENERATE_IMAGE,
+    LIST_MEMORIES,
+    SEARCH_INTERNET,
     SEARCH_MEMORIES,
 )
+from .common.functions import AssistantFunctions
 from .common.models import DB, Embedding, EmbeddingEntryExists, NoAPIKey
 from .common.utils import json_schema_invalid
 from .listener import AssistantListener
@@ -36,9 +34,10 @@ log = logging.getLogger("red.vrt.assistant")
 
 
 class Assistant(
-    AssistantCommands,
-    AssistantListener,
     API,
+    AssistantCommands,
+    AssistantFunctions,
+    AssistantListener,
     ChatHandler,
     commands.Cog,
     metaclass=CompositeMetaClass,
@@ -52,15 +51,10 @@ class Assistant(
     - **[p]chat**: talk with the assistant
     - **[p]convostats**: view a user's token usage/conversation message count for the channel
     - **[p]clearconvo**: reset your conversation with the assistant in the channel
-
-    **Support for self-hosted endpoints!**
-    Assistant supports usage of **[Self-Hosted Models](https://github.com/vertyco/gpt-api)** via endpoint overrides.
-    To set a custom endpoint for example: `[p]assist endpoint http://localhost:8000/v1`
-    This will now make calls to your self-hosted api.
     """
 
-    __author__ = "Vertyco#0117"
-    __version__ = "4.17.2"
+    __author__ = "[vertyco](https://github.com/vertyco/vrt-cogs)"
+    __version__ = "6.8.45"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -74,15 +68,13 @@ class Assistant(
 
     def __init__(self, bot: Red, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.bot = bot
+        self.bot: Red = bot
         self.config = Config.get_conf(self, 117117117, force_registration=True)
         self.config.register_global(db={})
         self.db: DB = DB()
         self.mp_pool = Pool()
 
-        self.tokenizer: tiktoken.core.Encoding = tiktoken.get_encoding("cl100k_base")
-
-        # {cog_name: {function_name: {function_json_schema}}}
+        # {cog_name: {function_name: {"permission_level": "user", "schema": function_json_schema}}}
         self.registry: Dict[str, Dict[str, dict]] = {}
 
         self.saving = False
@@ -112,14 +104,18 @@ class Assistant(
         await asyncio.to_thread(self._cleanup_db)
 
         # Register internal functions
+        await self.register_function(self.qualified_name, GENERATE_IMAGE)
+        await self.register_function(self.qualified_name, SEARCH_INTERNET)
         await self.register_function(self.qualified_name, CREATE_MEMORY)
         await self.register_function(self.qualified_name, SEARCH_MEMORIES)
         await self.register_function(self.qualified_name, EDIT_MEMORY)
-        await self.register_function(self.qualified_name, GET_CHANNEL_ID)
-        await self.register_function(self.qualified_name, GET_CHANNEL_NAMED)
+        await self.register_function(self.qualified_name, LIST_MEMORIES)
 
         logging.getLogger("openai").setLevel(logging.WARNING)
         logging.getLogger("aiocache").setLevel(logging.WARNING)
+        logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
+        logging.getLogger("httpcore.connection").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
         self.bot.dispatch("assistant_cog_add", self)
 
         await asyncio.sleep(30)
@@ -133,7 +129,7 @@ class Assistant(
             start = perf_counter()
             if not self.db.persistent_conversations:
                 self.db.conversations.clear()
-            dump = await asyncio.to_thread(self.db.model_dump, mode="json")
+            dump = await asyncio.to_thread(self.db.model_dump)
             await self.config.db.set(dump)
             txt = f"Config saved in {round((perf_counter() - start) * 1000, 2)}ms"
             if self.first_run:
@@ -216,164 +212,6 @@ class Assistant(
             return
         await self.save_conf()
 
-    async def create_memory(
-        self,
-        guild: discord.Guild,
-        user: discord.Member,
-        memory_name: str,
-        memory_text: str,
-        *args,
-        **kwargs,
-    ):
-        if len(memory_name) > 100:
-            return "Error: memory_name should be 100 characters or less!"
-        conf = self.db.get_conf(guild)
-        if not any([role.id in conf.tutors for role in user.roles]) and user.id not in conf.tutors:
-            return f"User {user.display_name} is not recognized as a tutor!"
-        try:
-            embedding = await self.add_embedding(
-                guild,
-                memory_name,
-                memory_text,
-                overwrite=False,
-                ai_created=True,
-            )
-            if embedding is None:
-                return "Failed to create memory"
-            return f"The memory '{memory_name}' has been created successfully"
-        except EmbeddingEntryExists:
-            return "That memory name already exists"
-
-    async def search_memories(
-        self,
-        guild: discord.Guild,
-        search_query: str,
-        amount: int = 2,
-        *args,
-        **kwargs,
-    ):
-        try:
-            amount = int(amount)
-        except ValueError:
-            return "Error: amount must be an integer"
-        if amount < 1:
-            return "Amount needs to be more than 1"
-
-        conf = self.db.get_conf(guild)
-        if not conf.embeddings:
-            return "There are no memories saved!"
-
-        if search_query in conf.embeddings:
-            embed = conf.embeddings[search_query]
-            return f"Found a memory name that matches exactly: {embed.text}"
-
-        query_embedding = await self.request_embedding(search_query, conf)
-        if not query_embedding:
-            return f"Failed to get memory for your the query '{search_query}'"
-
-        embeddings = await asyncio.to_thread(
-            conf.get_related_embeddings,
-            query_embedding=query_embedding,
-            top_n_override=amount,
-            relatedness_override=0.5,
-        )
-        if not embeddings:
-            return f"No embeddings could be found related to the search query '{search_query}'"
-
-        results = []
-        for embed in embeddings:
-            entry = {"memory name": embed[0], "relatedness": embed[2], "content": embed[1]}
-            results.append(entry)
-
-        return f"Memories related to `{search_query}`\n{json.dumps(results, indent=2)}"
-
-    async def edit_memory(
-        self,
-        guild: discord.Guild,
-        user: discord.Member,
-        memory_name: str,
-        memory_text: str,
-        *args,
-        **kwargs,
-    ):
-        conf = self.db.get_conf(guild)
-        if not any([role.id in conf.tutors for role in user.roles]) and user.id not in conf.tutors:
-            return f"User {user.display_name} is not recognized as a tutor!"
-
-        if memory_name not in conf.embeddings:
-            return "A memory with that name does not exist!"
-        embedding = await self.request_embedding(memory_text, conf)
-        if not embedding:
-            return "Could not update the memory!"
-
-        conf.embeddings[memory_name].text = memory_text
-        conf.embeddings[memory_name].embedding = embedding
-        conf.embeddings[memory_name].update()
-        asyncio.create_task(self.save_conf())
-        return "Your memory has been updated!"
-
-    async def get_channel_name_from_id(
-        self,
-        guild: discord.Guild,
-        channel_id: str | int,
-        *args,
-        **kwargs,
-    ):
-        if isinstance(channel_id, str):
-            if not channel_id.isdigit():
-                return "channel_id must be a valid integer!"
-        if channel := guild.get_channel_or_thread(int(channel_id)):
-            ctype = "voice" if isinstance(channel, discord.VoiceChannel) else "text"
-            return f"the name of the {ctype} channel with ID {channel_id} is {channel.name}"
-        return "a channel with that ID could not be found!"
-
-    async def get_channel_id_from_name(
-        self,
-        guild: discord.Guild,
-        channel_name: str,
-        *args,
-        **kwargs,
-    ):
-        def clean_name(name: str) -> str:
-            chars = string.ascii_letters + string.hexdigits
-            for char in name:
-                if char not in chars:
-                    name = name.replace(char, "")
-            return name
-
-        def match_channels() -> tuple:
-            channels = list(guild.channels) + list(guild.threads) + list(guild.forums)
-            scores = [(i, fuzz.ratio(clean_name(channel_name.lower()), clean_name(i.name.lower()))) for i in channels]
-            sorted_scores = sorted(scores, key=lambda x: x[1], reverse=True)
-            return sorted_scores[0]
-
-        channel, score = await asyncio.to_thread(match_channels)
-        if score < 50:
-            return "could not find a channel that closely matches that name"
-        ctype = "voice" if isinstance(channel, discord.VoiceChannel) else "text"
-        if clean_name(channel.name) == clean_name(channel_name):
-            return f"The ID for the {ctype} channel named {channel_name} is {channel.id}"
-        return (
-            f"found {ctype} channel ID {channel.id} for {channel_name} with a relatedness score of {round(score)}/100"
-        )
-
-    async def make_search_url(
-        self,
-        site: str,
-        search_query: str,
-        *args,
-        **kwargs,
-    ):
-        site = site.lower()
-        chars = string.ascii_letters + string.hexdigits
-        for char in search_query:
-            if char not in chars:
-                search_query = search_query.replace(char, "")
-        search_query = search_query.replace(" ", "+")
-        if site == "youtube":
-            return f"https://www.youtube.com/results?search_query={search_query}"
-        return f"https://www.google.com/search?q={search_query}"
-
     # ------------------ 3rd PARTY ACCESSIBLE METHODS ------------------
     async def add_embedding(
         self,
@@ -408,7 +246,7 @@ class Assistant(
         embedding = await self.request_embedding(text, conf)
         if not embedding:
             return None
-        conf.embeddings[name] = Embedding(text=text, embedding=embedding, ai_created=ai_created)
+        conf.embeddings[name] = Embedding(text=text, embedding=embedding, ai_created=ai_created, model=conf.embed_model)
         asyncio.create_task(self.save_conf())
         return embedding
 
@@ -422,7 +260,7 @@ class Assistant(
         function_map: Optional[Dict[str, Callable]] = None,
         extend_function_calls: bool = True,
         message_obj: Optional[discord.Message] = None,
-    ) -> str:
+    ) -> Union[str, None]:
         """
         Method for other cogs to call the chat API
 
@@ -481,12 +319,18 @@ class Assistant(
         for schema in schemas:
             await self.register_function(cog_name, schema)
 
-    async def register_function(self, cog_name: str, schema: dict) -> bool:
+    async def register_function(
+        self,
+        cog_name: str,
+        schema: dict,
+        permission_level: Literal["user", "mod", "admin", "owner"] = "user",
+    ) -> bool:
         """Allow 3rd party cogs to register their functions for the model to use
 
         Args:
             cog_name (str): the name of the cog registering the function
             schema (dict): JSON schema representation of the command (see https://json-schema.org/understanding-json-schema/)
+            permission_level (str): the permission level required to call the function (user, mod, admin, owner)
 
         Returns:
             bool: True if function was successfully registered
@@ -526,7 +370,7 @@ class Assistant(
             self.registry[cog_name] = {}
 
         log.info(f"The {cog_name} cog registered a function object: {function_name}")
-        self.registry[cog_name][function_name] = schema
+        self.registry[cog_name][function_name] = {"permission_level": permission_level, "schema": schema}
         return True
 
     async def unregister_function(self, cog_name: str, function_name: str) -> None:
